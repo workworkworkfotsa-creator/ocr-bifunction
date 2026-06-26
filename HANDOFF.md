@@ -51,20 +51,26 @@ Historique : `3fcc7a8` baseline ①②③ · `3c3d055` HANDOFF+hook · `19e8041`
 - **MRZ legacy non-ICAO** hand-rollé (la lib `mrz` PyPI ne couvre que TD1/TD2/TD3 ICAO).
 - Hors-scope tant que la valeur n'est pas étendue : stages ④⑤, UI de revue, gouvernance/trace.
 
-## Prochain pas (à trancher par l'utilisateur)
-**Le payoff = reconcile recto↔verso bout-en-bout sur la vraie paire.** Deux parties :
-1. **Anchors recto robustes à l'OCR** — sur la vraie carte un sous-label est mal lu (`rn`→`m`) → le
-   template recto ne matche pas. Fix : matching flou (distance d'édition) ou anchors de repli.
-2. **`reconcile(recto_fields, mrz_fields)`** sur les clefs partagées (n°doc, nom, prénom, naissance,
-   expiration) → **auto** si tout concorde + checksums verts, **humain** si une clef diverge (= « recto de
-   A + verso de B » détecté).
+## Fait (2026-06-26) — la thèse prouvée bout-en-bout
+**Reconcile recto↔verso opérationnel sur la vraie paire** (`8d6bf4a`) : anchors flous (difflib, tolère
+`rn→m`) + `reconcile()` sur les clefs partagées (n°doc, nom, prénom, naissance, expiration) + checksums.
+Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; recto × MRZ d'une autre personne →
+**HUMAIN** avec raisons (le « recto de A + verso de B » détecté). `reconcile_check.py` = le runner.
 
-Autres pistes en réserve : template facture (PDF couche-texte) ; améliorer la détection de coins du
-rectifier ; tuner `enhance` ; preprocessing verso (mémoire `verso-ci-preprocessing`).
+## Prochain pas (à trancher par l'utilisateur)
+Au choix :
+1. **Wirer le pipeline** — un point d'entrée unique « paire CI → record + verdict » (raw-first →
+   enhance-retry intégré, plus seulement des scripts de démo).
+2. **Template facture** (PDF couche-texte, blocs PyMuPDF) — autre catégorie à fort volume.
+3. **Tuner le template recto** pour la vraie mise en page (cf. dette périphérique ci-dessous).
+4. Réserve : 2e template CI ; durcir la détection de coins du rectifier ; preprocessing verso (mémoire
+   `verso-ci-preprocessing`).
 
 ## Suivis ouverts
 - **CLAUDE.md « État actuel du repo »** = **périmé** (dit « archi pas implémentée » alors que ①②③ + MRZ
   tournent). À actualiser + ajouter la carte des modules. Cf. mémoire `claudemd-module-map-pending`.
-- **Anchors de template OCR-fragiles** (sous-labels mal lus sur vraies cartes) → cf. partie 1 ci-dessus.
+- **Dette template recto** : les anchors flous sont OK, mais sur la vraie mise en page 2 champs
+  *périphériques* sont mal extraits (`lieu_naissance` attrape la date, `nationalite=None`). Hors clefs de
+  reconcile → zéro impact verdict, mais à tuner pour un record CI complet.
 - **Détection de coins du rectifier** = no-op sur photo plein cadre → à durcir si on veut le warp auto.
 - **Pre-commit hook** posé (`3c3d055`). Tout nouveau clone : `sh scripts/setup-hooks.sh`.
