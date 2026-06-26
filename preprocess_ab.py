@@ -1,11 +1,10 @@
-"""A/B a Preprocessor on one image: raw OCR vs enhanced OCR.
+"""A/B preprocessors on one image: raw vs rectify vs enhance, with MRZ detection.
 
-    uv run python preprocess_ab.py "inputs/Carte_identité_électronique_française_(2021,_verso).png"
+    uv run python preprocess_ab.py "inputs/IMG_8392.jpeg"
 
-Smoke-first: prove the enhancement chain recovers a hard case (CI verso / MRZ)
-BEFORE wiring it into the pipeline as a raw-first -> retry cascade. The enhanced
-image is dumped to outputs/ for visual inspection. No auto-verdict — compare and
-let the user decide.
+Smoke-first: prove an enhancement chain helps a hard case (the angled verso / its
+MRZ) BEFORE wiring it as a raw-first -> retry cascade. Each non-raw output image is
+dumped to outputs/ for visual inspection. No auto-verdict — compare and decide.
 """
 
 from __future__ import annotations
@@ -13,7 +12,13 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from ocr_bifunction.preprocess import EnhancePreprocessor, NoPreprocessor, Preprocessor
+from ocr_bifunction.mrz import extract_mrz_lines, parse_mrz
+from ocr_bifunction.preprocess import (
+    EnhancePreprocessor,
+    NoPreprocessor,
+    PerspectiveRectifier,
+    Preprocessor,
+)
 from ocr_bifunction.reader import TextLine
 
 PROJECT_ROOT = Path(__file__).parent
@@ -25,7 +30,11 @@ def _summarize(label: str, lines: list[TextLine]) -> None:
     scores = [line.confidence for line in lines if line.confidence is not None]
     confidence = f"{sum(scores) / len(scores):.2f}" if scores else "-"
     print(f"\n--- {label}: {len(lines)} lines, {len(text)} chars, conf {confidence}")
-    print(text)
+    mrz_lines = extract_mrz_lines(lines)
+    if mrz_lines:
+        print(f"  MRZ: {len(mrz_lines)} lines -> {parse_mrz(mrz_lines)}")
+    else:
+        print("  MRZ: none detected")
 
 
 def run_ab(image_path: Path) -> None:
@@ -36,7 +45,11 @@ def run_ab(image_path: Path) -> None:
     print("Loading RapidOCR engine...")
     engine = RapidOcrEngine()
 
-    preprocessors: list[Preprocessor] = [NoPreprocessor(), EnhancePreprocessor()]
+    preprocessors: list[Preprocessor] = [
+        NoPreprocessor(),
+        PerspectiveRectifier(),
+        EnhancePreprocessor(),
+    ]
     for preprocessor in preprocessors:
         processed_bytes = preprocessor.process(raw_bytes)
         if preprocessor.name != "raw":

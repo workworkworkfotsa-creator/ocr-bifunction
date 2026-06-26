@@ -42,6 +42,7 @@ class MrzFields:
     surname: str | None = None
     given_names: str | None = None
     birth_date: str | None = None  # ISO YYYY-MM-DD, best effort
+    expiry_date: str | None = None  # ISO YYYY-MM-DD (TD1 only)
     sex: str | None = None
     document_number: str | None = None
     checks: dict[str, bool] = field(default_factory=dict)
@@ -71,11 +72,12 @@ def _clean_names(raw_field: str) -> str:
     return " ".join(part for part in raw_field.replace("<", " ").split() if part)
 
 
-def _yymmdd_to_iso(yymmdd: str) -> str | None:
+def _yymmdd_to_iso(yymmdd: str, *, future: bool = False) -> str | None:
     if not (len(yymmdd) == 6 and yymmdd.isdigit()):
         return None
     year_two_digits = int(yymmdd[0:2])
-    century = 1900 if year_two_digits > 25 else 2000  # birthdates: rough past pivot
+    # birthdates pivot in the past; expiry dates are always 21st-century.
+    century = 2000 if future else (1900 if year_two_digits > 25 else 2000)
     return f"{century + year_two_digits:04d}-{yymmdd[2:4]}-{yymmdd[4:6]}"
 
 
@@ -117,14 +119,21 @@ def parse_td1(mrz_lines: list[str]) -> MrzFields:
     fields = MrzFields(mrz_format="td1", raw_lines=tuple(mrz_lines))
 
     document_line = next((line for line in mrz_lines if line[:2] in ("ID", "I<")), None)
-    name_line = next(
-        (line for line in mrz_lines if line is not document_line and "<<" in line), None
-    )
+    # The numeric line (birth/expiry/sex) must be claimed BEFORE the name line:
+    # it also contains '<<' fillers, so name-matching would otherwise steal it.
     numeric_line = next(
         (
             line
             for line in mrz_lines
-            if line not in (document_line, name_line) and line[:6].isdigit()
+            if line is not document_line and line[:6].isdigit()
+        ),
+        None,
+    )
+    name_line = next(
+        (
+            line
+            for line in mrz_lines
+            if line not in (document_line, numeric_line) and "<<" in line
         ),
         None,
     )
@@ -145,10 +154,15 @@ def parse_td1(mrz_lines: list[str]) -> MrzFields:
     if numeric_line is not None:
         numeric_line = (numeric_line + "<" * 30)[:30]
         fields.birth_date = _yymmdd_to_iso(numeric_line[0:6])
+        fields.expiry_date = _yymmdd_to_iso(numeric_line[8:14], future=True)
         fields.sex = numeric_line[7] if numeric_line[7] in ("M", "F") else None
         if numeric_line[6].isdigit():
             fields.checks["birth_date"] = icao_check_digit(numeric_line[0:6]) == int(
                 numeric_line[6]
+            )
+        if numeric_line[14].isdigit():
+            fields.checks["expiry_date"] = icao_check_digit(numeric_line[8:14]) == int(
+                numeric_line[14]
             )
 
     return fields

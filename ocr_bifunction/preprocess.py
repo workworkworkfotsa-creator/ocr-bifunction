@@ -90,3 +90,79 @@ class EnhancePreprocessor:
         )
         # Back to 3-channel so any OcrEngine consumes it like a normal image.
         return _encode_png(cv2.cvtColor(binarized, cv2.COLOR_GRAY2BGR))
+
+
+def _order_corners(points: np.ndarray) -> np.ndarray:
+    """Order 4 points as top-left, top-right, bottom-right, bottom-left."""
+    coordinate_sum = points.sum(axis=1)
+    coordinate_diff = np.diff(points, axis=1).ravel()
+    return np.array(
+        [
+            points[np.argmin(coordinate_sum)],  # top-left  (smallest x+y)
+            points[np.argmin(coordinate_diff)],  # top-right (smallest y-x)
+            points[np.argmax(coordinate_sum)],  # bottom-right (largest x+y)
+            points[np.argmax(coordinate_diff)],  # bottom-left (largest y-x)
+        ],
+        dtype="float32",
+    )
+
+
+def _distance(point_a: np.ndarray, point_b: np.ndarray) -> float:
+    return float(np.hypot(point_a[0] - point_b[0], point_a[1] - point_b[1]))
+
+
+class PerspectiveRectifier:
+    """Detect the document quadrilateral and warp the trapezoid to a flat rectangle.
+
+    The warp is trivial; the hard part — the one a bare OCR engine cannot do — is
+    finding the 4 corners. We use the classic document-scanner heuristic (edges ->
+    largest convex quad). When no convincing quad is found we return the image
+    UNCHANGED: a wrong warp is worse than none.
+    """
+
+    name = "rectify"
+
+    def __init__(self, minimum_area_ratio: float = 0.2) -> None:
+        self.minimum_area_ratio = minimum_area_ratio
+
+    def process(self, image_png_bytes: bytes) -> bytes:
+        image = _decode(image_png_bytes)
+        quadrilateral = self._find_document_quad(image)
+        if quadrilateral is None:
+            return image_png_bytes
+        return _encode_png(self._warp(image, quadrilateral))
+
+    def _find_document_quad(self, image: np.ndarray) -> np.ndarray | None:
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+        edges = cv2.Canny(blurred, 50, 150)
+        edges = cv2.dilate(edges, np.ones((3, 3), np.uint8), iterations=1)
+        contours, _ = cv2.findContours(
+            edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        )
+        image_area = image.shape[0] * image.shape[1]
+        for contour in sorted(contours, key=cv2.contourArea, reverse=True)[:5]:
+            perimeter = cv2.arcLength(contour, True)
+            approximation = cv2.approxPolyDP(contour, 0.02 * perimeter, True)
+            if (
+                len(approximation) == 4
+                and cv2.contourArea(approximation)
+                >= self.minimum_area_ratio * image_area
+            ):
+                return approximation.reshape(4, 2).astype("float32")
+        return None
+
+    def _warp(self, image: np.ndarray, quadrilateral: np.ndarray) -> np.ndarray:
+        top_left, top_right, bottom_right, bottom_left = _order_corners(quadrilateral)
+        width = int(
+            max(_distance(bottom_right, bottom_left), _distance(top_right, top_left))
+        )
+        height = int(
+            max(_distance(top_right, bottom_right), _distance(top_left, bottom_left))
+        )
+        destination = np.array(
+            [[0, 0], [width - 1, 0], [width - 1, height - 1], [0, height - 1]],
+            dtype="float32",
+        )
+        matrix = cv2.getPerspectiveTransform(_order_corners(quadrilateral), destination)
+        return cv2.warpPerspective(image, matrix, (width, height))
