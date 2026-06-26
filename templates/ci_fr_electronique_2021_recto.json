@@ -1,0 +1,33 @@
+{
+  "template_id": "ci_fr_electronique_2021_recto",
+  "category": "carte_identite",
+  "description": "Carte nationale d'identite electronique francaise (format 2021), recto. Anchors use the English sub-labels, which OCR reads cleanly and which are unique.",
+  "match": { "all_anchors": ["Identity Card", "Surname"] },
+  "fields": [
+    { "name": "nom", "anchor": "Surname", "direction": "below" },
+    { "name": "prenoms", "anchor": "Given names", "direction": "below" },
+    { "name": "nationalite", "anchor": "Nationality", "direction": "below" },
+    {
+      "name": "date_naissance",
+      "anchor": "Date of birth",
+      "direction": "below",
+      "normalize": "date_ddmmyyyy"
+    },
+    {
+      "name": "lieu_naissance",
+      "anchor": "Place of birth",
+      "direction": "below"
+    },
+    {
+      "name": "numero_document",
+      "anchor": "Document No",
+      "direction": "below"
+    },
+    {
+      "name": "date_expiration",
+      "anchor": "Expiry date",
+      "direction": "below",
+      "normalize": "date_ddmmyyyy"
+    }
+  ]
+}

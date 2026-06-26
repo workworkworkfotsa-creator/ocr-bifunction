@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# uv
+.uv/
+
+# Extracted text dumps from the smoke runner — derived, never committed
+outputs/
+
+# Real input documents — may contain personal data (CI, factures); keep out of git
+inputs/

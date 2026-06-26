@@ -1,0 +1,17 @@
+[project]
+name = "ocr-bifunction"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "onnxruntime>=1.27.0",
+    "pymupdf>=1.27.2.3",
+    "python-docx>=1.2.0",
+    "rapidocr>=3.9.0",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.15.20",
+]
