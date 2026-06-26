@@ -11,6 +11,7 @@ picks the one whose signature anchors are all present.
 
 from __future__ import annotations
 
+import difflib
 import json
 import re
 from pathlib import Path
@@ -35,10 +36,30 @@ def _normalize_for_match(text: str) -> str:
     return re.sub(r"[^a-z0-9]", "", text.lower())
 
 
+def _fuzzy_contains(needle: str, haystack: str, threshold: float = 0.75) -> bool:
+    """True if `needle` appears in `haystack`, tolerant of OCR slips (e.g. rn->m).
+
+    Real cards break exact anchors: "Surname" is read "Sumame". We slide a window
+    of ~len(needle) over the line and accept a close enough match.
+    """
+    if not needle:
+        return False
+    if needle in haystack:
+        return True
+    if len(needle) < 4:  # too short to fuzzy-match without false positives
+        return False
+    for window in (len(needle) - 1, len(needle), len(needle) + 1):
+        for start in range(len(haystack) - window + 1):
+            candidate = haystack[start : start + window]
+            if difflib.SequenceMatcher(None, needle, candidate).ratio() >= threshold:
+                return True
+    return False
+
+
 def _find_anchor_line(lines: list[TextLine], anchor: str) -> TextLine | None:
     needle = _normalize_for_match(anchor)
     for line in lines:
-        if needle and needle in _normalize_for_match(line.text):
+        if _fuzzy_contains(needle, _normalize_for_match(line.text)):
             return line
     return None
 
