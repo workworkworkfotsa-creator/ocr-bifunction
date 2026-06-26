@@ -1,0 +1,14 @@
+#!/bin/sh
+# Fast pre-commit gate (< 1-2s): ruff lint + format check on Python only.
+# Blocks the commit on red. Markdown/JSON are not touched (ruff ignores them).
+# NB: git hook != Claude Code hook. Versioned in .githooks/, activated once per
+# clone by scripts/setup-hooks.sh (core.hooksPath is per-clone, not versioned).
+set -e
+
+echo "[pre-commit] ruff check ..."
+uv run ruff check .
+
+echo "[pre-commit] ruff format --check ..."
+uv run ruff format --check .
+
+echo "[pre-commit] ok"
