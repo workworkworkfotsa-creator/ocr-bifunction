@@ -5,6 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "docling>=2.107.0",
     "onnxruntime>=1.27.0",
     "pymupdf>=1.27.2.3",
     "python-docx>=1.2.0",
