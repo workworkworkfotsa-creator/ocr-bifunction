@@ -10,11 +10,11 @@
 > repo ni l'historique (audité 2026-06-26). **Ce repo part sur GitHub** → ne jamais `git add -f` un doc,
 > ne jamais coller de valeur réelle (nom, n°doc, adresse) dans le code, les docs ou un message de commit.
 
-## État au 2026-06-26
+## État au 2026-06-27
 
-**Porte d'entrée ①②③ prouvée + MRZ recto↔verso amorcé, sur de vrais docs.** POC solo sur `master`,
-pas de remote. Dernier commit `3680c87`. **Pas de tests pytest** — oracle = run réel
-(`smoke.py` / `extract.py` / `mrz_check.py` / `preprocess_ab.py`), conforme à la discipline smoke-first.
+**Porte d'entrée CI prouvée bout-en-bout + pipeline câblé + extraction factures multi-layout, sur de vrais
+docs.** POC solo sur `master`, pas de remote. Dernier commit `0651b74`. **Pas de tests pytest** — oracle =
+runs réels sur vrais docs + smokes structurels + KAT (composite MRZ), conforme à la discipline smoke-first.
 
 Historique : `3fcc7a8` baseline ①②③ · `3c3d055` HANDOFF+hook · `19e8041` slot Preprocessor ·
 `395e9e3` MRZ parse · `3680c87` rectifier + TD1.
@@ -57,14 +57,26 @@ Historique : `3fcc7a8` baseline ①②③ · `3c3d055` HANDOFF+hook · `19e8041`
 Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; recto × MRZ d'une autre personne →
 **HUMAIN** avec raisons (le « recto de A + verso de B » détecté). `reconcile_check.py` = le runner.
 
-## Prochain pas (à trancher par l'utilisateur)
-Au choix :
-1. **Wirer le pipeline** — un point d'entrée unique « paire CI → record + verdict » (raw-first →
-   enhance-retry intégré, plus seulement des scripts de démo).
-2. **Template facture** (PDF couche-texte, blocs PyMuPDF) — autre catégorie à fort volume.
-3. **Tuner le template recto** pour la vraie mise en page (cf. dette périphérique ci-dessous).
-4. Réserve : 2e template CI ; durcir la détection de coins du rectifier ; preprocessing verso (mémoire
-   `verso-ci-preprocessing`).
+## Fait (2026-06-27)
+- **Pipeline câblé (option 1 done)** : `main.py` = point d'entrée unique « paire CI → record + verdict » ;
+  `pipeline.py` (`process_ci_pair` → `CiRecord`), verso **raw-first → enhance-retry**. AUTO prouvé sur la
+  vraie paire (le read raw a suffi → 1 seul checksum ; cf. gate ci-dessous). Commit `43f229f`.
+- **Composite TD1** ajouté à `parse_td1` (4e check ICAO ; lie doc/naissance/expiration → attrape un bloc
+  MRZ incohérent). Validé par KAT contre le spécimen ICAO 9303. Commit `43f229f`.
+- **Factures born-digital** : mode champ `pattern` (regex) dans `template.py` (PyMuPDF colle label+valeur
+  dans un bloc → géométrie inapplicable). **4 templates** : `facture_sortante_01` (interne, TELIMA émet) +
+  `facture_entrante_01/02/03` (reçues fournisseurs). Cross-match propre sur 5 docs ; les 2 courriers
+  mise-en-demeure → aucun match. Lecture = **résolu** pour ce corpus (text-layer PyMuPDF, ms).
+  Commits `67a8d5f`, `0651b74`. Ancres **structurelles** (jamais un nom de partie — repo public).
+
+## Prochain pas (roadmap utilisateur : factures → docx → Docling fallback)
+1. **docx** (étape 3) — `Info commandes de matériel.docx`, `Modèles de PTO.docx` : voir si on lit bien, puis template.
+2. **Docling fallback** (étape 4) — pour les images/scans sans couche-texte (intervention photos, screenshots,
+   CI) → couvre le reste de la lecture.
+3. Réserve : couche **validation facture** (cohérence arithmétique HT+TVA=TTC) = futur « template de validation »
+   config-driven (mémoire `template-validation-architecture-direction`) ; canonicaliser les décimales
+   (virgule vs point, ex. `facture_entrante_03`) ; gate cascade verso config-driven (composite-based) ;
+   date textuelle `facture_entrante_03` (« AOUT 2022 ») non ISO-isable.
 
 ## Suivis ouverts
 - **CLAUDE.md « État actuel du repo »** = **périmé** (dit « archi pas implémentée » alors que ①②③ + MRZ
