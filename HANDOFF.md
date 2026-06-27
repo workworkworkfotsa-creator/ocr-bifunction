@@ -13,8 +13,9 @@
 ## État au 2026-06-27
 
 **Porte d'entrée CI prouvée bout-en-bout + pipeline câblé + extraction factures multi-layout, sur de vrais
-docs.** POC solo sur `master`, pas de remote. Dernier commit `0651b74`. **Pas de tests pytest** — oracle =
-runs réels sur vrais docs + smokes structurels + KAT (composite MRZ), conforme à la discipline smoke-first.
+docs ; + lecture couverte (RapidOCR + Docling fallback).** POC solo sur `master`, pas de remote. Dernier
+commit `6a74fe6`. **Pas de tests pytest** — oracle = runs réels sur vrais docs + smokes structurels + KAT
+(composite MRZ), conforme à la discipline smoke-first.
 
 Historique : `3fcc7a8` baseline ①②③ · `3c3d055` HANDOFF+hook · `19e8041` slot Preprocessor ·
 `395e9e3` MRZ parse · `3680c87` rectifier + TD1.
@@ -71,15 +72,22 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   `facture_entrante_01/02/03` (reçues fournisseurs). Cross-match propre sur 5 docs ; les 2 courriers
   mise-en-demeure → aucun match. Lecture = **résolu** pour ce corpus (text-layer PyMuPDF, ms).
   Commits `67a8d5f`, `0651b74`. Ancres **structurelles** (jamais un nom de partie — repo public).
+- **docx → lane RAG** (acté) : non-structurés volontaires, aucun doc officiel en .docx → pas d'extraction.
+- **Docling fallback** : `DoclingOcrEngine` (`docling_engine.py`) derrière le slot `OcrEngine` ; image bytes →
+  layout+OCR → `TextLine`. Smoke screenshot OK (géométrie top-left correcte) mais **lent** (~57 s init + ~38 s/img)
+  → batch/escalade. **Backend OCR de Docling = RapidOCR** → valeur ajoutée = layout/reading-order (RAG), PAS une
+  meilleure reconnaissance brute que RapidOCR seul. Commit `6a74fe6`.
 
-## Prochain pas (roadmap utilisateur : factures → docx → Docling fallback)
-1. **docx** (étape 3) — `Info commandes de matériel.docx`, `Modèles de PTO.docx` : voir si on lit bien, puis template.
-2. **Docling fallback** (étape 4) — pour les images/scans sans couche-texte (intervention photos, screenshots,
-   CI) → couvre le reste de la lecture.
-3. Réserve : couche **validation facture** (cohérence arithmétique HT+TVA=TTC) = futur « template de validation »
-   config-driven (mémoire `template-validation-architecture-direction`) ; canonicaliser les décimales
-   (virgule vs point, ex. `facture_entrante_03`) ; gate cascade verso config-driven (composite-based) ;
-   date textuelle `facture_entrante_03` (« AOUT 2022 ») non ISO-isable.
+## Prochain pas (la roadmap lecture est couverte — décisions à trancher)
+**Lecture couverte** : text-layer (PyMuPDF) + RapidOCR (fast-path) + Docling (fallback batch) + docx (python-docx).
+1. **standard-Docling vs VLM granite-docling** : pour mieux *lire* les images dures, le levier = granite (autre
+   modèle), pas Docling standard (qui retombe sur RapidOCR). À mesurer sur une vraie image dure.
+2. **Routing fallback** : quand escalader RapidOCR → Docling (analogue au raw-first → enhance, au niveau moteur).
+3. **Lane RAG** (docx + articles PDF) : monter le sous-système retrieval, ou rester une étiquette pour l'instant.
+4. **Validation facture** (cohérence HT+TVA=TTC) = futur « template de validation » config-driven
+   (mémoire `template-validation-architecture-direction`).
+- Dettes mineures : décimales virgule/point ; date textuelle `facture_entrante_03` (« AOUT 2022 ») non ISO-isable ;
+  gate cascade verso config-driven (composite-based).
 
 ## Suivis ouverts
 - **CLAUDE.md « État actuel du repo »** = **périmé** (dit « archi pas implémentée » alors que ①②③ + MRZ
