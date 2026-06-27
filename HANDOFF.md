@@ -49,6 +49,9 @@ Historique : `3fcc7a8` baseline ①②③ · `3c3d055` HANDOFF+hook · `19e8041`
   catégorie** (prouvé : 2 formats MRZ). Kaizen : on enrichit petit à petit ; l'engagement du filtreur fait
   vivre le système. Cible métier réelle : ~200 postes à ~90% d'erreur → auto-valider le concordant.
 - **MRZ legacy non-ICAO** hand-rollé (la lib `mrz` PyPI ne couvre que TD1/TD2/TD3 ICAO).
+- **Routing CATÉGORISER = 2 lanes** (acté 2026-06-27) : *structurés officiels* (CI, factures) → extraction
+  template + auto-validation ; *non-structurés* (docx mémos, articles PDF) → **lane RAG** (retrieval, pas
+  d'extraction). Les docx sont **volontairement** non-structurés ; **aucun document officiel en .docx**.
 - Hors-scope tant que la valeur n'est pas étendue : stages ④⑤, UI de revue, gouvernance/trace.
 
 ## Fait (2026-06-26) — la thèse prouvée bout-en-bout
