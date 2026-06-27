@@ -1,7 +1,7 @@
 {
-  "template_id": "facture_interne_01",
+  "template_id": "facture_sortante_01",
   "category": "facture",
-  "description": "Outgoing invoice, internal issuer, layout 01. Born-digital PDF: PyMuPDF returns label+value glued in one block, so fields are extracted by text regex, not geometry anchors. Match is STRUCTURAL (generic invoice vocabulary) on purpose — this repo is public, so no party name is embedded as an anchor. Distinguishes the invoice layout from the matching mise-en-demeure letter (no 'Montant TTC' / 'autoliquidation').",
+  "description": "Outgoing invoice (internal issuer), born-digital PDF. PyMuPDF returns label+value glued in one block, so fields are extracted by text regex, not geometry anchors. Match anchors are STRUCTURAL (generic invoice vocabulary), never a party name — this repo is public; extracted party values stay at runtime in gitignored outputs/. Distinguishes the invoice layout from the matching mise-en-demeure letter (no 'Montant TTC' / 'autoliquidation').",
   "match": { "all_anchors": ["Désignation", "Montant TTC", "autoliquidation"] },
   "fields": [
     { "name": "numero_facture", "pattern": "FACTURE N[°o]\\s*(.+?)\\s+du\\b" },

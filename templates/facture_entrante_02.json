@@ -1,0 +1,35 @@
+{
+  "template_id": "facture_entrante_02",
+  "category": "facture",
+  "description": "Incoming supplier invoice (TVA autoliquidation, comma decimals). Born-digital PDF, text-regex extraction. Match anchors are structural (generic invoice vocabulary), never a party name — this repo is public.",
+  "match": { "all_anchors": ["Libellé", "Total TTC", "Détail de la TVA"] },
+  "fields": [
+    { "name": "numero_facture", "pattern": "N[°o]\\s*:\\s*(FAC\\d+)" },
+    {
+      "name": "date_facture",
+      "pattern": "Date\\s*:\\s*(\\d{2}/\\d{2}/\\d{4})",
+      "normalize": "date_ddmmyyyy"
+    },
+    { "name": "numero_client", "pattern": "N[°o] client\\s*:\\s*(CLT\\d+)" },
+    {
+      "name": "total_ht",
+      "pattern": "Total HT\\s+([\\d\\s]+,\\d{2})",
+      "normalize": "amount"
+    },
+    {
+      "name": "montant_tva",
+      "pattern": "\\bTVA\\s+([\\d\\s]*\\d,\\d{2})",
+      "normalize": "amount"
+    },
+    {
+      "name": "total_ttc",
+      "pattern": "Total TTC\\s+([\\d\\s]+,\\d{2})",
+      "normalize": "amount"
+    },
+    {
+      "name": "date_echeance",
+      "pattern": "\\bau\\s+(\\d{2}/\\d{2}/\\d{4})",
+      "normalize": "date_ddmmyyyy"
+    }
+  ]
+}

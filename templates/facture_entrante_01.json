@@ -1,0 +1,24 @@
+{
+  "template_id": "facture_entrante_01",
+  "category": "facture",
+  "description": "Incoming supplier invoice (TVA autoliquidation). Born-digital PDF, text-regex extraction. Match anchors are structural (generic invoice vocabulary), never a party name — this repo is public.",
+  "match": { "all_anchors": ["Sous-total", "Description", "Période"] },
+  "fields": [
+    { "name": "numero_facture", "pattern": "Facture n[°o]\\s*(\\d+)" },
+    {
+      "name": "date_facture",
+      "pattern": "\\bDate\\s+(\\d{2}/\\d{2}/\\d{4})",
+      "normalize": "date_ddmmyyyy"
+    },
+    {
+      "name": "date_echeance",
+      "pattern": "Échéance\\s+(\\d{2}/\\d{2}/\\d{4})",
+      "normalize": "date_ddmmyyyy"
+    },
+    {
+      "name": "total_ht",
+      "pattern": "Total HT\\s+([\\d\\s]+,\\d{2})",
+      "normalize": "amount"
+    }
+  ]
+}

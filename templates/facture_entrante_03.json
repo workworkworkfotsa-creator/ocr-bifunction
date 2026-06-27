@@ -1,0 +1,15 @@
+{
+  "template_id": "facture_entrante_03",
+  "category": "facture",
+  "description": "Incoming supplier invoice (TVA non applicable art. 293 B, DOT decimals, textual month date). Born-digital PDF, text-regex extraction. Match anchors are structural (generic invoice vocabulary), never a party name — this repo is public.",
+  "match": { "all_anchors": ["Intitulé", "Prix unitaire", "293 B"] },
+  "fields": [
+    { "name": "numero_facture", "pattern": "FACTURE\\s+(\\d+)" },
+    { "name": "date_facture", "pattern": "Date\\s+([A-Za-zÉÛÀ]+\\s+\\d{4})" },
+    {
+      "name": "total_ht",
+      "pattern": "Total HT\\s+(\\d+\\.\\d{2})",
+      "normalize": "amount"
+    }
+  ]
+}
