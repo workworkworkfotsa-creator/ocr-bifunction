@@ -165,4 +165,23 @@ def parse_td1(mrz_lines: list[str]) -> MrzFields:
                 numeric_line[14]
             )
 
+    # Composite check digit (ICAO 9303 TD1, line 2 position 30): the strongest single
+    # signal — it ties the document, birth and expiry fields into one block, so it
+    # catches an internally inconsistent MRZ. Input is L1[6-30] + L2[1-7] + L2[9-15] +
+    # L2[19-29] (1-indexed). Computable only when both physical lines were recovered.
+    if (
+        document_line is not None
+        and numeric_line is not None
+        and numeric_line[29].isdigit()
+    ):
+        composite_input = (
+            document_line[5:30]
+            + numeric_line[0:7]
+            + numeric_line[8:15]
+            + numeric_line[18:29]
+        )
+        fields.checks["composite"] = icao_check_digit(composite_input) == int(
+            numeric_line[29]
+        )
+
     return fields

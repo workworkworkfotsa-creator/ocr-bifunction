@@ -14,8 +14,9 @@ from dataclasses import dataclass, field
 
 from ocr_bifunction.mrz import MrzFields
 
-# recto template field name -> MrzFields attribute
-_KEY_MAP = {
+# recto template field name -> MrzFields attribute. Public: the pipeline reuses it to
+# backfill a missing recto field from the MRZ (same recto<->MRZ correspondence).
+KEY_MAP = {
     "numero_document": "document_number",
     "nom": "surname",
     "prenoms": "given_names",
@@ -41,7 +42,7 @@ def reconcile(recto_fields: dict[str, str | None], mrz: MrzFields) -> ReconcileR
     key_matches: dict[str, bool] = {}
     reasons: list[str] = []
 
-    for recto_key, mrz_attribute in _KEY_MAP.items():
+    for recto_key, mrz_attribute in KEY_MAP.items():
         recto_value = recto_fields.get(recto_key)
         mrz_value = getattr(mrz, mrz_attribute)
         if recto_value is None or mrz_value is None:
