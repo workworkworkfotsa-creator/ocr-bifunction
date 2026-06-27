@@ -1,0 +1,44 @@
+{
+  "template_id": "facture_interne_01",
+  "category": "facture",
+  "description": "Outgoing invoice, internal issuer, layout 01. Born-digital PDF: PyMuPDF returns label+value glued in one block, so fields are extracted by text regex, not geometry anchors. Match is STRUCTURAL (generic invoice vocabulary) on purpose — this repo is public, so no party name is embedded as an anchor. Distinguishes the invoice layout from the matching mise-en-demeure letter (no 'Montant TTC' / 'autoliquidation').",
+  "match": { "all_anchors": ["Désignation", "Montant TTC", "autoliquidation"] },
+  "fields": [
+    { "name": "numero_facture", "pattern": "FACTURE N[°o]\\s*(.+?)\\s+du\\b" },
+    {
+      "name": "date_facture",
+      "pattern": "FACTURE N[°o].+?\\bdu\\s+(\\d{2}/\\d{2}/\\d{4})",
+      "normalize": "date_ddmmyyyy"
+    },
+    { "name": "reference", "pattern": "Référence\\s*:\\s*([A-Z0-9]{3,})" },
+    {
+      "name": "client",
+      "pattern": "\\nC([A-ZÉÈÀ][A-Za-zÀ-ÿ ]+?)\\s*\\nCode client"
+    },
+    {
+      "name": "montant_ht",
+      "pattern": "Montant HT\\s+([\\d\\s]+,\\d{2})",
+      "normalize": "amount"
+    },
+    {
+      "name": "montant_tva",
+      "pattern": "Montant TVA\\s+([\\d\\s]+,\\d{2})",
+      "normalize": "amount"
+    },
+    {
+      "name": "montant_ttc",
+      "pattern": "Montant TTC\\s+([\\d\\s]+,\\d{2})",
+      "normalize": "amount"
+    },
+    {
+      "name": "net_a_payer",
+      "pattern": "Net à payer\\s+([\\d\\s]+,\\d{2})",
+      "normalize": "amount"
+    },
+    {
+      "name": "date_echeance",
+      "pattern": "payable le\\s+(\\d{2}/\\d{2}/\\d{4})",
+      "normalize": "date_ddmmyyyy"
+    }
+  ]
+}

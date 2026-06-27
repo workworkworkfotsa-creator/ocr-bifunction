@@ -109,15 +109,40 @@ def _normalize_value(value: str, rule: str) -> str:
         digits = re.sub(r"\D", "", value)
         if len(digits) == 8:
             return f"{digits[4:]}-{digits[2:4]}-{digits[0:2]}"  # DDMMYYYY -> ISO
+    if rule == "amount":
+        # French thousands separators (space / NBSP / narrow NBSP) -> bare number.
+        return re.sub(r"[\s  ]", "", value)
     if rule == "upper":
         return value.upper()
     return value
 
 
+def _extract_by_pattern(document_text: str, field: dict) -> str | None:
+    """Extract a field by regex over the document text (group 1, else the whole match).
+
+    Born-digital PDFs glue a label to its value inside one PyMuPDF block, so geometry
+    anchors do not apply — these fields name a regex instead.
+    """
+    match = re.search(field["pattern"], document_text)
+    if match is None:
+        return None
+    value = match.group(1) if match.groups() else match.group(0)
+    return _normalize_value(value, field.get("normalize", "strip"))
+
+
 def extract_fields(lines: list[TextLine], template: dict) -> dict[str, str | None]:
-    """Rebuild the template's named fields from the line geometry."""
+    """Rebuild the template's named fields, by geometry anchors OR by text patterns.
+
+    A field with a `pattern` key is extracted by regex over the document text (born-digital
+    invoices, where PyMuPDF glues label+value in one block). A field with an `anchor` key
+    uses the geometry path (scanned cards). A template may mix both.
+    """
+    document_text = "\n".join(line.text for line in lines)
     extracted: dict[str, str | None] = {}
     for field in template["fields"]:
+        if "pattern" in field:
+            extracted[field["name"]] = _extract_by_pattern(document_text, field)
+            continue
         anchor_line = _find_anchor_line(lines, field["anchor"])
         if anchor_line is None:
             extracted[field["name"]] = None
