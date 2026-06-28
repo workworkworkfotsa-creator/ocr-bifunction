@@ -13,9 +13,12 @@
 ## État au 2026-06-28
 
 **Porte d'entrée CI prouvée bout-en-bout + pipeline câblé + extraction factures multi-layout + lecture
-couverte (RapidOCR + Docling fallback) ; benchmark VLM-OCR amorcé.** POC solo sur `master`, pas de remote.
-Dernier commit `cf40d7b` (+ doc/gitignore non commités au moment d'écrire). **Pas de tests pytest** — oracle
-= runs réels sur vrais docs + smokes structurels + KAT (composite MRZ), conforme à la discipline smoke-first.
+couverte (RapidOCR + Docling fallback) ; LightOnOCR-2 validé en moteur d'escalade.** POC solo sur `master`,
+pas de remote. Dernier commit `41e720a`, **working tree propre**. **Pas de tests pytest** — oracle = runs
+réels sur vrais docs + smokes structurels + KAT (composite MRZ), conforme à la discipline smoke-first.
+
+> ▶ **NEXT (reprise) — Maquette API.** Lire d'abord `docs/briefs/BRIEF-api-maquette.md` (gitignored, présent
+> sur disque), puis construire `api_maquette.py`. Démarrage : `uv add --dev fastapi "uvicorn[standard]"`.
 
 Historique : `3fcc7a8` baseline ①②③ · `3c3d055` HANDOFF+hook · `19e8041` slot Preprocessor ·
 `395e9e3` MRZ parse · `3680c87` rectifier + TD1.
