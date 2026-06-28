@@ -11,3 +11,9 @@ outputs/
 
 # Real input documents — may contain personal data (CI, factures); keep out of git
 inputs/
+
+# Local OCR model weights (GGUF) — large binaries, never committed
+models/
+
+# Reference reading (3rd-party blog posts, copyrighted) — not ours to publish
+docs/Brainstoms/

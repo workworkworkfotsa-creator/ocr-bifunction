@@ -69,10 +69,33 @@ uv run pytest path/to/test_x.py::test_name   # un seul test
 uv run pytest -k "expr" -x    # filtre par nom, stop au 1er échec
 ```
 
-> **État actuel du repo** : squelette `uv init` (Python ≥ 3.12, `main.py` = hello-world, 0 dépendance,
-> pas encore de tests). Premier livrable attendu = le smoke « lire + catégoriser N vrais docs » qui tranche
-> le moteur OCR (cf. *Garde-fou anti-cimetière*). Toute l'archi des étages ci-dessus est **cible**, pas
-> encore implémentée.
+> **État actuel du repo** (2026-06-28) : la porte d'entrée **①②③ est implémentée et prouvée sur de vrais
+> docs** — plus un squelette. Tournent : pipeline CI `process_ci_pair` (recto↔verso, raw-first→enhance-retry,
+> verdict auto/human), MRZ TD1+legacy (4 checksums ICAO dont composite), extraction factures born-digital
+> (mode regex, 4 templates), moteur OCR RapidOCR + **Docling fallback**. Oracle = **runs réels** (pas de
+> pytest). Détail vivant → [HANDOFF.md](HANDOFF.md) ; vision + état du moteur OCR « API » → section ci-dessous.
+
+## Où on en est + vision émergente (actualisé 2026-06-28)
+
+Porte d'entrée **prouvée** sur de vrais docs (CI recto↔verso AUTO ; factures lues + extraites). La section
+« Hors scope » ci-dessus se relâche donc : l'extension a commencé, **déduite des principes** — pas spéculative.
+
+### CATÉGORISER = 2 lanes
+- **Structurés officiels** (CI, factures) → OCR + **template d'extraction** (1 par type/layout ; les
+  `templates/*.json` = proxy d'une future table BD) + **auto-validation config-driven** : calculer TOUS les
+  checks disponibles (ex. 4 checksums MRZ), un config par template dit lesquels sont requis. L'humain curate ;
+  un SLM pourra *suggérer* un template pour un doc structuré jamais vu → l'humain valide → croissance organique.
+- **Non-structurés** (mémos docx, articles) → **lane RAG** (retrieval), **aucune extraction**.
+
+### Moteur OCR — où on en est (l'« API »)
+Le moteur est un **slot jetable** (`OcrEngine`). Mesuré sur le hardware cible (8 Go, sans GPU) :
+- **API (secondes) = OCR classique rapide** : couche-texte (PyMuPDF, ms) puis **RapidOCR** (3.7–20.7 s/img).
+  Seule voie tenable en temps réel.
+- **Batch/escalade = plus lourd** : Docling (layout + reading-order, backend RapidOCR) et les VLM OCR.
+- **VLM OCR sur CPU = batch only, JAMAIS l'API** (mesuré). granite-docling-258M : 5–34 min/img *et* échoue sur
+  les photos d'écran (modèle doc-conversion, mauvais outil ici). **≤1B borne la taille, pas la latence CPU.**
+  À tester côté qualité sur images dures : **LightOnOCR** (1B), préféré aussi **RGPD** (LightOn = société
+  française, on traite de la PII). Voie rapide = GGUF + llama.cpp (besoin du mmproj). Détail → [HANDOFF.md](HANDOFF.md).
 
 ## Garde-fou anti-cimetière
 

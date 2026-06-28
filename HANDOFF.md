@@ -10,12 +10,12 @@
 > repo ni l'historique (audité 2026-06-26). **Ce repo part sur GitHub** → ne jamais `git add -f` un doc,
 > ne jamais coller de valeur réelle (nom, n°doc, adresse) dans le code, les docs ou un message de commit.
 
-## État au 2026-06-27
+## État au 2026-06-28
 
-**Porte d'entrée CI prouvée bout-en-bout + pipeline câblé + extraction factures multi-layout, sur de vrais
-docs ; + lecture couverte (RapidOCR + Docling fallback).** POC solo sur `master`, pas de remote. Dernier
-commit `6a74fe6`. **Pas de tests pytest** — oracle = runs réels sur vrais docs + smokes structurels + KAT
-(composite MRZ), conforme à la discipline smoke-first.
+**Porte d'entrée CI prouvée bout-en-bout + pipeline câblé + extraction factures multi-layout + lecture
+couverte (RapidOCR + Docling fallback) ; benchmark VLM-OCR amorcé.** POC solo sur `master`, pas de remote.
+Dernier commit `cf40d7b` (+ doc/gitignore non commités au moment d'écrire). **Pas de tests pytest** — oracle
+= runs réels sur vrais docs + smokes structurels + KAT (composite MRZ), conforme à la discipline smoke-first.
 
 Historique : `3fcc7a8` baseline ①②③ · `3c3d055` HANDOFF+hook · `19e8041` slot Preprocessor ·
 `395e9e3` MRZ parse · `3680c87` rectifier + TD1.
@@ -78,13 +78,25 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   → batch/escalade. **Backend OCR de Docling = RapidOCR** → valeur ajoutée = layout/reading-order (RAG), PAS une
   meilleure reconnaissance brute que RapidOCR seul. Commit `6a74fe6`.
 
-## Prochain pas (la roadmap lecture est couverte — décisions à trancher)
-**Lecture couverte** : text-layer (PyMuPDF) + RapidOCR (fast-path) + Docling (fallback batch) + docx (python-docx).
-1. **standard-Docling vs VLM granite-docling** : pour mieux *lire* les images dures, le levier = granite (autre
-   modèle), pas Docling standard (qui retombe sur RapidOCR). À mesurer sur une vraie image dure.
-2. **Routing fallback** : quand escalader RapidOCR → Docling (analogue au raw-first → enhance, au niveau moteur).
-3. **Lane RAG** (docx + articles PDF) : monter le sous-système retrieval, ou rester une étiquette pour l'instant.
-4. **Validation facture** (cohérence HT+TVA=TTC) = futur « template de validation » config-driven
+## Fait (2026-06-28)
+- **Benchmark VLM-OCR amorcé** sur images dures (photos d'écran `inputs/HP_preuve de testes`, gitignorées ;
+  Tesseract n'en sortait que du bruit). **granite-docling-258M via Docling (transformers, CPU) = ÉCHEC** :
+  2051 s et 307 s/img, sortie poubelle (`0 0 0…` en boucle / « Screenshot »). Modèle doc-conversion, inadapté
+  aux photos d'écran. **Finding clé : ≤1B borne la taille, PAS la latence CPU** → VLM OCR = batch only, jamais
+  l'API. (Throwaway, non commité.)
+- **Ressources provisionnées (gitignorées)** : `models/` (GGUF locaux : granite-docling, PaddleOCR-VL,
+  LightOnOCR ×2 + embeddings), `docs/Brainstoms/` (2 posts ref VLM-OCR + Surya×Docling). `.gitignore` durci.
+- **Setup VLM local** : llama-swap (`~/Tools`) = texte only, **aucun mmproj** → voie GGUF/llama.cpp bloquée
+  tant qu'on n'a pas les projecteurs vision. Sur Windows, tout download HF exige `HF_HUB_DISABLE_SYMLINKS=1`.
+
+## Prochain pas (décisions à trancher — l'utilisateur tranche les A/B)
+1. **LightOnOCR (1B, RGPD-français) sur images dures** — vrai OCR ≠ granite doc-conversion. Voies : (A) GGUF +
+   llama.cpp = besoin du **mmproj** LightOnOCR (à récupérer sur HF) ; (B) transformers local (qualité, ~30 min/img) ;
+   (C) HF Space (rapide mais ⚠️ **pas d'upload de PII** sur service public). Cf. mémoire `lighton-ocr-french-rgpd-preference`.
+2. **Acter VLM = batch/escalade only**, API sur RapidOCR (le finding latence pointe là).
+3. **Routing fallback** : quand escalader RapidOCR → Docling/VLM (cascade niveau moteur).
+4. **Lane RAG** (docx + articles) : monter le retrieval, ou rester une étiquette.
+5. **Validation facture** (HT+TVA=TTC) = futur « template de validation » config-driven
    (mémoire `template-validation-architecture-direction`).
 - Dettes mineures : décimales virgule/point ; date textuelle `facture_entrante_03` (« AOUT 2022 ») non ISO-isable ;
   gate cascade verso config-driven (composite-based).
