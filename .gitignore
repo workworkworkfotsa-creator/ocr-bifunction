@@ -17,3 +17,6 @@ models/
 
 # Reference reading (3rd-party blog posts, copyrighted) — not ours to publish
 docs/Brainstoms/
+
+# Working briefs + cross-project meta-cadrage (Claude.ai discussions) — internal, not public
+docs/briefs/

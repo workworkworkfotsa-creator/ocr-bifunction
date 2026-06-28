@@ -88,18 +88,23 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   LightOnOCR ×2 + embeddings), `docs/Brainstoms/` (2 posts ref VLM-OCR + Surya×Docling). `.gitignore` durci.
 - **Setup VLM local** : llama-swap (`~/Tools`) = texte only, **aucun mmproj** → voie GGUF/llama.cpp bloquée
   tant qu'on n'a pas les projecteurs vision. Sur Windows, tout download HF exige `HF_HUB_DISABLE_SYMLINKS=1`.
+- **LightOnOCR-2-1B VALIDÉ (verdict utilisateur) comme moteur OCR d'escalade/batch** : tourne sur `b9542`
+  (l'issue llama.cpp #18943 « not planned » était trompeuse — prouvé en le lançant). **Qualité parfaite** sur les
+  photos d'écran HP là où Tesseract=bruit et granite=poubelle (markdown structuré, serials lus). RAM ~1.8 Go.
+  **Latence ~171 s/img CPU → batch/escalade, jamais l'API.** Acté : **API = RapidOCR ; escalade cas durs =
+  LightOnOCR-2.** mmproj Q8 dans `models/` (gitignored). Cf. mémoire `lighton-ocr-french-rgpd-preference`.
+- **3 briefs ajoutés** (`docs/briefs/`, gitignored — internes) : maquette API (phase suivante), lane
+  suggestion-template (GBNF), CADRAGE-META (machine commune des 3 repos).
 
-## Prochain pas (décisions à trancher — l'utilisateur tranche les A/B)
-1. **LightOnOCR (1B, RGPD-français) sur images dures** — vrai OCR ≠ granite doc-conversion. Voies : (A) GGUF +
-   llama.cpp = besoin du **mmproj** LightOnOCR (à récupérer sur HF) ; (B) transformers local (qualité, ~30 min/img) ;
-   (C) HF Space (rapide mais ⚠️ **pas d'upload de PII** sur service public). Cf. mémoire `lighton-ocr-french-rgpd-preference`.
-2. **Acter VLM = batch/escalade only**, API sur RapidOCR (le finding latence pointe là).
-3. **Routing fallback** : quand escalader RapidOCR → Docling/VLM (cascade niveau moteur).
-4. **Lane RAG** (docx + articles) : monter le retrieval, ou rester une étiquette.
-5. **Validation facture** (HT+TVA=TTC) = futur « template de validation » config-driven
-   (mémoire `template-validation-architecture-direction`).
-- Dettes mineures : décimales virgule/point ; date textuelle `facture_entrante_03` (« AOUT 2022 ») non ISO-isable ;
-  gate cascade verso config-driven (composite-based).
+## Prochain pas
+1. **PHASE SUIVANTE — Maquette API** (spec complète → `docs/briefs/BRIEF-api-maquette.md`) : FastAPI **fin** au-dessus
+   de `process_ci_pair` (contrat `POST /v1/documents:validate` + `GET /v1/jobs/{id}`, mapping verdict→status, stub
+   202/job_id, idempotence légère). **Ne PAS toucher** au pipeline/moteurs. `fastapi`+`uvicorn` en `--dev`. Smoke =
+   les 3 cas vus dans `/docs` (validated / needs_review / 202).
+2. **Routing escalade** : RapidOCR (échec/low-conf) → LightOnOCR-2 (batch/async).
+3. **Lane suggestion-template** (SLM/GBNF) — spec → `docs/briefs/BRIEF-suggestion-template.md` (global, plus tard).
+4. **Lane RAG** (docx + articles) ; **Validation facture** (HT+TVA=TTC, template de validation config-driven).
+- Dettes mineures : décimales virgule/point ; date textuelle `facture_entrante_03` ; mmproj F32 (qualité max ; Q8 déjà OK).
 
 ## Suivis ouverts
 - **CLAUDE.md « État actuel du repo »** = **périmé** (dit « archi pas implémentée » alors que ①②③ + MRZ
