@@ -13,12 +13,16 @@
 ## État au 2026-06-28
 
 **Porte d'entrée CI prouvée bout-en-bout + pipeline câblé + extraction factures multi-layout + lecture
-couverte (RapidOCR + Docling fallback) ; LightOnOCR-2 validé en moteur d'escalade.** POC solo sur `master`,
-pas de remote. Dernier commit `41e720a`, **working tree propre**. **Pas de tests pytest** — oracle = runs
-réels sur vrais docs + smokes structurels + KAT (composite MRZ), conforme à la discipline smoke-first.
+couverte (RapidOCR + Docling fallback) ; LightOnOCR-2 validé en moteur d'escalade ; maquette API écrite
+(contrat structurel prouvé, smoke vraies images EN ATTENTE).** POC solo sur `master`, pas de remote.
+Dernier commit = `feat: API maquette` (cette session). **Pas de tests pytest** — oracle = runs réels sur
+vrais docs + smokes structurels + KAT (composite MRZ), conforme à la discipline smoke-first.
 
-> ▶ **NEXT (reprise) — Maquette API.** Lire d'abord `docs/briefs/BRIEF-api-maquette.md` (gitignored, présent
-> sur disque), puis construire `api_maquette.py`. Démarrage : `uv add --dev fastapi "uvicorn[standard]"`.
+> ▶ **NEXT (reprise) — Smoke vraies images de la maquette API (DoD non clos).** Le contrat structurel est
+> prouvé (202/job/404/400/idempotence via `TestClient`), mais les 2 cas verdict sur de vraies CI ne sont
+> **pas** encore lancés (utilisateur absent du PC au commit). Lancer : `uv run uvicorn api_maquette:app
+> --reload` → `/docs` → paire concordante = `validated`, recto A + verso B = `needs_review`. Tant que ce
+> smoke n'est pas vert, la maquette est « écrite », pas « prouvée ».
 
 Historique : `3fcc7a8` baseline ①②③ · `3c3d055` HANDOFF+hook · `19e8041` slot Preprocessor ·
 `395e9e3` MRZ parse · `3680c87` rectifier + TD1.
@@ -98,12 +102,19 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   LightOnOCR-2.** mmproj Q8 dans `models/` (gitignored). Cf. mémoire `lighton-ocr-french-rgpd-preference`.
 - **3 briefs ajoutés** (`docs/briefs/`, gitignored — internes) : maquette API (phase suivante), lane
   suggestion-template (GBNF), CADRAGE-META (machine commune des 3 repos).
+- **Maquette API écrite** (`api_maquette.py`) : FastAPI **fin** au-dessus de `process_ci_pair` (pipeline/moteurs
+  **non touchés**). Contrat Pydantic `ValidateRequest`/`ValidateResponse`/`JobResponse` ; `POST
+  /v1/documents:validate` (décode base64 → fichiers temp système nettoyés → mapping `auto→validated` /
+  `human→needs_review`) ; stub `pending`/202 sur flag debug `force_pending` ; `GET /v1/jobs/{id}` en mémoire
+  (reste `pending`, pas de worker) ; idempotence jouet par `request_id` ; moteur RapidOCR lazy (1 seule
+  construction). `fastapi 0.138.1` + `uvicorn 0.49.0` en `--dev` (uv.lock à jour). **Smoke structurel vert**
+  (202/job/404/400/idempotence via `TestClient`). **Smoke vraies images (validated/needs_review) PAS encore
+  fait** → DoD non clos (cf. NEXT). Friction shell notée : `uv`/`git` hors PATH Git Bash → route `cmd.exe`
+  chemin absolu (`MSYS_NO_PATHCONV=1`) ; PowerShell bloqué par règle `deny` (pas dans `settings.json` global).
 
 ## Prochain pas
-1. **PHASE SUIVANTE — Maquette API** (spec complète → `docs/briefs/BRIEF-api-maquette.md`) : FastAPI **fin** au-dessus
-   de `process_ci_pair` (contrat `POST /v1/documents:validate` + `GET /v1/jobs/{id}`, mapping verdict→status, stub
-   202/job_id, idempotence légère). **Ne PAS toucher** au pipeline/moteurs. `fastapi`+`uvicorn` en `--dev`. Smoke =
-   les 3 cas vus dans `/docs` (validated / needs_review / 202).
+1. **CLORE le DoD de la maquette** : lancer le smoke `/docs` sur de vraies CI (validated + needs_review).
+   Tant qu'il n'est pas vert, la maquette reste « écrite », pas « prouvée ». Cf. NEXT en tête.
 2. **Routing escalade** : RapidOCR (échec/low-conf) → LightOnOCR-2 (batch/async).
 3. **Lane suggestion-template** (SLM/GBNF) — spec → `docs/briefs/BRIEF-suggestion-template.md` (global, plus tard).
 4. **Lane RAG** (docx + articles) ; **Validation facture** (HT+TVA=TTC, template de validation config-driven).

@@ -14,5 +14,7 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "fastapi>=0.138.1",
     "ruff>=0.15.20",
+    "uvicorn[standard]>=0.49.0",
 ]
