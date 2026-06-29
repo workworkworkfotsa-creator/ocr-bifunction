@@ -82,11 +82,21 @@ def read_verso_mrz(verso_path: Path, engine: OcrEngine) -> tuple[MrzFields | Non
 
 
 def read_recto_fields(
-    recto_path: Path, engine: OcrEngine, templates_directory: Path
+    recto_path: Path,
+    engine: OcrEngine,
+    templates_directory: Path,
+    category: str | None = None,
 ) -> tuple[str | None, dict[str, str | None] | None]:
-    """Read the recto, match a template and rebuild its fields. None if no template."""
+    """Read the recto, match a template and rebuild its fields. None if no template.
+
+    `category` scopes template matching to one document type (e.g. "carte_identite"):
+    when the upload field already knows the type, only that category's templates are
+    tried. None tries every template (the default).
+    """
     result = read_document(recto_path, engine)
-    template = match_template(result.lines, load_templates(templates_directory))
+    template = match_template(
+        result.lines, load_templates(templates_directory, category)
+    )
     if template is None:
         return None, None
     return template["template_id"], extract_fields(result.lines, template)
@@ -113,10 +123,15 @@ def process_ci_pair(
     verso_path: Path,
     engine: OcrEngine,
     templates_directory: Path,
+    category: str | None = None,
 ) -> CiRecord:
-    """Read a CI recto+verso pair and return one consolidated record + auto/human verdict."""
+    """Read a CI recto+verso pair and return one consolidated record + auto/human verdict.
+
+    `category` is the optional document-type hint forwarded to recto template matching:
+    e.g. "carte_identite" restricts matching to CI templates only. None tries every one.
+    """
     template_id, recto_fields = read_recto_fields(
-        recto_path, engine, templates_directory
+        recto_path, engine, templates_directory, category
     )
     mrz, verso_read_path = read_verso_mrz(verso_path, engine)
     merged_fields = _consolidate(recto_fields, mrz)
@@ -125,7 +140,11 @@ def process_ci_pair(
     if recto_fields is None or mrz is None:
         reasons: list[str] = []
         if recto_fields is None:
-            reasons.append("recto: no template matched")
+            reasons.append(
+                f"recto: no '{category}' template matched"
+                if category
+                else "recto: no template matched"
+            )
         if mrz is None:
             reasons.append("verso: no MRZ parsed (raw and enhance both failed)")
         return CiRecord(

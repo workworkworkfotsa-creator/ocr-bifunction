@@ -86,6 +86,14 @@ class ValidateRequest(BaseModel):
     filename: str = Field(description="Original name, used only for the file suffix.")
     recto_base64: str = Field(description="Recto image bytes, base64-encoded.")
     verso_base64: str = Field(description="Verso image bytes, base64-encoded.")
+    document_type: str | None = Field(
+        default=None,
+        description=(
+            "Optional document-type hint (e.g. 'carte_identite'). When the upload field "
+            "already knows the type, template matching is scoped to that category only "
+            "(an invoice template can never accidentally match). None tries every template."
+        ),
+    )
     request_id: str | None = Field(
         default=None,
         description="Idempotency key: replaying it returns the first result verbatim.",
@@ -104,6 +112,7 @@ class ValidateRequest(BaseModel):
                 "filename": "ci.jpg",
                 "recto_base64": "<base64 of the recto image>",
                 "verso_base64": "<base64 of the verso image>",
+                "document_type": "carte_identite",
                 "request_id": "demo-1",
                 "force_pending": False,
             }
@@ -189,7 +198,11 @@ def _run_pipeline(request: ValidateRequest) -> ValidateResponse:
         verso_path.write_bytes(verso_bytes)
         try:
             record = process_ci_pair(
-                recto_path, verso_path, _get_engine(), TEMPLATES_DIRECTORY
+                recto_path,
+                verso_path,
+                _get_engine(),
+                TEMPLATES_DIRECTORY,
+                category=request.document_type,
             )
         except Exception as error:  # surface a pipeline/engine crash as 5xx, don't hide
             raise HTTPException(

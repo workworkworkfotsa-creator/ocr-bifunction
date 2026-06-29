@@ -116,8 +116,14 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   vraies CI : **paire concordante → 200 `validated`/`auto`** (0 reason) ; **recto A + verso B → 200
   `needs_review`/`human`** avec 3 reasons de mismatch réel (`numero_document`, `nom`, `prenoms`) — c'est la
   détection « recto A + verso B » qui tire, PAS le fallback « no MRZ ». La maquette est désormais **prouvée**,
-  plus « écrite ». Script throwaway en scratchpad (paths absolus + lit des inputs gitignorés → non versionné,
-  zéro PII en repo).
+  plus « écrite ». Smoke versionné `api_smoke_real.py` (argv `<recto> <verso>` + `--expect`, zéro PII).
+- **API : argument optionnel `document_type` (hint de catégorie).** Un champ d'upload qui connaît déjà le type
+  (« carte d'identité ») le passe → le matching de template est scopé à cette `category` seule (un template
+  facture ne peut plus matcher par accident ; matching moins cher). Câblé `ValidateRequest.document_type` →
+  `process_ci_pair(category=…)` → `read_recto_fields` → `load_templates(directory, category)`. Défaut `None` =
+  tous les templates (comportement **inchangé**). Prouvé sur vraies images : hint `carte_identite` → `validated` ;
+  mauvais hint `facture` sur une CI → `needs_review` + raison « recto: no 'facture' template matched ». Le smoke
+  versionné a un flag `--document-type`.
 
 ## Prochain pas
 1. **Routing escalade** : RapidOCR (échec/low-conf) → LightOnOCR-2 (batch/async).

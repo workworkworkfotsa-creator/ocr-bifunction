@@ -25,11 +25,23 @@ COLUMN_X_TOLERANCE = 60.0
 ROW_Y_TOLERANCE = 25.0
 
 
-def load_templates(directory: Path) -> list[dict]:
-    return [
+def load_templates(directory: Path, category: str | None = None) -> list[dict]:
+    """Load every template JSON, optionally keeping only one document category.
+
+    `category` is the optional document-type hint (e.g. "carte_identite"): when the
+    caller already knows the upload is a CI, only CI templates are considered — an
+    invoice template can never accidentally match, and matching is cheaper. None loads
+    every template (the default, category-agnostic behavior).
+    """
+    templates = [
         json.loads(path.read_text(encoding="utf-8"))
         for path in sorted(directory.glob("*.json"))
     ]
+    if category is not None:
+        templates = [
+            template for template in templates if template.get("category") == category
+        ]
+    return templates
 
 
 def _normalize_for_match(text: str) -> str:

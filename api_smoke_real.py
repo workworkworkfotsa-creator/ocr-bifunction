@@ -28,25 +28,33 @@ def _encode_image(image_path: Path) -> str:
     return base64.b64encode(image_path.read_bytes()).decode("ascii")
 
 
-def validate_pair(recto_path: Path, verso_path: Path) -> tuple[int, dict]:
+def validate_pair(
+    recto_path: Path, verso_path: Path, document_type: str | None = None
+) -> tuple[int, dict]:
     """POST one recto+verso pair to the maquette and return (http_status, body)."""
+    payload: dict[str, object] = {
+        "filename": recto_path.name,
+        "recto_base64": _encode_image(recto_path),
+        "verso_base64": _encode_image(verso_path),
+    }
+    if document_type is not None:
+        payload["document_type"] = document_type
     with TestClient(app) as client:
-        response = client.post(
-            "/v1/documents:validate",
-            json={
-                "filename": recto_path.name,
-                "recto_base64": _encode_image(recto_path),
-                "verso_base64": _encode_image(verso_path),
-            },
-        )
+        response = client.post("/v1/documents:validate", json=payload)
     return response.status_code, response.json()
 
 
-def main(recto_path: Path, verso_path: Path, expected_status: str | None) -> int:
-    http_status, body = validate_pair(recto_path, verso_path)
+def main(
+    recto_path: Path,
+    verso_path: Path,
+    expected_status: str | None,
+    document_type: str | None,
+) -> int:
+    http_status, body = validate_pair(recto_path, verso_path, document_type)
 
     print(f"recto   = {recto_path.name}")
     print(f"verso   = {verso_path.name}")
+    print(f"doc_type= {document_type}")
     print(f"HTTP    = {http_status}")
     print(f"status  = {body.get('status')}")
     print(f"verdict = {body.get('verdict')}")
@@ -75,7 +83,17 @@ if __name__ == "__main__":
         default=None,
         help="If set, exit non-zero unless the returned status matches.",
     )
+    parser.add_argument(
+        "--document-type",
+        default=None,
+        help="Optional document-type hint (e.g. carte_identite) scoping template match.",
+    )
     arguments = parser.parse_args()
     raise SystemExit(
-        main(arguments.recto_image, arguments.verso_image, arguments.expect)
+        main(
+            arguments.recto_image,
+            arguments.verso_image,
+            arguments.expect,
+            arguments.document_type,
+        )
     )
