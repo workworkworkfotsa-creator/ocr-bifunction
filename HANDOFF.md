@@ -239,8 +239,12 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
 ## Prochain pas
 1. **Au choix** (cf. NEXT) : tier génératif (résumé/Q&A LLM via `granite-chat`), OU dettes `reconcile`,
    OU lane suggestion-template (SLM/GBNF, global).
-2. **Dette `reconcile` (b)** : tolérance floue nom = **décision sécurité EN ATTENTE** (recommandation : rester
-   strict — le fix accents (a) a retiré les faux négatifs ; les écarts restants sont réels → human). (a) = FAIT.
+2. **Dette `reconcile` (b) — TRANCHÉE par l'utilisateur : rester STRICT (pas de flou nom).** Raison
+   métier (révélée 2026-06-29) : la **fraude réelle = frères aux noms proches** (Ahmed/Hamed/Ammed, 1-2
+   char) → un match flou ferait passer le cœur de la fraude en AUTO. L'accent et la fraude sont
+   **orthogonaux** : le folding (a) ne retire QUE les diacritiques (translittération ICAO, comme la MRZ)
+   → `André`=`ANDRE` mais `Ahmed`≠`Hamed`. Accents traités spécifiquement, noms proches restent détectés.
+   **Aucun code « flou » à ajouter — c'est une non-action actée.** Cf. mémoire `reconcile-name-match-strict`.
 3. **Lane suggestion-template** (SLM/GBNF) — spec → `docs/briefs/BRIEF-suggestion-template.md` (global, plus tard).
 4. **Validation facture — extensions** (si corpus s'élargit) : TVA non nulle réelle ; décimales mixtes ; multi-taux.
 - **Async côté IT (différé, leur territoire)** : `_jobs` dict → table `ocr_jobs_*` (D1), worker Python →
