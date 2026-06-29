@@ -36,7 +36,7 @@ class CiRecord:
     reasons: list[str] = field(default_factory=list)
     template_id: str | None = None
     mrz_format: str | None = None
-    verso_read_path: str = "none"  # which verso read won: "raw" | "enhance" | "none"
+    verso_read_path: str = "none"  # which read won: "raw"|"enhance"|"escalation"|"none"
     key_matches: dict[str, bool] = field(default_factory=dict)
     failed_checks: list[str] = field(default_factory=list)
 
@@ -54,31 +54,56 @@ def _passing_check_count(mrz: MrzFields | None) -> int:
     return sum(1 for passed in mrz.checks.values() if passed) if mrz else 0
 
 
-def read_verso_mrz(verso_path: Path, engine: OcrEngine) -> tuple[MrzFields | None, str]:
-    """Read the verso MRZ raw-first, retrying with enhancement only on the hard case.
+def _read_mrz(engine: OcrEngine, image_bytes: bytes) -> MrzFields | None:
+    """Recognize an image and parse its MRZ, or None if no MRZ lines surface."""
+    mrz_lines = extract_mrz_lines(engine.recognize(image_bytes))
+    return parse_mrz(mrz_lines) if mrz_lines else None
 
-    Returns (mrz, read_path) where read_path is "raw" | "enhance" | "none". The retry
-    keeps whichever read has MORE passing check digits; a tie or no gain stays on the
-    cheaper raw read.
+
+def _better_read(
+    current: MrzFields | None,
+    current_path: str,
+    candidate: MrzFields | None,
+    candidate_path: str,
+) -> tuple[MrzFields | None, str]:
+    """Keep the read with MORE passing check digits; a tie stays on the cheaper `current`."""
+    if candidate is None:
+        return current, current_path
+    if current is None:
+        return candidate, candidate_path
+    if _passing_check_count(candidate) > _passing_check_count(current):
+        return candidate, candidate_path
+    return current, current_path
+
+
+def read_verso_mrz(
+    verso_path: Path,
+    engine: OcrEngine,
+    escalation_engine: OcrEngine | None = None,
+) -> tuple[MrzFields | None, str]:
+    """Read the verso MRZ in tiers, escalating only when a cheaper tier is not trusted.
+
+    Cascade: raw -> enhance -> (optional) escalation_engine. Returns (mrz, read_path) where
+    read_path is "raw" | "enhance" | "escalation" | "none". Each tier keeps whichever read
+    has MORE passing check digits; a tie stays on the cheaper tier. The heavy escalation
+    engine (a VLM) runs ONLY when raw+enhance yield no trustworthy MRZ AND one is injected —
+    the API fast-path passes None and never pays the ~171 s/img cost.
     """
     raw_bytes = verso_path.read_bytes()
-    raw_mrz_lines = extract_mrz_lines(engine.recognize(raw_bytes))
-    raw_mrz = parse_mrz(raw_mrz_lines) if raw_mrz_lines else None
+    raw_mrz = _read_mrz(engine, raw_bytes)
     if _mrz_is_trustworthy(raw_mrz):
         return raw_mrz, "raw"
 
-    # Cheap path missing or a check failed -> escalate to the enhancement chain.
-    enhanced_bytes = EnhancePreprocessor().process(raw_bytes)
-    enhanced_mrz_lines = extract_mrz_lines(engine.recognize(enhanced_bytes))
-    enhanced_mrz = parse_mrz(enhanced_mrz_lines) if enhanced_mrz_lines else None
+    # Cheap path missing or a check failed -> retry with enhancement.
+    enhanced_mrz = _read_mrz(engine, EnhancePreprocessor().process(raw_bytes))
+    best_mrz, best_path = _better_read(raw_mrz, "raw", enhanced_mrz, "enhance")
+    if _mrz_is_trustworthy(best_mrz) or escalation_engine is None:
+        return (best_mrz, best_path) if best_mrz is not None else (None, "none")
 
-    if raw_mrz is None and enhanced_mrz is None:
-        return None, "none"
-    if _passing_check_count(enhanced_mrz) > _passing_check_count(raw_mrz):
-        return enhanced_mrz, "enhance"
-    if raw_mrz is not None:
-        return raw_mrz, "raw"
-    return enhanced_mrz, "enhance"
+    # Both cheap tiers exhausted and an escalation engine is wired in -> heavy VLM retry.
+    escalated_mrz = _read_mrz(escalation_engine, raw_bytes)
+    best_mrz, best_path = _better_read(best_mrz, best_path, escalated_mrz, "escalation")
+    return (best_mrz, best_path) if best_mrz is not None else (None, "none")
 
 
 def read_recto_fields(
@@ -124,16 +149,21 @@ def process_ci_pair(
     engine: OcrEngine,
     templates_directory: Path,
     category: str | None = None,
+    escalation_engine: OcrEngine | None = None,
 ) -> CiRecord:
     """Read a CI recto+verso pair and return one consolidated record + auto/human verdict.
 
     `category` is the optional document-type hint forwarded to recto template matching:
     e.g. "carte_identite" restricts matching to CI templates only. None tries every one.
+
+    `escalation_engine` is the optional HEAVY fallback (a VLM) for the verso MRZ: it runs
+    ONLY when raw+enhance fail the value-check. None (the API fast-path) never escalates —
+    the doubtful case routes to human, to be escalated asynchronously off the request path.
     """
     template_id, recto_fields = read_recto_fields(
         recto_path, engine, templates_directory, category
     )
-    mrz, verso_read_path = read_verso_mrz(verso_path, engine)
+    mrz, verso_read_path = read_verso_mrz(verso_path, engine, escalation_engine)
     merged_fields = _consolidate(recto_fields, mrz)
 
     # Either side missing means no cross-validation is possible -> human, by construction.

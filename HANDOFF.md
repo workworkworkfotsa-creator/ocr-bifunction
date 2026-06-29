@@ -18,10 +18,11 @@ sur vraies images (validated + needs_review).** POC solo sur `master`, pas de re
 `feat: API maquette`. **Pas de tests pytest** — oracle = runs réels sur vrais docs + smokes structurels +
 KAT (composite MRZ), conforme à la discipline smoke-first.
 
-> ▶ **NEXT (reprise) — Brancher l'escalade dans `pipeline.py`.** Le moteur `LightOnOcrEngine` est livré ET
-> l'escalade est PROUVÉE (VLM récupère une MRZ que RapidOCR rate → 4/4 checksums → HUMAIN→AUTO). Reste : dans
-> `process_ci_pair`, sur value-check raté (MRZ none / checksum KO après enhance) → retry `LightOnOcrEngine`,
-> puis forme **async fire-and-forget** (jamais bloquer l'API ; résultat via BD ; file sérialisée concurrence 1-2).
+> ▶ **NEXT (reprise) — Câblage async de l'escalade côté API.** Le palier escalade est branché dans
+> `process_ci_pair` (raw→enhance→VLM injecté) et la récupération est prouvée (MRZ none→td1, 4/4 checksums).
+> Reste : forme **async fire-and-forget** dans la maquette API (BackgroundTasks → `escalation_engine` hors du
+> chemin requête → résultat via job store/BD ; `pending`→`done` rendu réel ; file sérialisée concurrence 1-2).
+> L'API fast-path n'escalade jamais (`escalation_engine=None`) → le douteux part en async, ne bloque pas la page.
 
 Historique : `3fcc7a8` baseline ①②③ · `3c3d055` HANDOFF+hook · `19e8041` slot Preprocessor ·
 `395e9e3` MRZ parse · `3680c87` rectifier + TD1.
@@ -137,17 +138,29 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   `ocr_bifunction/lightonocr_engine.py`) : shell vers `llama-mtmd-cli` (build b9542) + GGUF + mmproj, chemins
   configurables (arg > env `LIGHTONOCR_BINARY|MODEL|MMPROJ` > défaut). GGUF principal copié dans `models/`
   (gitignoré). **Valeur prouvée sur le cas le plus dur** : un verso CI dont RapidOCR ne parsait PAS la MRZ
-  (`read_path=none`) → le VLM récupère la TD1 → **4/4 checksums ICAO** → HUMAIN bascule en AUTO, concordant avec
-  le recto. Validé **via la classe** (pas une commande ad-hoc). Note IT : `docs/moteur-escalade-lightonocr.md`.
+  (`read_path=none`) → le VLM récupère la TD1 → **4/4 checksums ICAO**, clés concordantes avec le recto (le
+  verdict final dépend de `reconcile` — cf. bullet « Escalade branchée » ci-dessous). Validé **via la classe**. Note IT : `docs/moteur-escalade-lightonocr.md`.
   Pièges réglés : `--image` casse sur virgule/accents Windows → temp ASCII interne. Cibles d'escalade réelles
   dans le corpus : **3/4 versos** (2021 MRZ illisible + French_1988 & changement-paul composite=False). **Sortie
   VLM = texte sans géométrie** (bbox synthétique) → extraction par contenu (MRZ) seulement, pas ancres recto.
+- **Escalade branchée dans le pipeline (palier verso n°3).** `read_verso_mrz` = raw → enhance →
+  `escalation_engine` injecté ; le VLM tourne UNIQUEMENT si raw+enhance ne donnent pas de MRZ de confiance.
+  `process_ci_pair(escalation_engine=…)` ; défaut `None` = fast-path API n'escalade jamais (rétrocompatible :
+  `main.py` / `api_maquette` inchangés). **Prouvé** (A/B sur 2021 recto+verso) : sans escalade → HUMAIN « no MRZ
+  parsed » ; avec → `verso_read_path=escalation`, MRZ td1 récupérée, **4/4 checksums, 4/5 clés**. ⚠️ Le verdict
+  reste HUMAIN sur cette paire : slip VLM d'1 caractère sur le prénom (`GAELE`≠`GAELLE`), ligne nom TD1 sans
+  check digit → écart réel, HUMAIN défendable. **Le fallback = assurance, PAS garantie d'AUTO.** Dettes
+  `reconcile._normalize` DIFFÉRÉES (micro-corpus, ne pas sur-tuner) : (a) accents jetés au lieu d'être pliés
+  (`Ê`→∅) ; (b) pas de tolérance floue sur le nom = **décision métier sécurité** (assouplir affaiblit la
+  détection « recto A + verso B »).
 
 ## Prochain pas
-1. **Brancher l'escalade dans `pipeline.py`** : value-check raté → `LightOnOcrEngine` (le moteur est livré +
-   prouvé) ; puis forme async fire-and-forget (résultat via BD, file sérialisée). Cf. NEXT.
-2. **Lane suggestion-template** (SLM/GBNF) — spec → `docs/briefs/BRIEF-suggestion-template.md` (global, plus tard).
-3. **Lane RAG** (docx + articles) ; **Validation facture** (HT+TVA=TTC, template de validation config-driven).
+1. **Câblage async de l'escalade côté API** : BackgroundTasks → `escalation_engine` hors chemin requête →
+   job store/BD (`pending`→`done` réel), file sérialisée concurrence 1-2. (Palier pipeline déjà branché.) Cf. NEXT.
+2. **Dettes `reconcile` différées** (si besoin, après plus d'exemples) : (a) plier les accents dans `_normalize` ;
+   (b) tolérance floue nom = décision sécurité.
+3. **Lane suggestion-template** (SLM/GBNF) — spec → `docs/briefs/BRIEF-suggestion-template.md` (global, plus tard).
+4. **Lane RAG** (docx + articles) ; **Validation facture** (HT+TVA=TTC, template de validation config-driven).
 - Dettes mineures : décimales virgule/point ; date textuelle `facture_entrante_03` ; mmproj F32 (qualité max ; Q8 déjà OK).
 
 ## Suivis ouverts
