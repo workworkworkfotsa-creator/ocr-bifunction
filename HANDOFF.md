@@ -19,12 +19,11 @@ config-driven (value-check HT+TVA=TTC).** POC solo sur `master`, pas de remote. 
 — oracle = runs réels sur vrais docs + smokes structurels/logiques + KAT (composite MRZ), conforme à la
 discipline smoke-first.
 
-> ▶ **NEXT (reprise) — Lane RAG : swap du retriever sémantique (embedding GGUF) derrière le slot.**
-> La baseline **lexicale TF-IDF** est faite + prouvée (cf. Fait 2026-06-29) : slot `Retriever` jetable,
-> résumé extractif + index cosine top-k. Prochain : 2e impl `GgufEmbeddingRetriever` derrière la **même
-> interface**, modèle fourni par l'utilisateur `granite-embedding-311M-multilingual-r2-Q8_0.gguf`
-> (multilingue FR/EU, RGPD), shell vers le `llama-embedding` de la build llama.cpp b9542 (réutilise l'infra,
-> pas de torch). Vérifier d'abord le binaire + format de sortie (anti-hallucination). Alternative : dettes `reconcile`.
+> ▶ **NEXT (reprise) — au choix.** La lane RAG est complète (résumé extractif + retrieval lexical ET
+> sémantique derrière le slot `Retriever`). Pistes ouvertes : (a) **câbler la lane RAG dans le routeur
+> 2-lanes** (un doc sans match template → RAG automatiquement, aujourd'hui les runners sont séparés) ;
+> (b) **tier génératif** (résumé/Q&A LLM en réutilisant un `granite-chat` llama.cpp) ; (c) dettes `reconcile`
+> (accents + tolérance nom, différées). À trancher en ouverture.
 
 Historique : `3fcc7a8` baseline ①②③ · `3c3d055` HANDOFF+hook · `19e8041` slot Preprocessor ·
 `395e9e3` MRZ parse · `3680c87` rectifier + TD1.
@@ -115,6 +114,20 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   chemin absolu (`MSYS_NO_PATHCONV=1`) ; PowerShell bloqué par règle `deny` (pas dans `settings.json` global).
 
 ## Fait (2026-06-29)
+- **Lane RAG — retriever sémantique (embedding GGUF) livré + prouvé en A/B.** 2e impl `GgufEmbeddingRetriever`
+  derrière le **même slot `Retriever`** : modèle `granite-embedding-311M-multilingual-r2-Q8_0.gguf` (FR/EU,
+  RGPD), servi par **`llama-server --embedding`** (la build b9542 n'a **pas** de binaire `llama-embedding` ;
+  endpoint OpenAI `/v1/embeddings`). **Config vérifiée à la source** contre le projet sibling *Personal
+  Assistant* (`C:\…\Personal Assistant\clients.py` + `llama-swap\assistant.config.yaml`, 2026-06-29) :
+  flags `-c 512` (**limite native** granite-embedding → mes chunks ~120 tokens passent), `--pooling` omis
+  (défaut GGUF), `--embd-normalize` défaut 2 (L2) → **cosine = produit scalaire**. Client **`urllib` stdlib
+  (pas de dép httpx)**. Cycle serveur géré : start lazy sur port libre, poll `/health`, `close()` context-
+  manager — **prouvé sans orphelin** (seul le `granite-chat` de PA, port 5800, restait — pas touché). Modèle
+  copié dans `models/` (gitignoré ; env `RAG_EMBEDDING_MODEL`/`RAG_EMBEDDING_BINARY` pour pointer ailleurs).
+  Runner : `rag_check.py --engine embedding`. **A/B prouvé** sur l'article (33 chunks, requête « agent loop
+  call tools ») : les 2 moteurs s'accordent sur le top-1 (chunk 20 = boucle `tool_calls`) ; l'embedding
+  remonte en #2 le chunk 8 (gestion sortie d'outil, sémantique) là où le lexical prend l'intro dense en
+  mots-clés → l'apport sémantique est visible. Garde-fou char-budget avant embed (sur-longueur → fail-loud).
 - **Lane RAG — baseline lexicale prouvée sur les 3 vrais non-structurés.** L'autre branche du routing
   2-lanes : un doc qui matche **aucun template structuré** → pas d'extraction, mais on donne à l'humain une
   prise → **résumé de contenu** (extractif : mots-clés + phrases saillantes) **+ index interrogeable**
@@ -200,9 +213,8 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   détection « recto A + verso B »).
 
 ## Prochain pas
-1. **Lane RAG — retriever sémantique** : `GgufEmbeddingRetriever` derrière le slot `Retriever`, modèle
-   `granite-embedding-311M-multilingual-r2-Q8_0.gguf` (chez l'utilisateur, à copier dans `models/`), shell
-   `llama-embedding` (build b9542). A/B vs la baseline lexicale sur les 3 docs. Cf. NEXT.
+1. **Lane RAG — intégration** (au choix, cf. NEXT) : câbler dans le routeur 2-lanes (no-match → RAG auto),
+   OU tier génératif (résumé/Q&A LLM via `granite-chat`), OU dettes `reconcile`.
 2. **Dettes `reconcile` différées** (si besoin, après plus d'exemples) : (a) plier les accents dans `_normalize` ;
    (b) tolérance floue nom = décision sécurité.
 3. **Lane suggestion-template** (SLM/GBNF) — spec → `docs/briefs/BRIEF-suggestion-template.md` (global, plus tard).

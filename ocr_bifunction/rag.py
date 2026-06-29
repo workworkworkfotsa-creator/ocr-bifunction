@@ -18,10 +18,18 @@ top-weighted terms + sentences for the extractive summary. No LLM, no download.
 
 from __future__ import annotations
 
+import json
 import math
+import os
 import re
+import socket
+import subprocess
+import time
+import urllib.error
+import urllib.request
 from collections import Counter
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 # Keep accented Latin letters and digits; everything else splits tokens.
@@ -209,3 +217,175 @@ def summarize_extractive(
     ]
     key_sentences = [sentence for position, _score, sentence in sorted(best)]
     return Summary(keywords=keywords, key_sentences=key_sentences)
+
+
+# --- Semantic retriever: GGUF embeddings via llama.cpp's llama-server. ----------------
+# The second `Retriever` impl, swapped in behind the same slot — no torch, reuses the
+# existing llama.cpp binary. Config verified against a working sibling project
+# (Personal Assistant, 2026-06-29): the build ships no `llama-embedding` CLI, so embeddings
+# come from `llama-server --embedding` over its OpenAI-compatible /v1/embeddings endpoint.
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_DEFAULT_EMBEDDING_MODEL = (
+    _REPO_ROOT / "models" / "granite-embedding-311M-multilingual-r2-Q8_0.gguf"
+)
+# The llama.cpp server this POC was proven on. IT overrides via RAG_EMBEDDING_BINARY.
+_DEFAULT_EMBEDDING_BINARY = (
+    r"C:\Users\filipeparente\Tools\llamacpp\b9542\llama-server.exe"
+)
+# granite-embedding's native context limit is 512 tokens; chunk_document targets ~120
+# content tokens, well under, so chunks are not truncated. Texts are still capped before
+# embedding as a belt-and-braces guard against an over-long passage erroring the server.
+_EMBEDDING_CONTEXT_SIZE = 512
+_EMBEDDING_CHARACTER_BUDGET = 1600
+
+
+def _l2_normalize_dense(vector: list[float]) -> list[float]:
+    norm = math.sqrt(sum(value * value for value in vector))
+    return [value / norm for value in vector] if norm else vector
+
+
+def _dense_dot(left: list[float], right: list[float]) -> float:
+    # Both vectors are L2-normalized, so the dot product IS the cosine similarity.
+    return sum(x * y for x, y in zip(left, right))
+
+
+def _find_free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
+class GgufEmbeddingRetriever:
+    """Semantic retriever backed by a GGUF embedding model served by llama-server.
+
+    Disposable adapter (IT swaps binary / model / port via constructor args or env:
+    RAG_EMBEDDING_BINARY / RAG_EMBEDDING_MODEL). The server is started lazily on first
+    embed and stopped on close(); use it as a context manager so the process never leaks.
+    Vectors come back L2-normalized (llama-server --embd-normalize default 2), so ranking
+    is a plain dot product. Proven flags mirror the sibling project: -c 512, CPU, --mmap.
+    """
+
+    name = "gguf-embedding"
+
+    def __init__(
+        self,
+        *,
+        binary_path: str | os.PathLike[str] | None = None,
+        model_path: str | os.PathLike[str] | None = None,
+        host: str = "127.0.0.1",
+        port: int | None = None,
+        threads: int = 4,
+        startup_timeout_seconds: float = 180.0,
+    ) -> None:
+        self._binary_path = Path(
+            binary_path
+            or os.environ.get("RAG_EMBEDDING_BINARY", _DEFAULT_EMBEDDING_BINARY)
+        )
+        self._model_path = Path(
+            model_path
+            or os.environ.get("RAG_EMBEDDING_MODEL", str(_DEFAULT_EMBEDDING_MODEL))
+        )
+        self._host = host
+        self._port = port
+        self._threads = threads
+        self._startup_timeout_seconds = startup_timeout_seconds
+        self._process: subprocess.Popen[bytes] | None = None
+        self._chunks: list[Chunk] = []
+        self._chunk_vectors: list[list[float]] = []
+
+    def __enter__(self) -> GgufEmbeddingRetriever:
+        return self
+
+    def __exit__(self, *_exc_info: object) -> None:
+        self.close()
+
+    def _base_url(self) -> str:
+        return f"http://{self._host}:{self._port}"
+
+    def _ensure_server(self) -> None:
+        if self._process is not None:
+            return
+        if self._port is None:
+            self._port = _find_free_port()
+        self._process = subprocess.Popen(
+            [
+                str(self._binary_path),
+                "-m",
+                str(self._model_path),
+                "--host",
+                self._host,
+                "--port",
+                str(self._port),
+                "-c",
+                str(_EMBEDDING_CONTEXT_SIZE),
+                "-t",
+                str(self._threads),
+                "-ngl",
+                "0",
+                "--mmap",
+                "--embedding",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        deadline = time.monotonic() + self._startup_timeout_seconds
+        while time.monotonic() < deadline:
+            if self._process.poll() is not None:
+                raise RuntimeError("llama-server exited before becoming ready")
+            try:
+                with urllib.request.urlopen(
+                    f"{self._base_url()}/health", timeout=2
+                ) as response:
+                    if response.status == 200:
+                        return
+            except (urllib.error.URLError, ConnectionError, OSError):
+                pass  # not up yet
+            time.sleep(0.5)
+        self.close()
+        raise RuntimeError("llama-server did not become ready in time")
+
+    def _embed(self, texts: list[str]) -> list[list[float]]:
+        self._ensure_server()
+        capped = [text[:_EMBEDDING_CHARACTER_BUDGET] for text in texts]
+        payload = json.dumps({"model": "granite-embed", "input": capped}).encode(
+            "utf-8"
+        )
+        request = urllib.request.Request(
+            f"{self._base_url()}/v1/embeddings",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=180) as response:
+            data = json.loads(response.read())["data"]
+        # llama-server returns one item per input; order by "index" to be safe.
+        data.sort(key=lambda item: item.get("index", 0))
+        return [_l2_normalize_dense(item["embedding"]) for item in data]
+
+    def index(self, chunks: list[Chunk]) -> None:
+        self._chunks = chunks
+        self._chunk_vectors = (
+            self._embed([chunk.text for chunk in chunks]) if chunks else []
+        )
+
+    def query(self, text: str, top_k: int = 3) -> list[tuple[Chunk, float]]:
+        if not self._chunks:
+            return []
+        query_vector = self._embed([text])[0]
+        scored = [
+            (chunk, _dense_dot(query_vector, chunk_vector))
+            for chunk, chunk_vector in zip(self._chunks, self._chunk_vectors)
+        ]
+        scored.sort(key=lambda pair: pair[1], reverse=True)
+        return scored[:top_k]
+
+    def close(self) -> None:
+        if self._process is None:
+            return
+        self._process.terminate()
+        try:
+            self._process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            self._process.kill()
+        self._process = None
