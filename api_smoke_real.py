@@ -5,9 +5,10 @@
 
 Drives the exact `validate_document` endpoint via TestClient (no server, no port), so it
 exercises the real `process_ci_pair` behind the HTTP contract. Pass a concordant pair to
-see `validated`/`auto`; cross a recto with another card's verso to see `needs_review`/
-`human` with the mismatch reasons. With --expect, exits non-zero when the returned status
-differs (so it can gate a check).
+see `validated`/`auto` (200); cross a recto with another card's verso to see `pending`
+(202) — the doubtful case is now handed to the async escalation lane, returning a job_id
+to poll (cf. api_smoke_async.py for the full lifecycle). With --expect, exits non-zero
+when the returned status differs (so it can gate a check).
 
 No PII lives in this file: the images come from the command line (the real inputs are
 gitignored) and identity values appear only in the runtime output, never in the repo.
@@ -64,9 +65,12 @@ def main(
     if expected_status is None:
         return 0
     actual_status = body.get("status")
-    passed = http_status == 200 and actual_status == expected_status
+    # validated is a synchronous 200; pending (escalated) is a 202 + job_id.
+    expected_http = 202 if expected_status == "pending" else 200
+    passed = http_status == expected_http and actual_status == expected_status
     print(
-        f"\nEXPECT {expected_status}: {'PASS' if passed else 'FAIL'} (got {actual_status})"
+        f"\nEXPECT {expected_status}: {'PASS' if passed else 'FAIL'} "
+        f"(got {actual_status}, HTTP {http_status})"
     )
     return 0 if passed else 1
 
@@ -79,7 +83,7 @@ if __name__ == "__main__":
     parser.add_argument("verso_image", type=Path, help="Path to the verso image.")
     parser.add_argument(
         "--expect",
-        choices=["validated", "needs_review", "pending"],
+        choices=["validated", "pending"],
         default=None,
         help="If set, exit non-zero unless the returned status matches.",
     )

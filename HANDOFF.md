@@ -13,16 +13,16 @@
 ## État au 2026-06-29
 
 **Porte d'entrée CI prouvée bout-en-bout + pipeline câblé + extraction factures multi-layout + lecture
-couverte (RapidOCR + Docling fallback) ; LightOnOCR-2 validé en moteur d'escalade ; maquette API prouvée
-sur vraies images (validated + needs_review).** POC solo sur `master`, pas de remote. Dernier commit =
-`feat: API maquette`. **Pas de tests pytest** — oracle = runs réels sur vrais docs + smokes structurels +
+couverte (RapidOCR + Docling fallback) ; LightOnOCR-2 validé en moteur d'escalade ; maquette API avec
+escalade ASYNC câblée + prouvée sur vraies images (validated / pending→done).** POC solo sur `master`,
+pas de remote. **Pas de tests pytest** — oracle = runs réels sur vrais docs + smokes structurels +
 KAT (composite MRZ), conforme à la discipline smoke-first.
 
-> ▶ **NEXT (reprise) — Câblage async de l'escalade côté API.** Le palier escalade est branché dans
-> `process_ci_pair` (raw→enhance→VLM injecté) et la récupération est prouvée (MRZ none→td1, 4/4 checksums).
-> Reste : forme **async fire-and-forget** dans la maquette API (BackgroundTasks → `escalation_engine` hors du
-> chemin requête → résultat via job store/BD ; `pending`→`done` rendu réel ; file sérialisée concurrence 1-2).
-> L'API fast-path n'escalade jamais (`escalation_engine=None`) → le douteux part en async, ne bloque pas la page.
+> ▶ **NEXT (reprise) — Validation facture config-driven (HT + TVA = TTC).** L'escalade async est câblée
+> + prouvée (cf. Fait 2026-06-29 ci-dessous). Prochain incrément de valeur : la **value-check** facture
+> — les 4 templates *lisent* déjà ; reste le bloc `validation` du template qui calcule HT+TVA=TTC (même
+> patron config-driven que la présence-check HP, mais value-check). Alternatives ouvertes si on préfère :
+> dettes `reconcile` (différées, micro-corpus) ou lane RAG (docx). À trancher en ouverture.
 
 Historique : `3fcc7a8` baseline ①②③ · `3c3d055` HANDOFF+hook · `19e8041` slot Preprocessor ·
 `395e9e3` MRZ parse · `3680c87` rectifier + TD1.
@@ -113,6 +113,23 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   chemin absolu (`MSYS_NO_PATHCONV=1`) ; PowerShell bloqué par règle `deny` (pas dans `settings.json` global).
 
 ## Fait (2026-06-29)
+- **Escalade ASYNC câblée côté API + prouvée sur vraies images.** `api_maquette.py` : le douteux
+  (`human`) n'est plus rendu `200 needs_review` synchrone → il **enfile une escalade hors chemin requête**
+  et renvoie **`202 pending` + `job_id`** ; un **worker daemon sérialisé** (`ESCALATION_WORKER_COUNT=1`,
+  `queue.Queue`, démarrage lazy) draine la file, re-run `process_ci_pair` AVEC `escalation_engine`, flippe
+  le job `pending`→`done`. Job store aligné sketch **D1** (`received`→`processing`→`done`/`failed`, `lane`,
+  `verdict`, `reasons`, `verso_read_path`) ; `GET /v1/jobs/{id}` mappe → `pending|done` client. Seam
+  `set_escalation_engine_factory` (smoke injecte un faux moteur rapide, **zéro VLM 171 s**). Le fast-path
+  `auto`→`200 validated` est **inchangé**. `force_pending` **supprimé** (stub « pas de worker » obsolète).
+  **Prouvé** (oracle = runs réels, smokes `--expect`) : (a) concordant IMG_8391/8392 → `200 validated`/`auto` ;
+  (b) 2021 (MRZ ratée) → `202 pending`→worker→`done`, **escalade tire dans le worker** (`engine.called=True`),
+  hors requête ; (c) recto A (2021) + verso B (IMG_8392) → `202 pending` + 3 raisons mismatch réelles
+  (numero_document, nom, prenoms) ; (d) structurel 400/404. Nouveau smoke versionné `api_smoke_async.py`
+  (cycle pending→poll→done) ; `api_smoke_real.py` màj contrat (`needs_review`→`pending`). Pièges réglés :
+  `tempfile.TemporaryDirectory(ignore_cleanup_errors=True)` sur le temp-dir du worker (race de nettoyage
+  Windows WinError 145 quand le worker daemon survit à la requête — bénin, n'affecte aucune logique).
+  **Simplification maquette assumée** : le worker re-run le pipeline complet (double RapidOCR) plutôt que
+  reprendre l'état partiel du fast-path (couplage minimal ; à optimiser côté IT).
 - **DoD maquette API CLOS — smoke vraies images VERT.** Piloté via `TestClient` (même `validate_document` +
   vrai `process_ci_pair`, sans serveur/port → contourne la friction uvicorn/PowerShell). 2 cas nommés sur de
   vraies CI : **paire concordante → 200 `validated`/`auto`** (0 reason) ; **recto A + verso B → 200
@@ -155,12 +172,13 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   détection « recto A + verso B »).
 
 ## Prochain pas
-1. **Câblage async de l'escalade côté API** : BackgroundTasks → `escalation_engine` hors chemin requête →
-   job store/BD (`pending`→`done` réel), file sérialisée concurrence 1-2. (Palier pipeline déjà branché.) Cf. NEXT.
+1. **Validation facture config-driven** (HT+TVA=TTC, bloc `validation` du template, **value-check**) — cf. NEXT.
 2. **Dettes `reconcile` différées** (si besoin, après plus d'exemples) : (a) plier les accents dans `_normalize` ;
    (b) tolérance floue nom = décision sécurité.
 3. **Lane suggestion-template** (SLM/GBNF) — spec → `docs/briefs/BRIEF-suggestion-template.md` (global, plus tard).
-4. **Lane RAG** (docx + articles) ; **Validation facture** (HT+TVA=TTC, template de validation config-driven).
+4. **Lane RAG** (docx + articles).
+- **Async côté IT (différé, leur territoire)** : `_jobs` dict → table `ocr_jobs_*` (D1), worker Python →
+  cron/queue réelle, idempotence/job store persistés. Cf. `docs/contrat-bd-destination.md` (co-geler jour J).
 - Dettes mineures : décimales virgule/point ; date textuelle `facture_entrante_03` ; mmproj F32 (qualité max ; Q8 déjà OK).
 
 ## Suivis ouverts
