@@ -10,19 +10,17 @@
 > repo ni l'historique (audité 2026-06-26). **Ce repo part sur GitHub** → ne jamais `git add -f` un doc,
 > ne jamais coller de valeur réelle (nom, n°doc, adresse) dans le code, les docs ou un message de commit.
 
-## État au 2026-06-28
+## État au 2026-06-29
 
 **Porte d'entrée CI prouvée bout-en-bout + pipeline câblé + extraction factures multi-layout + lecture
-couverte (RapidOCR + Docling fallback) ; LightOnOCR-2 validé en moteur d'escalade ; maquette API écrite
-(contrat structurel prouvé, smoke vraies images EN ATTENTE).** POC solo sur `master`, pas de remote.
-Dernier commit = `feat: API maquette` (cette session). **Pas de tests pytest** — oracle = runs réels sur
-vrais docs + smokes structurels + KAT (composite MRZ), conforme à la discipline smoke-first.
+couverte (RapidOCR + Docling fallback) ; LightOnOCR-2 validé en moteur d'escalade ; maquette API prouvée
+sur vraies images (validated + needs_review).** POC solo sur `master`, pas de remote. Dernier commit =
+`feat: API maquette`. **Pas de tests pytest** — oracle = runs réels sur vrais docs + smokes structurels +
+KAT (composite MRZ), conforme à la discipline smoke-first.
 
-> ▶ **NEXT (reprise) — Smoke vraies images de la maquette API (DoD non clos).** Le contrat structurel est
-> prouvé (202/job/404/400/idempotence via `TestClient`), mais les 2 cas verdict sur de vraies CI ne sont
-> **pas** encore lancés (utilisateur absent du PC au commit). Lancer : `uv run uvicorn api_maquette:app
-> --reload` → `/docs` → paire concordante = `validated`, recto A + verso B = `needs_review`. Tant que ce
-> smoke n'est pas vert, la maquette est « écrite », pas « prouvée ».
+> ▶ **NEXT (reprise) — Routing escalade : RapidOCR (échec/low-conf) → LightOnOCR-2 (batch/async).** La
+> maquette API est close (DoD vert, cf. « Fait (2026-06-29) »). Prochaine valeur = brancher la cascade de
+> confiance vers le moteur d'escalade déjà validé.
 
 Historique : `3fcc7a8` baseline ①②③ · `3c3d055` HANDOFF+hook · `19e8041` slot Preprocessor ·
 `395e9e3` MRZ parse · `3680c87` rectifier + TD1.
@@ -112,12 +110,19 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   fait** → DoD non clos (cf. NEXT). Friction shell notée : `uv`/`git` hors PATH Git Bash → route `cmd.exe`
   chemin absolu (`MSYS_NO_PATHCONV=1`) ; PowerShell bloqué par règle `deny` (pas dans `settings.json` global).
 
+## Fait (2026-06-29)
+- **DoD maquette API CLOS — smoke vraies images VERT.** Piloté via `TestClient` (même `validate_document` +
+  vrai `process_ci_pair`, sans serveur/port → contourne la friction uvicorn/PowerShell). 2 cas nommés sur de
+  vraies CI : **paire concordante → 200 `validated`/`auto`** (0 reason) ; **recto A + verso B → 200
+  `needs_review`/`human`** avec 3 reasons de mismatch réel (`numero_document`, `nom`, `prenoms`) — c'est la
+  détection « recto A + verso B » qui tire, PAS le fallback « no MRZ ». La maquette est désormais **prouvée**,
+  plus « écrite ». Script throwaway en scratchpad (paths absolus + lit des inputs gitignorés → non versionné,
+  zéro PII en repo).
+
 ## Prochain pas
-1. **CLORE le DoD de la maquette** : lancer le smoke `/docs` sur de vraies CI (validated + needs_review).
-   Tant qu'il n'est pas vert, la maquette reste « écrite », pas « prouvée ». Cf. NEXT en tête.
-2. **Routing escalade** : RapidOCR (échec/low-conf) → LightOnOCR-2 (batch/async).
-3. **Lane suggestion-template** (SLM/GBNF) — spec → `docs/briefs/BRIEF-suggestion-template.md` (global, plus tard).
-4. **Lane RAG** (docx + articles) ; **Validation facture** (HT+TVA=TTC, template de validation config-driven).
+1. **Routing escalade** : RapidOCR (échec/low-conf) → LightOnOCR-2 (batch/async).
+2. **Lane suggestion-template** (SLM/GBNF) — spec → `docs/briefs/BRIEF-suggestion-template.md` (global, plus tard).
+3. **Lane RAG** (docx + articles) ; **Validation facture** (HT+TVA=TTC, template de validation config-driven).
 - Dettes mineures : décimales virgule/point ; date textuelle `facture_entrante_03` ; mmproj F32 (qualité max ; Q8 déjà OK).
 
 ## Suivis ouverts
