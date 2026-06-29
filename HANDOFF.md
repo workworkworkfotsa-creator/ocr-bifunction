@@ -164,6 +164,9 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
 - Dettes mineures : décimales virgule/point ; date textuelle `facture_entrante_03` ; mmproj F32 (qualité max ; Q8 déjà OK).
 
 ## Suivis ouverts
+- **Contrat BD destination (sketch, NON figé)** → `docs/contrat-bd-destination.md` : 3 domaines (jobs+queue
+  / templates / revue-curation), 1 MariaDB préfixée, record source-unique en D1, critères avec le template,
+  leviers algo hors-BD, contrat de colonnes. Vue sur la cible — à **co-geler avec l'IT** le jour J.
 - **CLAUDE.md « État actuel du repo »** = **périmé** (dit « archi pas implémentée » alors que ①②③ + MRZ
   tournent). À actualiser + ajouter la carte des modules. Cf. mémoire `claudemd-module-map-pending`.
 - **Dette template recto** : les anchors flous sont OK, mais sur la vraie mise en page 2 champs
