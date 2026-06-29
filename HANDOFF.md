@@ -19,11 +19,12 @@ config-driven (value-check HT+TVA=TTC).** POC solo sur `master`, pas de remote. 
 — oracle = runs réels sur vrais docs + smokes structurels/logiques + KAT (composite MRZ), conforme à la
 discipline smoke-first.
 
-> ▶ **NEXT (reprise) — Lane RAG (docx non-structurés) OU dettes `reconcile`.** La lane structurée
-> (CI + factures + HP) valide désormais en **config-driven** (présence + value-check ; cf. Fait 2026-06-29).
-> Prochain : soit ouvrir la **lane RAG** (retrieval sur docx/articles — l'autre branche du routing 2-lanes,
-> plus gros, embeddings déjà dans `models/`), soit solder les **dettes `reconcile`** (accents + tolérance
-> nom, différées, micro-corpus). À trancher en ouverture.
+> ▶ **NEXT (reprise) — Lane RAG : swap du retriever sémantique (embedding GGUF) derrière le slot.**
+> La baseline **lexicale TF-IDF** est faite + prouvée (cf. Fait 2026-06-29) : slot `Retriever` jetable,
+> résumé extractif + index cosine top-k. Prochain : 2e impl `GgufEmbeddingRetriever` derrière la **même
+> interface**, modèle fourni par l'utilisateur `granite-embedding-311M-multilingual-r2-Q8_0.gguf`
+> (multilingue FR/EU, RGPD), shell vers le `llama-embedding` de la build llama.cpp b9542 (réutilise l'infra,
+> pas de torch). Vérifier d'abord le binaire + format de sortie (anti-hallucination). Alternative : dettes `reconcile`.
 
 Historique : `3fcc7a8` baseline ①②③ · `3c3d055` HANDOFF+hook · `19e8041` slot Preprocessor ·
 `395e9e3` MRZ parse · `3680c87` rectifier + TD1.
@@ -114,6 +115,18 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   chemin absolu (`MSYS_NO_PATHCONV=1`) ; PowerShell bloqué par règle `deny` (pas dans `settings.json` global).
 
 ## Fait (2026-06-29)
+- **Lane RAG — baseline lexicale prouvée sur les 3 vrais non-structurés.** L'autre branche du routing
+  2-lanes : un doc qui matche **aucun template structuré** → pas d'extraction, mais on donne à l'humain une
+  prise → **résumé de contenu** (extractif : mots-clés + phrases saillantes) **+ index interrogeable**
+  (cosine top-k). `ocr_bifunction/rag.py` : slot **`Retriever` jetable** (patron `OcrEngine`) ; 1re impl
+  `TfidfRetriever` **maison, zéro download/dép lourde** (TF-IDF lissé + cosine, vecteurs L2). Le **même cœur
+  TF-IDF** sert le résumé (`summarize_extractive`) ET le retrieval. `chunk_document` (paragraphes packés
+  ~120 tokens). Runner `rag_check.py <doc> [--query --top-k]` via `read_document` (docx natif / PDF text
+  layer, **pas d'OCR**). **Prouvé** : 2 mémos docx → résumés utiles (commandes/sécurité/dépôt ; pto/prises/
+  free) ; article PDF (33 chunks) → résumé correct + requête « agent loop call tools » → top chunk = la
+  boucle tool_calls. Décidé (délégué par l'utilisateur) : **lexical-first behind a slot**, embedding
+  sémantique = swap suivant (cf. NEXT, modèle granite fourni). Mojibake console = cosmétique (codepage), la
+  donnée Python est unicode-correcte.
 - **Validation facture config-driven (value-check HT + TVA = TTC) — prouvée sur vrai corpus.** Validateur
   générique `validate_fields(fields, validation)` dans `template.py` (2 types de check, **les critères
   voyagent avec le template** = sketch D2) : `present` (présence, value-agnostic — déjà HP) **+ `sum`**
@@ -187,8 +200,9 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   détection « recto A + verso B »).
 
 ## Prochain pas
-1. **Lane RAG** (docx + articles non-structurés) — l'autre branche du routing 2-lanes (retrieval, pas
-   d'extraction) ; embeddings déjà dans `models/`. **OU** dettes `reconcile` ci-dessous. Cf. NEXT.
+1. **Lane RAG — retriever sémantique** : `GgufEmbeddingRetriever` derrière le slot `Retriever`, modèle
+   `granite-embedding-311M-multilingual-r2-Q8_0.gguf` (chez l'utilisateur, à copier dans `models/`), shell
+   `llama-embedding` (build b9542). A/B vs la baseline lexicale sur les 3 docs. Cf. NEXT.
 2. **Dettes `reconcile` différées** (si besoin, après plus d'exemples) : (a) plier les accents dans `_normalize` ;
    (b) tolérance floue nom = décision sécurité.
 3. **Lane suggestion-template** (SLM/GBNF) — spec → `docs/briefs/BRIEF-suggestion-template.md` (global, plus tard).
