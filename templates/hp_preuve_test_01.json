@@ -1,0 +1,16 @@
+{
+  "template_id": "hp_preuve_test_01",
+  "category": "preuve_test",
+  "description": "HP PC Diagnostics result page ('preuve de test'), a photo of a laptop screen, French UI. Match anchors are STRUCTURAL test-result vocabulary, never a device value (repo is public). Acceptance is config-driven and minimal: a test ran (the signature matched) AND an access-id is PRESENT. The access-id is a PRESENCE check: its mere existence proves the machine reached HP's central system, so a truncated/garbled read still validates; the exact value and the serial are post-processing, not OCR-critical. A BIOS / system-info screen carries none of these anchors -> no match -> human (intruder).",
+  "match": { "all_anchors": ["Test de composants", "SUCCES"] },
+  "fields": [
+    {
+      "name": "id_acces",
+      "pattern": "ACC[^:\\n]{0,3}:\\s*([0-9A-Z][0-9A-Z-]{3,})"
+    },
+    { "name": "numero_serie", "pattern": "s[ée]rie\\s*:?\\s*([0-9A-Z]{6,})" }
+  ],
+  "validation": {
+    "required": [{ "field": "id_acces", "check": "present" }]
+  }
+}

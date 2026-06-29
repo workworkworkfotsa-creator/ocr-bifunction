@@ -124,6 +124,14 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   tous les templates (comportement **inchangé**). Prouvé sur vraies images : hint `carte_identite` → `validated` ;
   mauvais hint `facture` sur une CI → `needs_review` + raison « recto: no 'facture' template matched ». Le smoke
   versionné a un flag `--document-type`.
+- **1er doc NON-CI + validation config-driven (check de PRÉSENCE).** Template `hp_preuve_test_01.json` (category
+  `preuve_test`) + runner `hp_check.py` : match signature de test (« Test de composants » + « SUCCÈS ») →
+  extraction `id_acces`/`numero_serie` (regex) → **validation lue dans le bloc `validation` du template** (check
+  `present`, rien de hardcodé). Prouvé sur les 9 images HP (RapidOCR brut, **zéro VLM**) : **AUTO 5/9** ; HUMAIN
+  4/9 = 1 intrus BIOS correctement rejeté (no match) + 1 crop sans signature + 2 vraies pages où le label ID
+  d'accès n'est pas capté. **Principe présence-vs-valeur prouvé** : un ID tronqué (« 7HS8S-MA ») valide quand
+  même (présence ≠ valeur). Décision actée : **HP = RapidOCR suffit, PAS d'escalade VLM** → libère le budget SLM
+  pour les value-checks durs (versos CI). Mémoire `template-validation-architecture-direction` étendue (présence-vs-valeur).
 
 ## Prochain pas
 1. **Routing escalade** : RapidOCR (échec/low-conf) → LightOnOCR-2 (batch/async).
