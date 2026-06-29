@@ -17,6 +17,7 @@ and the verdict envelope (auto/human + the reasons that routed it).
 
 from __future__ import annotations
 
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -143,6 +144,26 @@ def _consolidate(
     return merged
 
 
+def _reconciled_record(
+    template_id: str | None,
+    recto_fields: dict[str, str | None],
+    mrz: MrzFields,
+    verso_read_path: str,
+) -> CiRecord:
+    """Both sides present -> consolidate + reconcile into one self-validating record."""
+    reconciliation = reconcile(recto_fields, mrz)
+    return CiRecord(
+        fields=_consolidate(recto_fields, mrz),
+        verdict=reconciliation.verdict,
+        reasons=reconciliation.reasons,
+        template_id=template_id,
+        mrz_format=mrz.mrz_format,
+        verso_read_path=verso_read_path,
+        key_matches=reconciliation.key_matches,
+        failed_checks=reconciliation.failed_checks,
+    )
+
+
 def process_ci_pair(
     recto_path: Path,
     verso_path: Path,
@@ -164,7 +185,6 @@ def process_ci_pair(
         recto_path, engine, templates_directory, category
     )
     mrz, verso_read_path = read_verso_mrz(verso_path, engine, escalation_engine)
-    merged_fields = _consolidate(recto_fields, mrz)
 
     # Either side missing means no cross-validation is possible -> human, by construction.
     if recto_fields is None or mrz is None:
@@ -178,7 +198,7 @@ def process_ci_pair(
         if mrz is None:
             reasons.append("verso: no MRZ parsed (raw and enhance both failed)")
         return CiRecord(
-            fields=merged_fields,
+            fields=_consolidate(recto_fields, mrz),
             verdict="human",
             reasons=reasons,
             template_id=template_id,
@@ -186,14 +206,120 @@ def process_ci_pair(
             verso_read_path=verso_read_path,
         )
 
-    reconciliation = reconcile(recto_fields, mrz)
-    return CiRecord(
-        fields=merged_fields,
-        verdict=reconciliation.verdict,
-        reasons=reconciliation.reasons,
-        template_id=template_id,
-        mrz_format=mrz.mrz_format,
-        verso_read_path=verso_read_path,
-        key_matches=reconciliation.key_matches,
-        failed_checks=reconciliation.failed_checks,
+    return _reconciled_record(template_id, recto_fields, mrz, verso_read_path)
+
+
+@dataclass
+class CiSubmissionResult:
+    """Outcome of a CI UPLOAD (one or more files) — the upload-facing envelope.
+
+    `status` drives the upload UI:
+      - "complete"     -> both sides found and reconciled; `record` holds the verdict;
+      - "incomplete"   -> exactly one side found; `missing` names the side to ask for;
+      - "unrecognized" -> no CI recto template and no MRZ -> not a CI submission at all.
+    """
+
+    status: str  # "complete" | "incomplete" | "unrecognized"
+    missing: list[str] = field(default_factory=list)  # subset of ["recto", "verso"]
+    record: CiRecord | None = None  # present iff status == "complete"
+    reasons: list[str] = field(default_factory=list)
+
+
+def extract_card_images(source_path: Path) -> list[tuple[bytes, str]]:
+    """Flatten one upload source into candidate card-side images as (bytes, suffix).
+
+    A PDF (a scan/print with both sides on one page) yields its embedded images; a plain
+    image yields itself. The disposable input adapter: one upload, however shaped, becomes
+    a flat list of card-side images.
+    """
+    if source_path.suffix.lower() == ".pdf":
+        import pymupdf
+
+        images: list[tuple[bytes, str]] = []
+        with pymupdf.open(source_path) as document:
+            for page in document:
+                for image_info in page.get_images(full=True):
+                    extracted = document.extract_image(image_info[0])
+                    images.append((extracted["image"], f".{extracted['ext']}"))
+        return images
+    return [(source_path.read_bytes(), source_path.suffix or ".jpg")]
+
+
+def process_ci_submission(
+    source_paths: list[Path],
+    engine: OcrEngine,
+    templates_directory: Path,
+    category: str | None = None,
+    escalation_engine: OcrEngine | None = None,
+) -> CiSubmissionResult:
+    """Gather the card sides from an upload (any mix of images/PDFs) and decide its fate.
+
+    The recto is found first (the side matching a CI template), so the heavy VLM escalation
+    NEVER runs on it; the verso MRZ is then searched in the OTHER images (escalation allowed
+    there), falling back to the recto image itself for a single COMBINED photo (cheap read,
+    no VLM). A recto + a verso -> `complete` reconciled record; only one side -> `incomplete`
+    naming the missing one; neither -> `unrecognized`.
+    """
+    with tempfile.TemporaryDirectory(prefix="ocr_bifunction_sub_") as temp_directory:
+        temp_path = Path(temp_directory)
+        image_paths: list[Path] = []
+        for source_path in source_paths:
+            for index, (image_bytes, suffix) in enumerate(
+                extract_card_images(source_path)
+            ):
+                image_path = temp_path / f"{source_path.stem}_{index}{suffix}"
+                image_path.write_bytes(image_bytes)
+                image_paths.append(image_path)
+
+        template_id: str | None = None
+        recto_fields: dict[str, str | None] | None = None
+        recto_image: Path | None = None
+        for image_path in image_paths:
+            candidate_id, candidate_fields = read_recto_fields(
+                image_path, engine, templates_directory, category
+            )
+            if candidate_fields is not None:
+                recto_image, template_id, recto_fields = (
+                    image_path,
+                    candidate_id,
+                    candidate_fields,
+                )
+                break
+
+        mrz: MrzFields | None = None
+        verso_read_path = "none"
+        # Verso in the non-recto images (VLM allowed only here).
+        for image_path in image_paths:
+            if image_path == recto_image:
+                continue
+            candidate_mrz, candidate_path = read_verso_mrz(
+                image_path, engine, escalation_engine
+            )
+            if candidate_mrz is not None:
+                mrz, verso_read_path = candidate_mrz, candidate_path
+                break
+        # Combined photo: the recto image may carry the MRZ too — cheap read, no VLM.
+        if mrz is None and recto_image is not None:
+            candidate_mrz, candidate_path = read_verso_mrz(recto_image, engine, None)
+            if candidate_mrz is not None:
+                mrz, verso_read_path = candidate_mrz, candidate_path
+
+    has_recto = recto_fields is not None
+    has_verso = mrz is not None
+    if has_recto and has_verso:
+        return CiSubmissionResult(
+            status="complete",
+            record=_reconciled_record(template_id, recto_fields, mrz, verso_read_path),
+        )
+    if not has_recto and not has_verso:
+        return CiSubmissionResult(
+            status="unrecognized",
+            missing=["recto", "verso"],
+            reasons=["no CI recto template matched and no MRZ found in the upload"],
+        )
+    missing = ["verso"] if has_recto else ["recto"]
+    return CiSubmissionResult(
+        status="incomplete",
+        missing=missing,
+        reasons=[f"missing the {missing[0]} side — please upload it"],
     )

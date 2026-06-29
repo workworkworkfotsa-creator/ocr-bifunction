@@ -19,10 +19,12 @@ config-driven (value-check HT+TVA=TTC).** POC solo sur `master`, pas de remote. 
 — oracle = runs réels sur vrais docs + smokes structurels/logiques + KAT (composite MRZ), conforme à la
 discipline smoke-first.
 
-> ▶ **NEXT (reprise) — au choix.** Routeur 2-lanes câblé (`route_document` : structuré vs RAG sur un
-> seul doc ; cf. Fait 2026-06-29). Pistes ouvertes : (a) **tier génératif** (résumé/Q&A LLM en réutilisant
-> un `granite-chat` llama.cpp, comme le projet Personal Assistant) ; (b) **dettes `reconcile`** (accents +
-> tolérance nom, différées) ; (c) **lane suggestion-template** (SLM/GBNF, global). À trancher en ouverture.
+> ▶ **NEXT (reprise) — exposer la complétude de submission dans le contrat JSON de l'API.**
+> `process_ci_submission` (3 issues complete/incomplete/unrecognized) est prouvé côté pipeline (cf. Fait
+> 2026-06-29). Reste à porter ça dans `api_maquette` : requête = **liste de fichiers** (au lieu des 2 champs
+> recto/verso), réponse = statut `incomplete` + `missing:['verso']` pour que l'UI d'upload redemande le côté
+> manquant. **Forme exacte à co-décider avec l'utilisateur** (c'est son contrat UI). Alternatives : tier
+> génératif RAG (`granite-chat`) ; lane suggestion-template (SLM/GBNF).
 
 Historique : `3fcc7a8` baseline ①②③ · `3c3d055` HANDOFF+hook · `19e8041` slot Preprocessor ·
 `395e9e3` MRZ parse · `3680c87` rectifier + TD1.
@@ -113,6 +115,19 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   chemin absolu (`MSYS_NO_PATHCONV=1`) ; PowerShell bloqué par règle `deny` (pas dans `settings.json` global).
 
 ## Fait (2026-06-29)
+- **Complétude de submission CI — « tout reçu » vs « il manque un côté » (pilote l'API/UI upload).**
+  `process_ci_submission(source_paths, …) -> CiSubmissionResult` dans `pipeline.py` : une submission = N
+  fichiers (images et/ou PDF combiné recto+verso) → `extract_card_images` aplatit (PDF → images embarquées ;
+  image → elle-même) → on cherche le **recto** (1er côté qui matche un template CI) **puis** le **verso** (MRZ).
+  **Garde-fou** : le recto est trouvé d'abord pour que le **VLM ne tourne JAMAIS sur le recto** ; le verso est
+  cherché dans les images NON-recto (escalade permise là), avec repli sur l'image recto pour une **photo
+  combinée** (lecture cheap, sans VLM). 3 issues : `complete` (recto+verso → record réconcilié + verdict),
+  `incomplete` (1 seul côté → `missing=['recto'|'verso']` → l'UI redemande), `unrecognized` (ni recto ni MRZ).
+  Refactor : `_reconciled_record` extrait de `process_ci_pair` (iso-sortie **confirmée** : concordant →
+  validated/auto). Runner `ci_submission_check.py` (remplace `reconcile_pdf_check.py`). **Prouvé sur réel** :
+  `recto_verso.pdf` → COMPLETE/AUTO (AIT-ALLA, 3/3 clés) ; recto seul → INCOMPLETE missing verso ; verso seul
+  (IMG_8392) → INCOMPLETE missing recto. **À FAIRE ensuite** : exposer ces 3 issues dans le **contrat JSON de
+  l'API** (forme requête liste-de-fichiers + statut `incomplete`/`missing` = décision UI, à confirmer).
 - **Dette reconcile (a) accents SOLDÉE + adaptateur PDF combiné recto+verso.** (1) `reconcile._normalize`
   **plie** désormais les accents (`unicodedata` NFD + drop combining) au lieu de les **jeter** : `GAÊLLE`
   devenait `GALLE` (Ê supprimé) ≠ MRZ `GAELLE` ; maintenant `GAÊLLE`→`GAELLE` = MRZ (la MRZ est accent-free
