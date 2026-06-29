@@ -19,11 +19,10 @@ config-driven (value-check HT+TVA=TTC).** POC solo sur `master`, pas de remote. 
 — oracle = runs réels sur vrais docs + smokes structurels/logiques + KAT (composite MRZ), conforme à la
 discipline smoke-first.
 
-> ▶ **NEXT (reprise) — au choix.** La lane RAG est complète (résumé extractif + retrieval lexical ET
-> sémantique derrière le slot `Retriever`). Pistes ouvertes : (a) **câbler la lane RAG dans le routeur
-> 2-lanes** (un doc sans match template → RAG automatiquement, aujourd'hui les runners sont séparés) ;
-> (b) **tier génératif** (résumé/Q&A LLM en réutilisant un `granite-chat` llama.cpp) ; (c) dettes `reconcile`
-> (accents + tolérance nom, différées). À trancher en ouverture.
+> ▶ **NEXT (reprise) — au choix.** Routeur 2-lanes câblé (`route_document` : structuré vs RAG sur un
+> seul doc ; cf. Fait 2026-06-29). Pistes ouvertes : (a) **tier génératif** (résumé/Q&A LLM en réutilisant
+> un `granite-chat` llama.cpp, comme le projet Personal Assistant) ; (b) **dettes `reconcile`** (accents +
+> tolérance nom, différées) ; (c) **lane suggestion-template** (SLM/GBNF, global). À trancher en ouverture.
 
 Historique : `3fcc7a8` baseline ①②③ · `3c3d055` HANDOFF+hook · `19e8041` slot Preprocessor ·
 `395e9e3` MRZ parse · `3680c87` rectifier + TD1.
@@ -114,6 +113,18 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   chemin absolu (`MSYS_NO_PATHCONV=1`) ; PowerShell bloqué par règle `deny` (pas dans `settings.json` global).
 
 ## Fait (2026-06-29)
+- **Routeur 2-lanes câblé — un seul point d'entrée structuré-vs-RAG, prouvé sur mix réel.**
+  `ocr_bifunction/router.py` : `route_document(path, templates_dir, engine)` → `RoutedDocument`. UNE
+  question — le doc matche-t-il **un** template structuré (toutes catégories) ? → STRUCTURÉ (extract +
+  `validate_fields` → auto/human) ; sinon → RAG (résumé extractif + nb de chunks indexables). Unifie ce que
+  `hp_check`/`facture_check`/`rag_check` faisaient séparément. **2 garde-fous d'honnêteté** : (1) un template
+  **sans bloc `validation`** ne peut PAS être auto-validé single-doc → verdict **human** (« flux paire
+  `process_ci_pair` ») — un **CI recto seul n'est jamais faussement AUTO** ; (2) les courriers mise-en-demeure,
+  jadis « intrus facture » (runner scopé), deviennent correctement **lane RAG** (prose à résumer, pas un
+  déchet). Moteur RapidOCR **lazy** (born-digital ne charge pas l'ONNX). Runner `route_check.py`. **Prouvé**
+  (mix 5 docs) : facture→STRUCTURED/AUTO ; courrier→RAG ; docx→RAG ; image HP→STRUCTURED/AUTO (OCR lazy a
+  tiré) ; CI recto→STRUCTURED/HUMAN (règle paire). **STRUCTURED 3 | RAG 2.** CI **paires** gardent leur entrée
+  dédiée (hors routeur single-doc).
 - **Lane RAG — retriever sémantique (embedding GGUF) livré + prouvé en A/B.** 2e impl `GgufEmbeddingRetriever`
   derrière le **même slot `Retriever`** : modèle `granite-embedding-311M-multilingual-r2-Q8_0.gguf` (FR/EU,
   RGPD), servi par **`llama-server --embedding`** (la build b9542 n'a **pas** de binaire `llama-embedding` ;
@@ -213,8 +224,8 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   détection « recto A + verso B »).
 
 ## Prochain pas
-1. **Lane RAG — intégration** (au choix, cf. NEXT) : câbler dans le routeur 2-lanes (no-match → RAG auto),
-   OU tier génératif (résumé/Q&A LLM via `granite-chat`), OU dettes `reconcile`.
+1. **Au choix** (cf. NEXT) : tier génératif (résumé/Q&A LLM via `granite-chat`), OU dettes `reconcile`,
+   OU lane suggestion-template (SLM/GBNF, global).
 2. **Dettes `reconcile` différées** (si besoin, après plus d'exemples) : (a) plier les accents dans `_normalize` ;
    (b) tolérance floue nom = décision sécurité.
 3. **Lane suggestion-template** (SLM/GBNF) — spec → `docs/briefs/BRIEF-suggestion-template.md` (global, plus tard).
