@@ -10,6 +10,7 @@ failure mode behind ~200 desks validating blind at ~90% error.
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass, field
 
 from ocr_bifunction.mrz import MrzFields
@@ -33,8 +34,20 @@ class ReconcileResult:
     reasons: list[str] = field(default_factory=list)
 
 
+def _fold_accents(text: str) -> str:
+    """Strip diacritics: 'GAËLLE' -> 'GAELLE'. NFD splits an accented letter into its base
+    plus a combining mark; dropping the marks leaves the bare letter. This is exactly what
+    the MRZ does by ICAO transliteration (it carries no accents), so folding makes the recto
+    comparable to it — without it 'Ê' was dropped entirely and 'GAÊLLE' became 'GALLE'."""
+    return "".join(
+        char
+        for char in unicodedata.normalize("NFD", text)
+        if not unicodedata.combining(char)
+    )
+
+
 def _normalize(value: str | None) -> str:
-    return re.sub(r"[^A-Z0-9]", "", value.upper()) if value else ""
+    return re.sub(r"[^A-Z0-9]", "", _fold_accents(value).upper()) if value else ""
 
 
 def reconcile(recto_fields: dict[str, str | None], mrz: MrzFields) -> ReconcileResult:

@@ -113,6 +113,19 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   chemin absolu (`MSYS_NO_PATHCONV=1`) ; PowerShell bloqué par règle `deny` (pas dans `settings.json` global).
 
 ## Fait (2026-06-29)
+- **Dette reconcile (a) accents SOLDÉE + adaptateur PDF combiné recto+verso.** (1) `reconcile._normalize`
+  **plie** désormais les accents (`unicodedata` NFD + drop combining) au lieu de les **jeter** : `GAÊLLE`
+  devenait `GALLE` (Ê supprimé) ≠ MRZ `GAELLE` ; maintenant `GAÊLLE`→`GAELLE` = MRZ (la MRZ est accent-free
+  par translittération ICAO, donc plier rend le recto comparable). **Crucial** : le fix n'introduit **AUCUNE
+  tolérance floue** — un vrai écart d'1 char (`Gaëlle`≠`GAELE`, le type de slip VLM) reste un **MISMATCH** →
+  la détection « recto A + verso B » est intacte. Oracle : smoke synthétique `reconcile_normalize_smoke.py`
+  (7 cas, positifs accents + négatifs réels) + run réel ci-dessous. (2) **Adaptateur PDF combiné**
+  `reconcile_pdf_check.py` : un PDF 1 page / 2 images (recto+verso scannés ensemble, image-only) → extrait
+  les 2 images (`pymupdf.extract_image`) → **auto-détecte** recto vs verso (le recto est le côté qui matche
+  un template CI ; les 2 ordres sont essayés) → `process_ci_pair`. **Prouvé** sur `inputs/recto_verso.pdf`
+  (gitignoré) : carte AIT-ALLA, recto=image_0, MRZ lue en **raw** (pas de VLM), 3/3 clés concordent →
+  **AUTO**. Adaptateur jetable (runner ; à promouvoir dans `pipeline` si l'usage se confirme). **Dette (b)
+  tolérance floue nom = décision sécurité, EN ATTENTE de l'utilisateur** (cf. Suivis ouverts).
 - **Routeur 2-lanes câblé — un seul point d'entrée structuré-vs-RAG, prouvé sur mix réel.**
   `ocr_bifunction/router.py` : `route_document(path, templates_dir, engine)` → `RoutedDocument`. UNE
   question — le doc matche-t-il **un** template structuré (toutes catégories) ? → STRUCTURÉ (extract +
@@ -226,8 +239,8 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
 ## Prochain pas
 1. **Au choix** (cf. NEXT) : tier génératif (résumé/Q&A LLM via `granite-chat`), OU dettes `reconcile`,
    OU lane suggestion-template (SLM/GBNF, global).
-2. **Dettes `reconcile` différées** (si besoin, après plus d'exemples) : (a) plier les accents dans `_normalize` ;
-   (b) tolérance floue nom = décision sécurité.
+2. **Dette `reconcile` (b)** : tolérance floue nom = **décision sécurité EN ATTENTE** (recommandation : rester
+   strict — le fix accents (a) a retiré les faux négatifs ; les écarts restants sont réels → human). (a) = FAIT.
 3. **Lane suggestion-template** (SLM/GBNF) — spec → `docs/briefs/BRIEF-suggestion-template.md` (global, plus tard).
 4. **Validation facture — extensions** (si corpus s'élargit) : TVA non nulle réelle ; décimales mixtes ; multi-taux.
 - **Async côté IT (différé, leur territoire)** : `_jobs` dict → table `ocr_jobs_*` (D1), worker Python →
