@@ -11,5 +11,9 @@
       "pattern": "Total HT\\s+(\\d+\\.\\d{2})",
       "normalize": "amount"
     }
-  ]
+  ],
+  "validation": {
+    "comment": "TVA non applicable (art. 293 B franchise): no TVA/TTC, so no sum check applies — only the HT presence is required. The absent sum rule is the template's honest statement, not a gap.",
+    "required": [{ "field": "total_ht", "check": "present" }]
+  }
 }

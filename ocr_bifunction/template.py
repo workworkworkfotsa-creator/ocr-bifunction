@@ -171,3 +171,74 @@ def extract_fields(lines: list[TextLine], template: dict) -> dict[str, str | Non
             value_line.text, field.get("normalize", "strip")
         )
     return extracted
+
+
+def _parse_amount(value: str | None) -> float | None:
+    """Parse a normalized amount ('1234,56' or '1234.56') to a float, or None.
+
+    The "amount" normalize already stripped thousands separators (space / NBSP); only a
+    comma-or-dot decimal remains. Returns None on an empty or unparseable value so the
+    caller fails loud with a reason instead of silently passing a bad check.
+    """
+    if not value:
+        return None
+    try:
+        return float(value.replace(",", "."))
+    except ValueError:
+        return None
+
+
+def _check_sum(fields: dict[str, str | None], rule: dict) -> list[str]:
+    """Value check: the `terms` amounts must sum to the `equals` amount within tolerance.
+
+    e.g. montant_ht + montant_tva == montant_ttc. A missing/unparseable input fails loud
+    (the check cannot be proven, so it is NOT a silent pass).
+    """
+    terms: list[str] = rule["terms"]
+    equals_field: str = rule["equals"]
+    tolerance: float = rule.get("tolerance", 0.01)
+
+    parsed_terms = {name: _parse_amount(fields.get(name)) for name in terms}
+    total = _parse_amount(fields.get(equals_field))
+    missing = [name for name, amount in parsed_terms.items() if amount is None]
+    if total is None:
+        missing.append(equals_field)
+    if missing:
+        return [f"sum check ({equals_field}): missing/unreadable {', '.join(missing)}"]
+
+    # Compare in integer cents: amounts are 2-decimal currency, and float subtraction
+    # leaves noise (100.00 + 33.33 - 133.34 != exactly -0.01) that would tip a knife-edge
+    # one-cent tolerance the wrong way. Cents make the money comparison exact.
+    summed = sum(amount for amount in parsed_terms.values() if amount is not None)
+    difference_cents = abs(round(summed * 100) - round(total * 100))
+    if difference_cents > round(tolerance * 100):
+        return [
+            f"sum check failed: {' + '.join(terms)} = {summed:.2f} "
+            f"!= {equals_field} = {total:.2f} (tolerance {tolerance})"
+        ]
+    return []
+
+
+def validate_fields(fields: dict[str, str | None], validation: dict) -> list[str]:
+    """Evaluate a template's `validation` block against extracted fields -> failure reasons.
+
+    Empty list = every required check passed (-> auto). Config-driven: the checks travel
+    WITH the template (the Backoffice curates them), so the SAME evaluator serves every
+    document type. Two check kinds, both declared per template:
+      - present: the named field must be non-empty (presence, value-agnostic).
+      - sum:     `terms` must sum to `equals` within `tolerance` (a value check).
+    A layout with no cross-check to make (e.g. TVA autoliquidation) simply declares fewer
+    rules — the absence of a sum check is the template's honest statement, not a gap.
+    """
+    reasons: list[str] = []
+    for rule in validation.get("required", []):
+        check = rule.get("check")
+        if check == "present":
+            field_name = rule["field"]
+            if not fields.get(field_name):
+                reasons.append(f"{field_name}: required (presence) but not read")
+        elif check == "sum":
+            reasons.extend(_check_sum(fields, rule))
+        else:
+            reasons.append(f"unknown validation check: {check!r}")
+    return reasons

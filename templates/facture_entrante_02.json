@@ -31,5 +31,17 @@
       "pattern": "\\bau\\s+(\\d{2}/\\d{2}/\\d{4})",
       "normalize": "date_ddmmyyyy"
     }
-  ]
+  ],
+  "validation": {
+    "required": [
+      { "field": "total_ht", "check": "present" },
+      { "field": "total_ttc", "check": "present" },
+      {
+        "check": "sum",
+        "terms": ["total_ht", "montant_tva"],
+        "equals": "total_ttc",
+        "tolerance": 0.01
+      }
+    ]
+  }
 }

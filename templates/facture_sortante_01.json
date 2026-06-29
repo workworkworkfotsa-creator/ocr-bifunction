@@ -40,5 +40,17 @@
       "pattern": "payable le\\s+(\\d{2}/\\d{2}/\\d{4})",
       "normalize": "date_ddmmyyyy"
     }
-  ]
+  ],
+  "validation": {
+    "required": [
+      { "field": "montant_ht", "check": "present" },
+      { "field": "montant_ttc", "check": "present" },
+      {
+        "check": "sum",
+        "terms": ["montant_ht", "montant_tva"],
+        "equals": "montant_ttc",
+        "tolerance": 0.01
+      }
+    ]
+  }
 }

@@ -14,15 +14,16 @@
 
 **Porte d'entrée CI prouvée bout-en-bout + pipeline câblé + extraction factures multi-layout + lecture
 couverte (RapidOCR + Docling fallback) ; LightOnOCR-2 validé en moteur d'escalade ; maquette API avec
-escalade ASYNC câblée + prouvée sur vraies images (validated / pending→done).** POC solo sur `master`,
-pas de remote. **Pas de tests pytest** — oracle = runs réels sur vrais docs + smokes structurels +
-KAT (composite MRZ), conforme à la discipline smoke-first.
+escalade ASYNC câblée + prouvée sur vraies images (validated / pending→done) ; validation facture
+config-driven (value-check HT+TVA=TTC).** POC solo sur `master`, pas de remote. **Pas de tests pytest**
+— oracle = runs réels sur vrais docs + smokes structurels/logiques + KAT (composite MRZ), conforme à la
+discipline smoke-first.
 
-> ▶ **NEXT (reprise) — Validation facture config-driven (HT + TVA = TTC).** L'escalade async est câblée
-> + prouvée (cf. Fait 2026-06-29 ci-dessous). Prochain incrément de valeur : la **value-check** facture
-> — les 4 templates *lisent* déjà ; reste le bloc `validation` du template qui calcule HT+TVA=TTC (même
-> patron config-driven que la présence-check HP, mais value-check). Alternatives ouvertes si on préfère :
-> dettes `reconcile` (différées, micro-corpus) ou lane RAG (docx). À trancher en ouverture.
+> ▶ **NEXT (reprise) — Lane RAG (docx non-structurés) OU dettes `reconcile`.** La lane structurée
+> (CI + factures + HP) valide désormais en **config-driven** (présence + value-check ; cf. Fait 2026-06-29).
+> Prochain : soit ouvrir la **lane RAG** (retrieval sur docx/articles — l'autre branche du routing 2-lanes,
+> plus gros, embeddings déjà dans `models/`), soit solder les **dettes `reconcile`** (accents + tolérance
+> nom, différées, micro-corpus). À trancher en ouverture.
 
 Historique : `3fcc7a8` baseline ①②③ · `3c3d055` HANDOFF+hook · `19e8041` slot Preprocessor ·
 `395e9e3` MRZ parse · `3680c87` rectifier + TD1.
@@ -113,6 +114,20 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   chemin absolu (`MSYS_NO_PATHCONV=1`) ; PowerShell bloqué par règle `deny` (pas dans `settings.json` global).
 
 ## Fait (2026-06-29)
+- **Validation facture config-driven (value-check HT + TVA = TTC) — prouvée sur vrai corpus.** Validateur
+  générique `validate_fields(fields, validation)` dans `template.py` (2 types de check, **les critères
+  voyagent avec le template** = sketch D2) : `present` (présence, value-agnostic — déjà HP) **+ `sum`**
+  (value-check : `terms` somment à `equals` à `tolerance` près). 4 templates facture dotés d'un bloc
+  `validation` **par layout** : full-VAT (`facture_sortante_01`, `facture_entrante_02`) → sum ht+tva=ttc ;
+  autoliquidation/293 B (`facture_entrante_01/03`) → présence ht seule (**l'absence de sum est la déclaration
+  honnête du template, pas un trou**). Runner `facture_check.py` (miroir `hp_check.py`, born-digital →
+  text-layer PyMuPDF, **pas de moteur OCR**). `hp_check.py` **refactoré** sur le validateur partagé
+  (iso-sortie confirmée : AUTO 5/9 inchangé). **Prouvé** : 5 vraies factures → AUTO, 2 courriers
+  mise-en-demeure → HUMAN (intrus, no match) ; sum-check tire sur le full-VAT réel (ex. 9966,00 + 0,00 =
+  9966,00). **Bug attrapé par le smoke** : corpus réel 100 % TVA=0,00 → le sum ne discriminait jamais ;
+  smoke synthétique `facture_validation_smoke.py` (TVA non nulle correcte/fausse/tolérance/manquant) a
+  exposé une **erreur flottante au centime près** → corrigé en **comparaison centimes entiers** (exact).
+  Décimales virgule ET point gérées (`_parse_amount`). Levier algo : `tolerance` par template (4e surface).
 - **Escalade ASYNC câblée côté API + prouvée sur vraies images.** `api_maquette.py` : le douteux
   (`human`) n'est plus rendu `200 needs_review` synchrone → il **enfile une escalade hors chemin requête**
   et renvoie **`202 pending` + `job_id`** ; un **worker daemon sérialisé** (`ESCALATION_WORKER_COUNT=1`,
@@ -172,11 +187,12 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   détection « recto A + verso B »).
 
 ## Prochain pas
-1. **Validation facture config-driven** (HT+TVA=TTC, bloc `validation` du template, **value-check**) — cf. NEXT.
+1. **Lane RAG** (docx + articles non-structurés) — l'autre branche du routing 2-lanes (retrieval, pas
+   d'extraction) ; embeddings déjà dans `models/`. **OU** dettes `reconcile` ci-dessous. Cf. NEXT.
 2. **Dettes `reconcile` différées** (si besoin, après plus d'exemples) : (a) plier les accents dans `_normalize` ;
    (b) tolérance floue nom = décision sécurité.
 3. **Lane suggestion-template** (SLM/GBNF) — spec → `docs/briefs/BRIEF-suggestion-template.md` (global, plus tard).
-4. **Lane RAG** (docx + articles).
+4. **Validation facture — extensions** (si corpus s'élargit) : TVA non nulle réelle ; décimales mixtes ; multi-taux.
 - **Async côté IT (différé, leur territoire)** : `_jobs` dict → table `ocr_jobs_*` (D1), worker Python →
   cron/queue réelle, idempotence/job store persistés. Cf. `docs/contrat-bd-destination.md` (co-geler jour J).
 - Dettes mineures : décimales virgule/point ; date textuelle `facture_entrante_03` ; mmproj F32 (qualité max ; Q8 déjà OK).

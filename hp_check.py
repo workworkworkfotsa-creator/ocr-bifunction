@@ -16,7 +16,12 @@ import sys
 from pathlib import Path
 
 from ocr_bifunction.reader import OcrEngine, read_document
-from ocr_bifunction.template import extract_fields, load_templates, match_template
+from ocr_bifunction.template import (
+    extract_fields,
+    load_templates,
+    match_template,
+    validate_fields,
+)
 
 PROJECT_ROOT = Path(__file__).parent
 TEMPLATES_DIRECTORY = PROJECT_ROOT / "templates"
@@ -39,11 +44,7 @@ def validate_preuve_test(
             {},
         )
     fields = extract_fields(result.lines, template)
-    reasons: list[str] = []
-    for rule in template.get("validation", {}).get("required", []):
-        field_name = rule["field"]
-        if rule.get("check") == "present" and not fields.get(field_name):
-            reasons.append(f"{field_name}: required (presence) but not read")
+    reasons = validate_fields(fields, template.get("validation", {}))
     verdict = "human" if reasons else "auto"
     return verdict, reasons, template["template_id"], fields
 
