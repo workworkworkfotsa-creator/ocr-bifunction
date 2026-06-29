@@ -1,40 +1,30 @@
-"""API maquette — a thin network door over the proven `process_ci_pair` pipeline.
+"""API maquette — a thin network door over the proven CI submission pipeline.
 
-This is a PEDAGOGICAL MOCK, not production. Its only job is to let the contract run
-so we can *see* what "having an API" means: send a CI recto+verso pair, get back a
-stable `{status, verdict, reasons, job_id}` envelope. The value lives in
-`process_ci_pair`; this file only exposes it behind an HTTP door, exactly like
-`OcrEngine` exposes an OCR engine behind an interface. The pipeline is NOT touched.
+This is a PEDAGOGICAL MOCK, not production. Its only job is to let the contract run so we
+can *see* what "having an API" means: upload one CI submission (any mix of images and/or a
+combined recto+verso PDF), get back a stable envelope. The value lives in
+`process_ci_submission`; this file only exposes it behind an HTTP door. The pipeline is NOT
+touched.
+
+The upload-facing contract has four outcomes (the upload UI acts on `status`):
+  - validated   (200) — both sides received and confident;
+  - pending     (202) — both sides received but doubtful: escalated async, poll job_id;
+  - incomplete  (200) — one side missing: `missing` says which to ask the user for;
+  - unrecognized(200) — not a CI submission at all.
 
 Two lanes, one door:
-  - FAST PATH (in the request) — `process_ci_pair` with NO escalation engine. The
-    confident pair comes back `200 validated` in seconds (RapidOCR, never the VLM).
-  - ESCALATION (off the request path) — a `human`/doubtful verdict is NOT returned
-    synchronously: the request enqueues a heavy re-run WITH the VLM escalation engine
-    and answers `202 pending` + a `job_id`. A single serialized worker drains the
-    queue (the ~171 s/img VLM must not run concurrently on the 8 GB target), flips the
-    job `pending`->`done`, and the client polls `GET /v1/jobs/{id}` for the verdict.
+  - FAST PATH (in the request) — process_ci_submission with NO escalation engine.
+  - ESCALATION (off the request path) — a complete-but-doubtful (`human`) submission is not
+    returned synchronously: it enqueues a heavy re-run WITH the VLM and answers pending. A
+    single serialized worker drains the queue (the ~171 s/img VLM must not run concurrently
+    on the 8 GB target), flips the job pending->done, and the client polls GET /v1/jobs/{id}.
 
-This is the maquette of the destination DB "domain 1 — jobs + queue": the in-memory
-`_jobs` dict and `queue.Queue` are the disposable proxy of the future `ocr_jobs_*`
-table + worker. IT swaps the store (MariaDB), the queue mechanism, hosting, auth and
-TLS — the disposable adapters. The job lifecycle SHAPE is what survives the frontier.
+The in-memory `_jobs` dict and `queue.Queue` are the disposable proxy of the destination DB
+"domain 1 — jobs + queue". IT swaps the store, queue, hosting, auth, TLS — disposable
+adapters. The job/upload SHAPE is what survives the frontier.
 
 Run it:
     uv run uvicorn api_maquette:app --reload
-
-Then open the auto-generated contract at http://127.0.0.1:8000/docs and try it there,
-or call it directly (base64 the two images first):
-    curl -X POST http://127.0.0.1:8000/v1/documents:validate \
-         -H "Content-Type: application/json" \
-         -d '{"filename": "ci.jpg", "recto_base64": "<...>", "verso_base64": "<...>",
-              "request_id": "demo-1"}'
-
-The three named cases:
-  - a concordant pair        -> 200 {"status": "validated", "verdict": "auto"}
-  - recto of A + verso of B   -> 202 {"status": "pending", "job_id": "job_..."}  (escalated)
-  - a verso whose MRZ raw+enhance miss -> 202 pending, then the worker's VLM retry lands
-    a verdict in the job; poll: curl http://127.0.0.1:8000/v1/jobs/<job_id>
 """
 
 from __future__ import annotations
@@ -52,13 +42,12 @@ from typing import Callable, Literal
 from fastapi import FastAPI, HTTPException, Response, status
 from pydantic import BaseModel, Field
 
-from ocr_bifunction.pipeline import CiRecord, process_ci_pair
+from ocr_bifunction.pipeline import CiSubmissionResult, process_ci_submission
 from ocr_bifunction.reader import OcrEngine
 
 PROJECT_ROOT = Path(__file__).parent
 TEMPLATES_DIRECTORY = PROJECT_ROOT / "templates"
-# A pair carries one filename in the contract; recto and verso are written with the
-# same suffix (a CI pair is normally photographed in one format). Falls back to .jpg.
+# Default suffix when an uploaded filename carries none (a CI photo is usually one format).
 DEFAULT_SUFFIX = ".jpg"
 
 # Escalation runs the VLM (~171 s/img, ~1.8 GB RAM on the 8 GB target). It MUST stay
@@ -69,28 +58,23 @@ ESCALATION_WORKER_COUNT = 1
 app = FastAPI(
     title="OCR BiFunction — API maquette",
     version="1",
-    description="Thin mock door over the CI recto+verso pipeline. Not production.",
+    description="Thin mock door over the CI submission pipeline. Not production.",
 )
 
 # --- Toy in-memory state (NOT production: lost on restart, never persisted). ---------
-# `_jobs` is the disposable proxy of destination domain 1 (`ocr_jobs_*`). Each entry
-# carries the lifecycle status the future table holds; the client GET maps it to the
-# simpler pending|done view. Mutated from the worker thread, read from request threads:
-# whole-entry replacement is atomic under the GIL, enough for the maquette (no lock).
+# `_jobs` is the disposable proxy of destination domain 1 (`ocr_jobs_*`). Mutated from the
+# worker thread, read from request threads: whole-entry replacement is atomic under the GIL.
 _jobs: dict[str, dict[str, object]] = {}
-# Idempotency cache keyed by request_id: a replayed request_id returns the same result
-# (same job_id for a pending escalation) without reprocessing. A toy, not production.
+# Idempotency cache keyed by request_id: a replay returns the same result (same job_id).
 _idempotency_cache: dict[str, "ValidateResponse"] = {}
 
-# The fast OCR engine is heavy to build (loads ONNX models on CPU), so it is constructed
-# once on first use and reused across requests instead of per call.
+# The fast OCR engine is heavy to build (loads ONNX models on CPU): built once, reused.
 _engine: OcrEngine | None = None
 
 
 def _get_engine() -> OcrEngine:
     global _engine
     if _engine is None:
-        # Imported lazily so app startup and /docs stay instant (no model load).
         from ocr_bifunction.rapidocr_engine import RapidOcrEngine
 
         _engine = RapidOcrEngine()
@@ -98,8 +82,6 @@ def _get_engine() -> OcrEngine:
 
 
 # --- The escalation engine: the heavy VLM, built lazily, swappable for tests. ---------
-# The default is the proven LightOnOCR-2 slot. A smoke can inject a fast fake via
-# `set_escalation_engine_factory` so the async SHAPE is exercised without the ~171 s VLM.
 EscalationEngineFactory = Callable[[], OcrEngine]
 
 
@@ -130,19 +112,25 @@ def _get_escalation_engine() -> OcrEngine:
 # --- The contract, written black on white (this is what IT wants to see). ------------
 
 
-class ValidateRequest(BaseModel):
-    """One CI recto+verso pair to validate. The pipeline works on a PAIR, so the
-    contract honestly carries two files, not one."""
+class FileUpload(BaseModel):
+    """One uploaded file. The server figures out which card side(s) it carries."""
 
-    filename: str = Field(description="Original name, used only for the file suffix.")
-    recto_base64: str = Field(description="Recto image bytes, base64-encoded.")
-    verso_base64: str = Field(description="Verso image bytes, base64-encoded.")
+    filename: str = Field(description="Original name, used for the file suffix.")
+    content_base64: str = Field(description="File bytes, base64-encoded.")
+
+
+class ValidateRequest(BaseModel):
+    """One CI submission: any mix of images and/or a combined recto+verso PDF. The server
+    extracts the card sides and decides whether the submission is complete."""
+
+    files: list[FileUpload] = Field(
+        description="The uploaded file(s) of one submission."
+    )
     document_type: str | None = Field(
         default=None,
         description=(
-            "Optional document-type hint (e.g. 'carte_identite'). When the upload field "
-            "already knows the type, template matching is scoped to that category only "
-            "(an invoice template can never accidentally match). None tries every template."
+            "Optional document-type hint (e.g. 'carte_identite') scoping template matching "
+            "to that category. None tries every template."
         ),
     )
     request_id: str | None = Field(
@@ -153,9 +141,10 @@ class ValidateRequest(BaseModel):
     model_config = {
         "json_schema_extra": {
             "example": {
-                "filename": "ci.jpg",
-                "recto_base64": "<base64 of the recto image>",
-                "verso_base64": "<base64 of the verso image>",
+                "files": [
+                    {"filename": "ci_recto.jpg", "content_base64": "<base64>"},
+                    {"filename": "ci_verso.jpg", "content_base64": "<base64>"},
+                ],
                 "document_type": "carte_identite",
                 "request_id": "demo-1",
             }
@@ -166,13 +155,15 @@ class ValidateRequest(BaseModel):
 class ValidateResponse(BaseModel):
     """Always this shape — never a mute response when something fails.
 
-    `validated` (200) is the confident fast-path verdict. `pending` (202) means the
-    doubtful case was handed to the async escalation lane; poll `job_id` for the result.
+    `validated` (200): complete + confident. `pending` (202): complete + doubtful, escalated
+    async (poll job_id). `incomplete` (200): a side is missing (`missing` says which).
+    `unrecognized` (200): not a CI submission.
     """
 
-    status: Literal["validated", "pending"]
+    status: Literal["validated", "pending", "incomplete", "unrecognized"]
     verdict: Literal["auto", "human"] | None
     reasons: list[str] = Field(default_factory=list)
+    missing: list[str] = Field(default_factory=list)  # subset of ["recto", "verso"]
     job_id: str | None = None
 
 
@@ -186,21 +177,29 @@ class JobResponse(BaseModel):
     verso_read_path: str | None = None
 
 
-# --- Mapping: the REAL record's verdict -> the contract. ------------------------------
-
-
-def _map_record_to_response(record: CiRecord) -> ValidateResponse:
-    """Translate a confident (auto) CiRecord into the wire contract. Only `auto` reaches
-    here as a synchronous answer; the `human` case is routed to the escalation lane."""
-    return ValidateResponse(
-        status="validated", verdict="auto", reasons=record.reasons, job_id=None
+def _http_status_for(response: ValidateResponse) -> int:
+    """202 says 'received, I'm working' for the escalation lane; 200 for everything else."""
+    return (
+        status.HTTP_202_ACCEPTED if response.status == "pending" else status.HTTP_200_OK
     )
 
 
-def _http_status_for(response: ValidateResponse) -> int:
-    """202 says 'received, I'm working' for the escalation lane; 200 for a real verdict."""
-    return (
-        status.HTTP_202_ACCEPTED if response.status == "pending" else status.HTTP_200_OK
+# --- Mapping: a CiSubmissionResult -> the wire contract. ------------------------------
+
+
+def _map_complete_auto(result: CiSubmissionResult) -> ValidateResponse:
+    """A complete + confident submission. Only `auto` reaches here synchronously; the
+    `human` (doubtful) case is routed to the escalation lane by the endpoint."""
+    return ValidateResponse(
+        status="validated", verdict="auto", reasons=result.record.reasons
+    )
+
+
+def _map_incomplete_or_unrecognized(result: CiSubmissionResult) -> ValidateResponse:
+    """A submission with a missing side, or not a CI at all — no async work, the UI acts."""
+    wire_status = "incomplete" if result.status == "incomplete" else "unrecognized"
+    return ValidateResponse(
+        status=wire_status, verdict=None, reasons=result.reasons, missing=result.missing
     )
 
 
@@ -209,13 +208,11 @@ def _http_status_for(response: ValidateResponse) -> int:
 
 @dataclass
 class _EscalationJob:
-    """One unit of escalation work. Carries the image bytes so the worker is self-
-    contained; the bytes live in memory only until processed (no extra disk PII)."""
+    """One unit of escalation work, carrying the uploaded files so the worker re-runs the
+    whole submission WITH the VLM. Bytes live in memory only until processed."""
 
     job_id: str
-    recto_bytes: bytes
-    verso_bytes: bytes
-    suffix: str
+    files: list[tuple[str, bytes]]  # (filename, bytes)
     category: str | None
 
 
@@ -238,12 +235,7 @@ def _ensure_workers_started() -> None:
 
 
 def _escalation_worker() -> None:
-    """Drain the queue one job at a time, re-running the pipeline WITH the VLM engine.
-
-    Whatever the cascade decides (the VLM only fires if raw+enhance miss the MRZ), the
-    job lands `done` with the final verdict, or `failed` if the engine/pipeline crashes —
-    the error is recorded in the job, never swallowed silently.
-    """
+    """Drain the queue one job at a time, re-running the submission WITH the VLM engine."""
     while True:
         job = _escalation_queue.get()
         try:
@@ -252,9 +244,11 @@ def _escalation_worker() -> None:
             _jobs[job.job_id] = {
                 "status": "done",
                 "lane": "escalation",
-                "verdict": record.verdict,
-                "reasons": record.reasons,
-                "verso_read_path": record.verso_read_path,
+                "verdict": record.verdict if record else None,
+                "reasons": record.reasons
+                if record
+                else ["escalation produced no record"],
+                "verso_read_path": record.verso_read_path if record else "none",
             }
         except Exception as error:  # surface the failure in the job, do not hide it
             _jobs[job.job_id] = {
@@ -268,35 +262,38 @@ def _escalation_worker() -> None:
             _escalation_queue.task_done()
 
 
-def _escalate(job: _EscalationJob) -> CiRecord:
-    """Re-run the full pipeline WITH the escalation engine wired in, on temp files."""
-    # ignore_cleanup_errors: this runs in a daemon worker; if the process exits mid-job
-    # the temp-dir rmtree can race interpreter shutdown on Windows (WinError 145). The
-    # PII still goes when the dir is removed; a transient cleanup miss must not crash.
+def _write_files(files: list[tuple[str, bytes]], directory: Path) -> list[Path]:
+    """Write (filename, bytes) uploads to a directory, preserving each file's suffix."""
+    paths: list[Path] = []
+    for index, (filename, data) in enumerate(files):
+        suffix = Path(filename).suffix or DEFAULT_SUFFIX
+        file_path = directory / f"file_{index}{suffix}"
+        file_path.write_bytes(data)
+        paths.append(file_path)
+    return paths
+
+
+def _escalate(job: _EscalationJob):
+    """Re-run the whole submission WITH the escalation engine wired in, on temp files."""
+    # ignore_cleanup_errors: this runs in a daemon worker; if the process exits mid-job the
+    # temp-dir rmtree can race interpreter shutdown on Windows (WinError 145). A transient
+    # cleanup miss must not crash; the PII still goes when the dir is removed.
     with tempfile.TemporaryDirectory(
         prefix="ocr_bifunction_esc_", ignore_cleanup_errors=True
     ) as temp_directory:
-        temp_path = Path(temp_directory)
-        recto_path = temp_path / f"recto{job.suffix}"
-        verso_path = temp_path / f"verso{job.suffix}"
-        recto_path.write_bytes(job.recto_bytes)
-        verso_path.write_bytes(job.verso_bytes)
-        return process_ci_pair(
-            recto_path,
-            verso_path,
+        paths = _write_files(job.files, Path(temp_directory))
+        result = process_ci_submission(
+            paths,
             _get_engine(),
             TEMPLATES_DIRECTORY,
             category=job.category,
             escalation_engine=_get_escalation_engine(),
         )
+        return result.record
 
 
 def _enqueue_escalation(
-    recto_bytes: bytes,
-    verso_bytes: bytes,
-    suffix: str,
-    category: str | None,
-    fast_reasons: list[str],
+    files: list[tuple[str, bytes]], category: str | None, fast_reasons: list[str]
 ) -> str:
     """Register a `received` job, enqueue it for the worker, and hand back its id."""
     _ensure_workers_started()
@@ -308,53 +305,47 @@ def _enqueue_escalation(
         "reasons": fast_reasons,  # WHY the fast path doubted, visible while pending
         "verso_read_path": "none",
     }
-    _escalation_queue.put(
-        _EscalationJob(job_id, recto_bytes, verso_bytes, suffix, category)
-    )
+    _escalation_queue.put(_EscalationJob(job_id, files, category))
     return job_id
 
 
-# --- Fast path: decode + run the pipeline with no escalation, in the request. --------
+# --- Fast path: decode + run the submission with no escalation, in the request. ------
 
 
-def _decode_pair(request: ValidateRequest) -> tuple[bytes, bytes, str]:
-    """Decode the base64 pair and pick a temp-file suffix. Raises HTTPException(400) on a
-    bad request (4xx = caller's fault); the error is surfaced, never swallowed."""
-    try:
-        recto_bytes = base64.b64decode(request.recto_base64, validate=True)
-        verso_bytes = base64.b64decode(request.verso_base64, validate=True)
-    except (binascii.Error, ValueError) as error:
-        raise HTTPException(status_code=400, detail=f"invalid base64: {error}")
-    if not recto_bytes or not verso_bytes:
-        raise HTTPException(
-            status_code=400, detail="recto_base64 and verso_base64 must be non-empty"
-        )
-    suffix = Path(request.filename).suffix or DEFAULT_SUFFIX
-    return recto_bytes, verso_bytes, suffix
+def _decode_files(request: ValidateRequest) -> list[tuple[str, bytes]]:
+    """Decode the uploaded files. Raises HTTPException(400) on a bad/empty request."""
+    if not request.files:
+        raise HTTPException(status_code=400, detail="files must not be empty")
+    decoded: list[tuple[str, bytes]] = []
+    for upload in request.files:
+        try:
+            data = base64.b64decode(upload.content_base64, validate=True)
+        except (binascii.Error, ValueError) as error:
+            raise HTTPException(
+                status_code=400,
+                detail=f"invalid base64 for {upload.filename!r}: {error}",
+            )
+        if not data:
+            raise HTTPException(
+                status_code=400, detail=f"empty content for {upload.filename!r}"
+            )
+        decoded.append((upload.filename, data))
+    return decoded
 
 
-def _run_fast_pipeline(
-    recto_bytes: bytes, verso_bytes: bytes, suffix: str, category: str | None
-) -> CiRecord:
-    """Run the real pipeline on temp files with NO escalation engine (the fast path).
+def _run_fast_submission(
+    files: list[tuple[str, bytes]], category: str | None
+) -> CiSubmissionResult:
+    """Run process_ci_submission on temp files with NO escalation engine (the fast path).
 
-    Temp files live under the system temp dir (never a versioned path) and the whole
-    directory is removed on exit, so the PII does not linger on disk. Raises
-    HTTPException(500) on a pipeline/engine crash (5xx = server's fault).
+    Temp files live under the system temp dir and the directory is removed on exit, so the
+    PII does not linger. Raises HTTPException(500) on a pipeline/engine crash.
     """
     with tempfile.TemporaryDirectory(prefix="ocr_bifunction_api_") as temp_directory:
-        temp_path = Path(temp_directory)
-        recto_path = temp_path / f"recto{suffix}"
-        verso_path = temp_path / f"verso{suffix}"
-        recto_path.write_bytes(recto_bytes)
-        verso_path.write_bytes(verso_bytes)
+        paths = _write_files(files, Path(temp_directory))
         try:
-            return process_ci_pair(
-                recto_path,
-                verso_path,
-                _get_engine(),
-                TEMPLATES_DIRECTORY,
-                category=category,
+            return process_ci_submission(
+                paths, _get_engine(), TEMPLATES_DIRECTORY, category=category
             )
         except Exception as error:  # surface a pipeline/engine crash as 5xx, don't hide
             raise HTTPException(
@@ -367,46 +358,43 @@ def _run_fast_pipeline(
 
 @app.post("/v1/documents:validate", response_model=ValidateResponse)
 def validate_document(request: ValidateRequest, response: Response) -> ValidateResponse:
-    """Validate one CI recto+verso pair.
+    """Validate one CI submission (any mix of images / a combined PDF).
 
-    The fast path never escalates. A confident pair returns `200 validated`; a doubtful
-    one is handed to the async escalation lane and returns `202 pending` + a `job_id`.
+    Complete + confident -> 200 validated. Complete + doubtful -> 202 pending (escalated
+    async). A missing side -> 200 incomplete (+ `missing`). Not a CI -> 200 unrecognized.
     """
     if request.request_id and request.request_id in _idempotency_cache:
         cached = _idempotency_cache[request.request_id]
         response.status_code = _http_status_for(cached)
         return cached
 
-    recto_bytes, verso_bytes, suffix = _decode_pair(request)  # may raise 400
-    record = _run_fast_pipeline(  # may raise 500
-        recto_bytes, verso_bytes, suffix, request.document_type
-    )
+    files = _decode_files(request)  # may raise 400
+    result = _run_fast_submission(files, request.document_type)  # may raise 500
 
-    if record.verdict == "auto":
-        result = _map_record_to_response(record)
-    else:
-        # Doubtful: escalate off the request path, answer pending. The page is not blocked
-        # by the heavy VLM; the verdict lands in the job for the client to poll.
+    if result.status == "complete" and result.record.verdict == "auto":
+        wire = _map_complete_auto(result)
+    elif (
+        result.status == "complete"
+    ):  # complete but doubtful -> escalate off the request
         job_id = _enqueue_escalation(
-            recto_bytes, verso_bytes, suffix, request.document_type, record.reasons
+            files, request.document_type, result.record.reasons
         )
-        result = ValidateResponse(
-            status="pending", verdict=None, reasons=record.reasons, job_id=job_id
+        wire = ValidateResponse(
+            status="pending", verdict=None, reasons=result.record.reasons, job_id=job_id
         )
+    else:  # incomplete | unrecognized -> the UI acts, no async work
+        wire = _map_incomplete_or_unrecognized(result)
 
     if request.request_id:
-        _idempotency_cache[request.request_id] = result
-    response.status_code = _http_status_for(result)
-    return result
+        _idempotency_cache[request.request_id] = wire
+    response.status_code = _http_status_for(wire)
+    return wire
 
 
 @app.get("/v1/jobs/{job_id}", response_model=JobResponse)
 def get_job(job_id: str) -> JobResponse:
-    """Poll an escalation job. 404 if unknown (4xx = caller asked for something not here).
-
-    Maps the internal lifecycle (`received`/`processing`/`done`/`failed`) to the client's
-    pending|done view: still working -> pending; finished (or failed) -> done.
-    """
+    """Poll an escalation job. 404 if unknown. Maps the internal lifecycle
+    (`received`/`processing`/`done`/`failed`) to the client's pending|done view."""
     job = _jobs.get(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail=f"unknown job_id: {job_id}")

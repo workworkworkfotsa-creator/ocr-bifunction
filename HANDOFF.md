@@ -19,12 +19,11 @@ config-driven (value-check HT+TVA=TTC).** POC solo sur `master`, pas de remote. 
 — oracle = runs réels sur vrais docs + smokes structurels/logiques + KAT (composite MRZ), conforme à la
 discipline smoke-first.
 
-> ▶ **NEXT (reprise) — exposer la complétude de submission dans le contrat JSON de l'API.**
-> `process_ci_submission` (3 issues complete/incomplete/unrecognized) est prouvé côté pipeline (cf. Fait
-> 2026-06-29). Reste à porter ça dans `api_maquette` : requête = **liste de fichiers** (au lieu des 2 champs
-> recto/verso), réponse = statut `incomplete` + `missing:['verso']` pour que l'UI d'upload redemande le côté
-> manquant. **Forme exacte à co-décider avec l'utilisateur** (c'est son contrat UI). Alternatives : tier
-> génératif RAG (`granite-chat`) ; lane suggestion-template (SLM/GBNF).
+> ▶ **NEXT (reprise) — au choix.** L'API expose désormais les 4 issues de submission (cf. Fait 2026-06-29).
+> Pistes : (a) **tier génératif RAG** (résumé/Q&A LLM via `granite-chat` llama.cpp, comme Personal Assistant) ;
+> (b) **lane suggestion-template** (SLM/GBNF, global) ; (c) **scoping recto submission** : `process_ci_submission`
+> avec `category=None` peut classer une facture/HP comme « recto » (read_recto_fields matche tous templates)
+> → aujourd'hui contourné par le hint `document_type=carte_identite` ; à durcir si on veut un défaut CI-only.
 
 Historique : `3fcc7a8` baseline ①②③ · `3c3d055` HANDOFF+hook · `19e8041` slot Preprocessor ·
 `395e9e3` MRZ parse · `3680c87` rectifier + TD1.
@@ -115,6 +114,17 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   chemin absolu (`MSYS_NO_PATHCONV=1`) ; PowerShell bloqué par règle `deny` (pas dans `settings.json` global).
 
 ## Fait (2026-06-29)
+- **API maquette migrée au contrat de SUBMISSION (liste de fichiers + 4 issues) — prouvée sur réel.**
+  Décision UI (tranchée par l'utilisateur) : requête = **`files: [{filename, content_base64}]`** (au lieu des
+  2 champs recto/verso) → gère 1 fichier / 2 photos / PDF combiné / côté manquant uniformément. Réponse =
+  enveloppe étendue `status ∈ {validated, pending, incomplete, unrecognized}` + **`missing: ['recto'|'verso']`**.
+  `validate_document` appelle `process_ci_submission` (fast-path) : complete+auto→`200 validated` ; complete+
+  human→**`202 pending`** (escalade async, le worker re-run `process_ci_submission` AVEC le VLM) ; incomplete→
+  `200` + `missing` (l'UI redemande le côté) ; unrecognized→`200`. Infra worker/queue/seam **inchangée**.
+  **Prouvé** (`api_smoke_real.py` màj, files-list) : combined PDF→validated ; recto seul→incomplete missing
+  verso ; image non-CI→unrecognized ; recto A+verso B→pending ; **cycle async** (`api_smoke_async.py`)
+  pending→done. **Limite connue** : recto détecté via tous templates si `category=None` (une facture pourrait
+  passer pour « recto ») → l'UI CI passe `document_type=carte_identite` (cf. NEXT c).
 - **Complétude de submission CI — « tout reçu » vs « il manque un côté » (pilote l'API/UI upload).**
   `process_ci_submission(source_paths, …) -> CiSubmissionResult` dans `pipeline.py` : une submission = N
   fichiers (images et/ou PDF combiné recto+verso) → `extract_card_images` aplatit (PDF → images embarquées ;

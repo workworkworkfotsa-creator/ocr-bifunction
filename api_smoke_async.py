@@ -67,9 +67,10 @@ def run(
     api_maquette.set_escalation_engine_factory(lambda: fake_engine)
 
     payload: dict[str, object] = {
-        "filename": recto_path.name,
-        "recto_base64": _encode_image(recto_path),
-        "verso_base64": _encode_image(verso_path),
+        "files": [
+            {"filename": recto_path.name, "content_base64": _encode_image(recto_path)},
+            {"filename": verso_path.name, "content_base64": _encode_image(verso_path)},
+        ]
     }
     if document_type is not None:
         payload["document_type"] = document_type
