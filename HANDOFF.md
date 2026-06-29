@@ -18,9 +18,10 @@ sur vraies images (validated + needs_review).** POC solo sur `master`, pas de re
 `feat: API maquette`. **Pas de tests pytest** — oracle = runs réels sur vrais docs + smokes structurels +
 KAT (composite MRZ), conforme à la discipline smoke-first.
 
-> ▶ **NEXT (reprise) — Routing escalade : RapidOCR (échec/low-conf) → LightOnOCR-2 (batch/async).** La
-> maquette API est close (DoD vert, cf. « Fait (2026-06-29) »). Prochaine valeur = brancher la cascade de
-> confiance vers le moteur d'escalade déjà validé.
+> ▶ **NEXT (reprise) — Brancher l'escalade dans `pipeline.py`.** Le moteur `LightOnOcrEngine` est livré ET
+> l'escalade est PROUVÉE (VLM récupère une MRZ que RapidOCR rate → 4/4 checksums → HUMAIN→AUTO). Reste : dans
+> `process_ci_pair`, sur value-check raté (MRZ none / checksum KO après enhance) → retry `LightOnOcrEngine`,
+> puis forme **async fire-and-forget** (jamais bloquer l'API ; résultat via BD ; file sérialisée concurrence 1-2).
 
 Historique : `3fcc7a8` baseline ①②③ · `3c3d055` HANDOFF+hook · `19e8041` slot Preprocessor ·
 `395e9e3` MRZ parse · `3680c87` rectifier + TD1.
@@ -132,9 +133,19 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   d'accès n'est pas capté. **Principe présence-vs-valeur prouvé** : un ID tronqué (« 7HS8S-MA ») valide quand
   même (présence ≠ valeur). Décision actée : **HP = RapidOCR suffit, PAS d'escalade VLM** → libère le budget SLM
   pour les value-checks durs (versos CI). Mémoire `template-validation-architecture-direction` étendue (présence-vs-valeur).
+- **Moteur d'escalade LightOnOCR-2 livré + escalade PROUVÉE.** `LightOnOcrEngine` (slot `OcrEngine`,
+  `ocr_bifunction/lightonocr_engine.py`) : shell vers `llama-mtmd-cli` (build b9542) + GGUF + mmproj, chemins
+  configurables (arg > env `LIGHTONOCR_BINARY|MODEL|MMPROJ` > défaut). GGUF principal copié dans `models/`
+  (gitignoré). **Valeur prouvée sur le cas le plus dur** : un verso CI dont RapidOCR ne parsait PAS la MRZ
+  (`read_path=none`) → le VLM récupère la TD1 → **4/4 checksums ICAO** → HUMAIN bascule en AUTO, concordant avec
+  le recto. Validé **via la classe** (pas une commande ad-hoc). Note IT : `docs/moteur-escalade-lightonocr.md`.
+  Pièges réglés : `--image` casse sur virgule/accents Windows → temp ASCII interne. Cibles d'escalade réelles
+  dans le corpus : **3/4 versos** (2021 MRZ illisible + French_1988 & changement-paul composite=False). **Sortie
+  VLM = texte sans géométrie** (bbox synthétique) → extraction par contenu (MRZ) seulement, pas ancres recto.
 
 ## Prochain pas
-1. **Routing escalade** : RapidOCR (échec/low-conf) → LightOnOCR-2 (batch/async).
+1. **Brancher l'escalade dans `pipeline.py`** : value-check raté → `LightOnOcrEngine` (le moteur est livré +
+   prouvé) ; puis forme async fire-and-forget (résultat via BD, file sérialisée). Cf. NEXT.
 2. **Lane suggestion-template** (SLM/GBNF) — spec → `docs/briefs/BRIEF-suggestion-template.md` (global, plus tard).
 3. **Lane RAG** (docx + articles) ; **Validation facture** (HT+TVA=TTC, template de validation config-driven).
 - Dettes mineures : décimales virgule/point ; date textuelle `facture_entrante_03` ; mmproj F32 (qualité max ; Q8 déjà OK).
