@@ -30,7 +30,10 @@ import urllib.request
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
+
+if TYPE_CHECKING:
+    from ocr_bifunction.reader import TextLine
 
 # Keep accented Latin letters and digits; everything else splits tokens.
 _TOKEN_PATTERN = re.compile(r"[a-zA-ZÀ-ÿ0-9]+")
@@ -54,12 +57,27 @@ STOPWORDS: frozenset[str] = frozenset(
 
 
 @dataclass
+class ProvenanceSpan:
+    """Where one piece of a chunk came from in the SOURCE document: page + box.
+
+    This is the link from the read text back to the original document — so a retrieved
+    clause can be shown verbatim AND located (page, bounding box) for the human to verify
+    against the source. bbox is (x0, y0, x1, y1) in the page coordinate system.
+    """
+
+    page_index: int
+    bbox: tuple[float, float, float, float]
+
+
+@dataclass
 class Chunk:
-    """One indexed passage: its text plus where it came from (source + ordinal)."""
+    """One indexed passage: its text, where it came from (source + ordinal), and the
+    provenance spans (page + bbox) of every source block it was packed from."""
 
     text: str
     source: str
     index: int
+    spans: list[ProvenanceSpan] = field(default_factory=list)
 
 
 @runtime_checkable
@@ -114,6 +132,39 @@ def chunk_document(text: str, source: str, target_tokens: int = 120) -> list[Chu
             current_token_count = 0
     if current_parts:
         chunks.append(Chunk("\n".join(current_parts), source, len(chunks)))
+    return chunks
+
+
+def chunk_textlines(
+    lines: list[TextLine], source: str, target_tokens: int = 120
+) -> list[Chunk]:
+    """Pack read TextLines into chunks while KEEPING provenance (page + bbox).
+
+    Same greedy packing as `chunk_document`, but the input carries geometry: each chunk
+    records the `ProvenanceSpan` of every block it absorbed, so a retrieved passage links
+    back to its exact place in the original document. Born-digital PDFs give one block per
+    TextLine; a chunk straddling a page boundary simply records spans on both pages.
+    """
+    chunks: list[Chunk] = []
+    current_parts: list[str] = []
+    current_spans: list[ProvenanceSpan] = []
+    current_token_count = 0
+    for line in lines:
+        text = line.text.strip()
+        if not text:
+            continue
+        current_parts.append(text)
+        current_spans.append(ProvenanceSpan(line.page_index, line.bbox))
+        current_token_count += len(tokenize(text))
+        if current_token_count >= target_tokens:
+            chunks.append(
+                Chunk("\n".join(current_parts), source, len(chunks), current_spans)
+            )
+            current_parts, current_spans, current_token_count = [], [], 0
+    if current_parts:
+        chunks.append(
+            Chunk("\n".join(current_parts), source, len(chunks), current_spans)
+        )
     return chunks
 
 
