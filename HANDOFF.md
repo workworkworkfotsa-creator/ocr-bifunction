@@ -132,6 +132,21 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   clause mais ne *résout* pas l'arête (`Avenant Art.2 —REMPLACE→ Contrat Annexe 4/5`) → motive
   **Étape 2 (graphe de références)**, désormais spécifiée par la donnée réelle. Oracle = runs réels.
   Commits `eac73a1` (1a) + ci-dessous (1b). Brief (gitignoré) : `docs/briefs/BRIEF-rag-ingestion-strategy.md`.
+- **RAG contrat — moteur embedding rendu robuste au texte légal dense + A/B (verdict = utilisateur,
+  NON tranché).** Le `GgufEmbeddingRetriever` (jadis prouvé sur un article aéré) **crashait sur le
+  contrat** : chunks denses = 520-700 tokens MODÈLE (mesuré : 1109 chars = 633 tokens, ratio
+  ~1.75 ch/tok ≪ l'estimation `content_tokens` ~4×) > fenêtre native 512 de granite-embedding → le
+  serveur **refuse** (500 « physical batch too small » → 400 « input too large » ; il ne tronque PAS un
+  embedding). Fixes (`rag.py`) : char-cap/input **1600→800** (≤512 tok même dense) ; `-b 2048 -ub 2048`
+  (un batch de plusieurs inputs ≤512 tient le physical batch) ; `_embed_many` (batching — un corpus
+  entier en 1 requête overrun) ; capture du corps d'erreur HTTP. **A/B `« que modifie l'avenant 7 »`**
+  (oracle = run réel) : **TF-IDF** → top-1 = `Article 2 Modifications` (liste des remplacements =
+  précision sur la clause exacte) ; **embedding** → top-3 = **les 3 articles de l'avenant** (1 Objet, 3
+  Divers, 2 Modifications, 0.88-0.93 = rappel du cluster, dont « le reste inchangé » raté par le lexical)
+  MAIS classe le pointeur (Art.1) AVANT le contenu (Art.2). KPIs en tension (précision-clause vs
+  rappel-section vs coût/chauffe vs robustesse) → **pas d'auto-verdict**. Granularité forcée + fine
+  (336 vs 86 chunks). Dette : chunking **tokenizer-aware** = cure propre (vs troncature au char-cap).
+  Serveur fermé proprement (pas d'orphelin).
 - **API : dispatch par `document_type` vers le flux du type déclaré — prouvé sur réel.** Le champ optionnel
   n'est plus un simple scope de matching : c'est la **clé de routage** (« ce doc est censé être un X » → l'API
   lance le bon flux, au lieu de toujours supposer une CI). `validate_document` dispatche : `carte_identite`

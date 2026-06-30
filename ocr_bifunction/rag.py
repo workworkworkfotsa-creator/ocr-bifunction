@@ -358,11 +358,17 @@ _DEFAULT_EMBEDDING_MODEL = (
 _DEFAULT_EMBEDDING_BINARY = (
     r"C:\Users\filipeparente\Tools\llamacpp\b9542\llama-server.exe"
 )
-# granite-embedding's native context limit is 512 tokens; chunk_document targets ~120
-# content tokens, well under, so chunks are not truncated. Texts are still capped before
-# embedding as a belt-and-braces guard against an over-long passage erroring the server.
+# granite-embedding's native window is 512 MODEL tokens, and the server REJECTS (HTTP
+# 400/500) any embedding input past it — it does NOT truncate an embedding. Dense legal
+# text runs as low as ~1.75 chars/model-token (measured: a 1109-char clause = 633 tokens),
+# so the per-input char cap is conservative to keep even dense text under 512 tokens.
+# (CONTENT tokens are a poor proxy here — they undercount model tokens ~4x on this text.)
 _EMBEDDING_CONTEXT_SIZE = 512
-_EMBEDDING_CHARACTER_BUDGET = 1600
+_EMBEDDING_CHARACTER_BUDGET = 800
+# One /v1/embeddings request must fit the server's logical batch (default n_batch ~2048
+# model tokens): sending a whole corpus at once overruns it (HTTP 500). Batches are sized
+# by a CONTENT-token budget; model tokens run ~1.5-2x, so 800 stays safely under n_batch.
+_EMBEDDING_BATCH_TOKEN_BUDGET = 800
 
 
 def _l2_normalize_dense(vector: list[float]) -> list[float]:
@@ -444,6 +450,14 @@ class GgufEmbeddingRetriever:
                 str(self._port),
                 "-c",
                 str(_EMBEDDING_CONTEXT_SIZE),
+                # A dense legal chunk can tokenize past the default 512-token PHYSICAL
+                # batch and 500 ("input too large to process"). Raise the (u)batch so such
+                # an input is processed — truncated to -c (granite's 512 native window) —
+                # instead of crashing the request. Finer chunking is the real cure.
+                "-b",
+                "2048",
+                "-ub",
+                "2048",
                 "-t",
                 str(self._threads),
                 "-ngl",
@@ -482,16 +496,41 @@ class GgufEmbeddingRetriever:
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        with urllib.request.urlopen(request, timeout=180) as response:
-            data = json.loads(response.read())["data"]
+        try:
+            with urllib.request.urlopen(request, timeout=180) as response:
+                data = json.loads(response.read())["data"]
+        except urllib.error.HTTPError as error:
+            detail = error.read().decode("utf-8", "replace")[:300]
+            raise RuntimeError(
+                f"embedding server HTTP {error.code}: {detail}"
+            ) from error
         # llama-server returns one item per input; order by "index" to be safe.
         data.sort(key=lambda item: item.get("index", 0))
         return [_l2_normalize_dense(item["embedding"]) for item in data]
 
+    def _embed_many(self, texts: list[str]) -> list[list[float]]:
+        """Embed in batches small enough for the server's logical batch (n_batch): one
+        request of a whole corpus overruns it (HTTP 500). Batches are sized by a CONTENT-
+        token budget; a single over-budget text still goes alone (the char cap bounds it).
+        """
+        vectors: list[list[float]] = []
+        batch: list[str] = []
+        batch_tokens = 0
+        for text in texts:
+            text_tokens = len(tokenize(text))
+            if batch and batch_tokens + text_tokens > _EMBEDDING_BATCH_TOKEN_BUDGET:
+                vectors.extend(self._embed(batch))
+                batch, batch_tokens = [], 0
+            batch.append(text)
+            batch_tokens += text_tokens
+        if batch:
+            vectors.extend(self._embed(batch))
+        return vectors
+
     def index(self, chunks: list[Chunk]) -> None:
         self._chunks = chunks
         self._chunk_vectors = (
-            self._embed([chunk.text for chunk in chunks]) if chunks else []
+            self._embed_many([chunk.text for chunk in chunks]) if chunks else []
         )
 
     def query(self, text: str, top_k: int = 3) -> list[tuple[Chunk, float]]:
