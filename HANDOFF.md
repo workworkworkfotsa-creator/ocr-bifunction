@@ -113,6 +113,25 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   chemin absolu (`MSYS_NO_PATHCONV=1`) ; PowerShell bloqué par règle `deny` (pas dans `settings.json` global).
 
 ## Fait (2026-06-30)
+- **RAG contrat — Étape 1a+1b livrée + prouvée sur 3 vrais contrats cross-référencés (born-digital,
+  RAG PUR zéro OCR).** Besoin cadré (utilisateur) : un **STORE de contrats** (3000+ partenaires FR,
+  groupe Europe → millions de chunks) **très fréquemment consulté**, **batch nuit OK**, et **toujours
+  lier la lecture au doc source**. Décision DB : **pas de vector DB selon la PORTÉE de requête** —
+  par-partenaire (cas réaliste) = working-set petit → **force brute**, partitionné `partner_id` →
+  MariaDB suffit même ancien ; global cross-partenaires = **ANN** (MariaDB 11.8+ HNSW natif / vector DB
+  dédié). Store = millions de lignes persistées → **décision destination/IT à co-geler**, pas un build
+  POC. Code (`rag.py`) : `Chunk` porte `ProvenanceSpan` (page+bbox = lien au source) + `heading` ;
+  `chunk_textlines` (packing avec provenance depuis `reader` TextLines) ; `segment_articles` (découpe
+  par article **romain ET arabe**, **TOC dédupliqué** par corps-max, **éclatement de blocs** pour les
+  titres enfouis, sous-chunk <512 pour l'embedder, **fallback plat** si pas d'articles). Runner
+  `contrat_check.py` : indexe N contrats en **UN corpus**, retrouve **verbatim + provenance** (tfidf
+  défaut / `--engine embedding`). **Prouvé** (`Contrat MPE 111p` ENGIE romain + `AV7 39p` Solutions30
+  arabe + `Annexe FREE 12p`) : `« que modifie l'avenant 7 »` → **top-1 = `Article 2 Modifications
+  introduites par l'Avenant`** (verbatim : remplace Annexe 4/5 du Contrat par Annexe 1/2 de l'Avenant)
+  + provenance p.2 ; en **TF-IDF pur, zéro LLM**. **Limite observée** : le retrieval plat *trouve* la
+  clause mais ne *résout* pas l'arête (`Avenant Art.2 —REMPLACE→ Contrat Annexe 4/5`) → motive
+  **Étape 2 (graphe de références)**, désormais spécifiée par la donnée réelle. Oracle = runs réels.
+  Commits `eac73a1` (1a) + ci-dessous (1b). Brief (gitignoré) : `docs/briefs/BRIEF-rag-ingestion-strategy.md`.
 - **API : dispatch par `document_type` vers le flux du type déclaré — prouvé sur réel.** Le champ optionnel
   n'est plus un simple scope de matching : c'est la **clé de routage** (« ce doc est censé être un X » → l'API
   lance le bon flux, au lieu de toujours supposer une CI). `validate_document` dispatche : `carte_identite`

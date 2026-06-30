@@ -30,10 +30,9 @@ import urllib.request
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
-if TYPE_CHECKING:
-    from ocr_bifunction.reader import TextLine
+from ocr_bifunction.reader import TextLine
 
 # Keep accented Latin letters and digits; everything else splits tokens.
 _TOKEN_PATTERN = re.compile(r"[a-zA-ZÀ-ÿ0-9]+")
@@ -78,6 +77,10 @@ class Chunk:
     source: str
     index: int
     spans: list[ProvenanceSpan] = field(default_factory=list)
+    # The legal heading this chunk belongs to (e.g. "Article VI. RECEPTION"), when the
+    # document has article structure. None for flat (non-article) packing. This is the
+    # natural node label for a later reference graph (avenant -> MODIFIES -> article).
+    heading: str | None = None
 
 
 @runtime_checkable
@@ -165,6 +168,77 @@ def chunk_textlines(
         chunks.append(
             Chunk("\n".join(current_parts), source, len(chunks), current_spans)
         )
+    return chunks
+
+
+# An article heading: "Article" + a roman OR arabic id, then an optional separator
+# (. : ) – ) and the title. Covers both observed schemes — "Article VI. RECEPTION"
+# (roman, ENGIE contract) and "Article 2 Modifications introduites par l'Avenant"
+# (arabic, avenant). The id is captured to fold a table-of-contents duplicate onto the
+# real article (same id -> keep the occurrence with the larger body).
+_ARTICLE_HEADING_PATTERN = re.compile(
+    r"^\s*(?:ARTICLE|Article)\s+([IVXLC]+|\d+)\b[\s.:)–-]*(.*)$"
+)
+
+
+def _explode_block_lines(lines: list[TextLine]) -> list[TextLine]:
+    """Split each block-level TextLine into its constituent text lines, each keeping the
+    block's page + bbox. PyMuPDF groups several lines into one block, which can BURY an
+    article heading mid-block; exploding lets heading detection (anchored at line start)
+    see it. Provenance stays at block-bbox resolution — enough to locate the passage."""
+    exploded: list[TextLine] = []
+    for line in lines:
+        for piece in line.text.split("\n"):
+            stripped = piece.strip()
+            if stripped:
+                exploded.append(
+                    TextLine(stripped, line.bbox, line.confidence, line.page_index)
+                )
+    return exploded
+
+
+def segment_articles(
+    lines: list[TextLine], source: str, max_tokens: int = 400
+) -> list[Chunk]:
+    """Segment a contract into ARTICLE-level chunks (the node a reference graph needs).
+
+    Splits on article headings (roman or arabic). A table of contents repeats every
+    heading with no body, so the same article id is folded onto the occurrence with the
+    LARGER body (the real article, not the TOC entry). An article longer than max_tokens
+    is sub-packed (so no chunk overflows the embedder's context). Each chunk carries its
+    article heading and page+bbox provenance. Falls back to flat `chunk_textlines` when
+    the document has no article structure (e.g. an annexe of numbered sections).
+    """
+    lines = _explode_block_lines(lines)
+    boundaries: list[tuple[int, str, str]] = []
+    for line_index, line in enumerate(lines):
+        match = _ARTICLE_HEADING_PATTERN.match(line.text.strip())
+        if match:
+            boundaries.append((line_index, match.group(1), match.group(2).strip()))
+    if len(boundaries) < 2:
+        return chunk_textlines(lines, source, max_tokens)
+
+    # Fold each article id onto its largest-body occurrence (drops TOC duplicates).
+    sections: dict[str, tuple[str, list[TextLine], int]] = {}
+    for position, (line_index, article_id, title) in enumerate(boundaries):
+        end = (
+            boundaries[position + 1][0]
+            if position + 1 < len(boundaries)
+            else len(lines)
+        )
+        body = lines[line_index:end]
+        body_tokens = sum(len(tokenize(line.text)) for line in body)
+        heading = f"Article {article_id}" + (f" {title}" if title else "")
+        existing = sections.get(article_id)
+        if existing is None or body_tokens > existing[2]:
+            sections[article_id] = (heading, body, body_tokens)
+
+    chunks: list[Chunk] = []
+    for heading, body, _body_tokens in sections.values():
+        for sub_chunk in chunk_textlines(body, source, max_tokens):
+            sub_chunk.index = len(chunks)
+            sub_chunk.heading = heading
+            chunks.append(sub_chunk)
     return chunks
 
 

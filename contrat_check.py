@@ -25,7 +25,7 @@ from ocr_bifunction.rag import (
     GgufEmbeddingRetriever,
     Retriever,
     TfidfRetriever,
-    chunk_textlines,
+    segment_articles,
 )
 from ocr_bifunction.reader import read_document
 
@@ -46,7 +46,8 @@ def _provenance(chunk: Chunk) -> str:
     page_label = (
         f"p.{pages[0] + 1}" if len(pages) == 1 else f"p.{pages[0] + 1}-{pages[-1] + 1}"
     )
-    return f"{chunk.source} {page_label}"
+    locator = f"{chunk.source} {page_label}"
+    return f"{chunk.heading}  —  {locator}" if chunk.heading else locator
 
 
 def build_corpus(document_paths: list[Path], target_tokens: int) -> list[Chunk]:
@@ -61,7 +62,7 @@ def build_corpus(document_paths: list[Path], target_tokens: int) -> list[Chunk]:
                 f"({result.backend_name}; image-only would need an OCR engine)"
             )
             continue
-        chunks = chunk_textlines(result.lines, document_path.name, target_tokens)
+        chunks = segment_articles(result.lines, document_path.name, target_tokens)
         corpus.extend(chunks)
         print(
             f"  + {document_path.name}: {result.page_count} pages, "
@@ -121,8 +122,8 @@ def main() -> int:
     parser.add_argument(
         "--target-tokens",
         type=int,
-        default=160,
-        help="Approx content tokens per chunk (clause-ish granularity).",
+        default=400,
+        help="Max content tokens per chunk; articles longer are sub-split (<512 fits the embedder).",
     )
     parser.add_argument(
         "--preview-chars",
