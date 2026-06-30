@@ -55,14 +55,19 @@ def route_document(
     document_path: Path,
     templates_directory: Path,
     engine: OcrEngine | None = None,
+    category: str | None = None,
 ) -> RoutedDocument:
     """Read one document, decide its lane, and return that lane's first product.
 
     `engine` is used only when the document is image/scanned (born-digital docx/PDF read
-    via their text layer and need none). Matching tries EVERY structured category.
+    via their text layer and need none). `category` scopes structured matching to one
+    declared document type (e.g. "facture"): a doc declared one type but matching no such
+    template falls through to the RAG lane. None tries EVERY structured category.
     """
     result = read_document(document_path, engine)
-    template = match_template(result.lines, load_templates(templates_directory))
+    template = match_template(
+        result.lines, load_templates(templates_directory, category)
+    )
 
     if template is not None:
         return _structured_result(document_path.name, result.lines, template)

@@ -82,7 +82,7 @@ if __name__ == "__main__":
     parser.add_argument("files", type=Path, nargs="+", help="The uploaded file(s).")
     parser.add_argument(
         "--expect",
-        choices=["validated", "pending", "incomplete", "unrecognized"],
+        choices=["validated", "pending", "needs_review", "incomplete", "unrecognized"],
         default=None,
         help="If set, exit non-zero unless the returned status matches.",
     )

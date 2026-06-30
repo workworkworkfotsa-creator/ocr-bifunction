@@ -44,6 +44,7 @@ from pydantic import BaseModel, Field
 
 from ocr_bifunction.pipeline import CiSubmissionResult, process_ci_submission
 from ocr_bifunction.reader import OcrEngine
+from ocr_bifunction.router import RoutedDocument, route_document
 
 PROJECT_ROOT = Path(__file__).parent
 TEMPLATES_DIRECTORY = PROJECT_ROOT / "templates"
@@ -155,12 +156,15 @@ class ValidateRequest(BaseModel):
 class ValidateResponse(BaseModel):
     """Always this shape — never a mute response when something fails.
 
-    `validated` (200): complete + confident. `pending` (202): complete + doubtful, escalated
-    async (poll job_id). `incomplete` (200): a side is missing (`missing` says which).
-    `unrecognized` (200): not a CI submission.
+    `validated` (200): confident (auto). `pending` (202): a CI complete + doubtful, escalated
+    async (poll job_id). `needs_review` (200): doubtful non-CI structured/non-structured doc,
+    decided synchronously (no VLM escalation). `incomplete` (200): a CI side is missing
+    (`missing` says which). `unrecognized` (200): not a recognizable document.
     """
 
-    status: Literal["validated", "pending", "incomplete", "unrecognized"]
+    status: Literal[
+        "validated", "pending", "needs_review", "incomplete", "unrecognized"
+    ]
     verdict: Literal["auto", "human"] | None
     reasons: list[str] = Field(default_factory=list)
     missing: list[str] = Field(default_factory=list)  # subset of ["recto", "verso"]
@@ -353,15 +357,77 @@ def _run_fast_submission(
             )
 
 
+# --- Dispatch by document_type: route the upload to the flow it declares. -------------
+
+
+def _run_route_document(
+    files: list[tuple[str, bytes]], category: str | None
+) -> RoutedDocument:
+    """Route the first uploaded file through the 2-lane router (non-CI document types)."""
+    filename, data = files[0]
+    suffix = Path(filename).suffix or DEFAULT_SUFFIX
+    with tempfile.TemporaryDirectory(prefix="ocr_bifunction_doc_") as temp_directory:
+        file_path = Path(temp_directory) / f"file{suffix}"
+        file_path.write_bytes(data)
+        try:
+            return route_document(
+                file_path, TEMPLATES_DIRECTORY, _get_engine(), category=category
+            )
+        except Exception as error:  # surface a pipeline/engine crash as 5xx, don't hide
+            raise HTTPException(
+                status_code=500, detail=f"pipeline failure: {type(error).__name__}"
+            )
+
+
+def _handle_ci_submission(
+    files: list[tuple[str, bytes]], document_type: str | None
+) -> ValidateResponse:
+    """The CI lane: complete -> validated / pending(escalate); else incomplete / unrecognized."""
+    result = _run_fast_submission(files, document_type)
+    if result.status == "complete" and result.record.verdict == "auto":
+        return _map_complete_auto(result)
+    if result.status == "complete":  # doubtful -> escalate off the request path
+        job_id = _enqueue_escalation(files, document_type, result.record.reasons)
+        return ValidateResponse(
+            status="pending", verdict=None, reasons=result.record.reasons, job_id=job_id
+        )
+    return _map_incomplete_or_unrecognized(result)
+
+
+def _handle_single_document(
+    files: list[tuple[str, bytes]], document_type: str | None
+) -> ValidateResponse:
+    """Non-CI document types: validate ONE doc via the 2-lane router (no VLM escalation).
+
+    Structured + auto -> validated; structured + human -> needs_review; non-structured
+    (RAG lane) -> needs_review (a human handles it). Multiple files: only the first is used.
+    """
+    routed = _run_route_document(files, document_type)
+    if routed.lane == "structured":
+        if routed.verdict == "auto":
+            return ValidateResponse(
+                status="validated", verdict="auto", reasons=routed.reasons
+            )
+        return ValidateResponse(
+            status="needs_review", verdict="human", reasons=routed.reasons
+        )
+    reasons = ["non-structured document — routed to retrieval / human review"]
+    if routed.summary is not None and routed.summary.keywords:
+        reasons.append("keywords: " + ", ".join(routed.summary.keywords))
+    return ValidateResponse(status="needs_review", verdict=None, reasons=reasons)
+
+
 # --- Endpoints ------------------------------------------------------------------------
 
 
 @app.post("/v1/documents:validate", response_model=ValidateResponse)
 def validate_document(request: ValidateRequest, response: Response) -> ValidateResponse:
-    """Validate one CI submission (any mix of images / a combined PDF).
+    """Validate one upload, dispatched by `document_type` to the flow it declares.
 
-    Complete + confident -> 200 validated. Complete + doubtful -> 202 pending (escalated
-    async). A missing side -> 200 incomplete (+ `missing`). Not a CI -> 200 unrecognized.
+    `carte_identite` -> CI submission (validated / pending / incomplete+missing /
+    unrecognized). Any other type (facture, preuve_test, …) or none -> a single document
+    through the 2-lane router (validated / needs_review). The hint says what the document
+    is *supposed* to be, so the API runs the matching flow instead of assuming a CI.
     """
     if request.request_id and request.request_id in _idempotency_cache:
         cached = _idempotency_cache[request.request_id]
@@ -369,21 +435,10 @@ def validate_document(request: ValidateRequest, response: Response) -> ValidateR
         return cached
 
     files = _decode_files(request)  # may raise 400
-    result = _run_fast_submission(files, request.document_type)  # may raise 500
-
-    if result.status == "complete" and result.record.verdict == "auto":
-        wire = _map_complete_auto(result)
-    elif (
-        result.status == "complete"
-    ):  # complete but doubtful -> escalate off the request
-        job_id = _enqueue_escalation(
-            files, request.document_type, result.record.reasons
-        )
-        wire = ValidateResponse(
-            status="pending", verdict=None, reasons=result.record.reasons, job_id=job_id
-        )
-    else:  # incomplete | unrecognized -> the UI acts, no async work
-        wire = _map_incomplete_or_unrecognized(result)
+    if request.document_type == "carte_identite":
+        wire = _handle_ci_submission(files, request.document_type)  # may raise 500
+    else:
+        wire = _handle_single_document(files, request.document_type)  # may raise 500
 
     if request.request_id:
         _idempotency_cache[request.request_id] = wire

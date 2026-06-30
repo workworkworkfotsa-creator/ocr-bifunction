@@ -10,7 +10,7 @@
 > repo ni l'historique (audité 2026-06-26). **Ce repo part sur GitHub** → ne jamais `git add -f` un doc,
 > ne jamais coller de valeur réelle (nom, n°doc, adresse) dans le code, les docs ou un message de commit.
 
-## État au 2026-06-29
+## État au 2026-06-30
 
 **Porte d'entrée CI prouvée bout-en-bout + pipeline câblé + extraction factures multi-layout + lecture
 couverte (RapidOCR + Docling fallback) ; LightOnOCR-2 validé en moteur d'escalade ; maquette API avec
@@ -19,11 +19,10 @@ config-driven (value-check HT+TVA=TTC).** POC solo sur `master`, pas de remote. 
 — oracle = runs réels sur vrais docs + smokes structurels/logiques + KAT (composite MRZ), conforme à la
 discipline smoke-first.
 
-> ▶ **NEXT (reprise) — au choix.** L'API expose désormais les 4 issues de submission (cf. Fait 2026-06-29).
-> Pistes : (a) **tier génératif RAG** (résumé/Q&A LLM via `granite-chat` llama.cpp, comme Personal Assistant) ;
-> (b) **lane suggestion-template** (SLM/GBNF, global) ; (c) **scoping recto submission** : `process_ci_submission`
-> avec `category=None` peut classer une facture/HP comme « recto » (read_recto_fields matche tous templates)
-> → aujourd'hui contourné par le hint `document_type=carte_identite` ; à durcir si on veut un défaut CI-only.
+> ▶ **NEXT (reprise) — au choix.** L'API dispatche maintenant par `document_type` vers le bon flux (cf.
+> Fait 2026-06-30). Pistes : (a) **tier génératif RAG** (résumé/Q&A LLM via `granite-chat` llama.cpp, comme
+> Personal Assistant — surfacer le résumé dans la réponse `needs_review` non-structurée) ; (b) **lane
+> suggestion-template** (SLM/GBNF, global). La limite « recto scoping » est **résolue** par le dispatch.
 
 Historique : `3fcc7a8` baseline ①②③ · `3c3d055` HANDOFF+hook · `19e8041` slot Preprocessor ·
 `395e9e3` MRZ parse · `3680c87` rectifier + TD1.
@@ -113,7 +112,18 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   fait** → DoD non clos (cf. NEXT). Friction shell notée : `uv`/`git` hors PATH Git Bash → route `cmd.exe`
   chemin absolu (`MSYS_NO_PATHCONV=1`) ; PowerShell bloqué par règle `deny` (pas dans `settings.json` global).
 
-## Fait (2026-06-29)
+## Fait (2026-06-30)
+- **API : dispatch par `document_type` vers le flux du type déclaré — prouvé sur réel.** Le champ optionnel
+  n'est plus un simple scope de matching : c'est la **clé de routage** (« ce doc est censé être un X » → l'API
+  lance le bon flux, au lieu de toujours supposer une CI). `validate_document` dispatche : `carte_identite`
+  → `process_ci_submission` (flux paire, 4 issues) ; **tout autre type OU absent** → `_handle_single_document`
+  → `route_document` (un seul doc, structuré-ou-RAG, **sans escalade VLM**). Nouveau statut **`needs_review`**
+  (douteux non-CI synchrone : structuré-human, ou non-structuré RAG → revue humaine). `route_document` a gagné
+  un paramètre `category` (scope au type déclaré ; un doc déclaré `facture` mais sans match facture → repli RAG).
+  **Prouvé** (`api_smoke_real.py`, +choix `needs_review`) : facture→validated/auto ; HP `preuve_test`→validated ;
+  courrier déclaré `facture`→needs_review (repli RAG + keywords) ; CI combined→validated (regression) ; docx
+  sans hint→needs_review non-structuré. **Limite « recto scoping » RÉSOLUE** par le dispatch (une facture part
+  au flux facture, plus jamais prise pour un « recto » CI).
 - **API maquette migrée au contrat de SUBMISSION (liste de fichiers + 4 issues) — prouvée sur réel.**
   Décision UI (tranchée par l'utilisateur) : requête = **`files: [{filename, content_base64}]`** (au lieu des
   2 champs recto/verso) → gère 1 fichier / 2 photos / PDF combiné / côté manquant uniformément. Réponse =
