@@ -19,14 +19,16 @@ config-driven (value-check HT+TVA=TTC).** POC solo sur `master`, pas de remote. 
 — oracle = runs réels sur vrais docs + smokes structurels/logiques + KAT (composite MRZ), conforme à la
 discipline smoke-first.
 
-> ▶ **NEXT (reprise) — Étape 2 (graphe de références) LIVRÉE + PROUVÉE ; choix pour la suite.** Le graphe
-> LLM tourne sur les 3 vrais contrats (47 articles → **305 arêtes**) et la **traversée 1-hop répond à
-> l'oracle** « que modifie l'avenant 7 » : top-1 = `Avenant Article 2` avec ses 2 `REMPLACE` résolus verbatim
-> + provenance p.2 ; **résolution intra-doc prouvée** (`Article 1 —MODIFIE→ Article 2`). **Prochain pas au
-> choix** : (a) réduire le **bruit de sur-extraction** (305 arêtes / 536 pendants, beaucoup de spurious sur la
-> prose — **GBNF** ou prompt plus strict, cf. brief § Étape 2) ; (b) enrichir la **résolution** (segmenter les
-> ANNEXES en nœuds + doc-scoping `Contrat`/`Avenant`) ; (c) tiers différés (Q&A génératif, lane
-> suggestion-template). Détail → Fait (2026-07-01) ci-dessous.
+> ▶ **NEXT (reprise) — Étape 2 LIVRÉE + PROUVÉE + DÉ-BRUITÉE ; choix pour la suite.** Graphe LLM sur 3 vrais
+> contrats, traversée 1-hop répond à l'oracle « que modifie l'avenant 7 » (top-1 `Avenant Article 2` + 2
+> `REMPLACE` verbatim/provenance p.2 ; résolution intra-doc `Article 1 —MODIFIE→ Article 2`). **Sur-extraction
+> traitée** : filtre structurel `is_document_reference` → **305 → 58 arêtes (−81 % de bruit)**, oracle intact.
+> **Prochain pas au choix** : (b) enrichir la **résolution** (segmenter les ANNEXES en nœuds + doc-scoping
+> `Contrat`/`Avenant` → transformer les DANGLING en arêtes résolues) ; (c) tiers différés (Q&A génératif, lane
+> suggestion-template). **+ décision cross-projets EN ATTENTE** : converger les 4 projets SLM sur **UN
+> llama-swap partagé** (mon générateur redevient client → lazy-load/TTL, plus de spawn/`close()` à oublier ;
+> vraie douleur = oubli d'activer/couper le bon service, pas la RAM — l'utilisateur sérialise déjà à la main).
+> Cf. mémoires `shared-machine-3-slm-projects`, `llama-cpp-threads-physical-cores`. Détail → Fait (2026-07-01).
 
 Historique : `3fcc7a8` baseline ①②③ · `3c3d055` HANDOFF+hook · `19e8041` slot Preprocessor ·
 `395e9e3` MRZ parse · `3680c87` rectifier + TD1.
@@ -117,6 +119,18 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   chemin absolu (`MSYS_NO_PATHCONV=1`) ; PowerShell bloqué par règle `deny` (pas dans `settings.json` global).
 
 ## Fait (2026-07-01)
+- **RAG contrat — Étape 2 DÉ-BRUITÉE (filtre structurel `is_document_reference`) — prouvé sur run réel.**
+  Le modèle sur-extrayait sur la prose (arêtes dont `ancien` = un délai, une date, une valeur, un statut
+  produit, « les Parties »…). Fix = garde-fou **déterministe** dans `build_reference_graph` : garder une arête
+  seulement si son `ancien` **nomme un élément documentaire** (mène par `Article|Annexe|Avenant|Contrat` après
+  déterminant optionnel, **ancré au HEAD** pour éviter le faux-positif substring « …du Contrat Cadre »). PAS
+  une ré-extraction rule-based fragile (la définition de « référence » est stable) ; **prompt validé intact**.
+  **Prouvé** (même corpus, run réel) : **305 → 58 arêtes gardées** (247 jetées, **−81 %**), pendants **536 →
+  80** ; **oracle intact** (Art.2 → 2 `REMPLACE` verbatim ; `Article 1 —MODIFIE→ Article 2` résolu ; Art.XVII
+  passe de 6 arêtes bruitées à 2 vraies `ABROGE/REMPLACE` de l'avenant du *précédent* contrat n°DA21-M-290).
+  Rejets vérifiés = vraie prose. **Limite acceptée (utilisateur)** : « Bon de commande » hors liste d'éléments
+  → jeté (pas pertinent dans ce cadre ; bouton de réglage si besoin). Runner rapporte gardé/jeté + échantillon.
+  **GBNF** reste l'escalade si le filtre structurel ne suffit plus un jour. Oracle = run réel, pas de pytest.
 - **RAG contrat — Étape 2 (graphe de références) LIVRÉE + PROUVÉE (run réel vert, 3 contrats).** Build 1→2→3
   du brief : slot `Generator` jetable `ocr_bifunction/generation.py` (`LlamaCppGenerator`, **patron
   `GgufEmbeddingRetriever` = llama-server DIRECT**, pas llama-swap → `close()` fiable sans orphelin ; prompt

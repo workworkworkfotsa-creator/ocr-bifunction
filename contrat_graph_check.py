@@ -109,10 +109,19 @@ def run(
 
     # --- Build the reference graph (ONE llama-server child; one LLM call per article). ---
     print(f"\n-- extracting reference edges ({len(corpus)} LLM calls; granite) --")
+    dropped_total = 0
+    dropped_samples: list[str] = []
 
-    def _progress(chunk: Chunk, references: list[Reference]) -> None:
-        if references:
-            print(f"  {chunk.heading}: {len(references)} edge(s)")
+    def _progress(
+        chunk: Chunk, kept: list[Reference], dropped: list[Reference]
+    ) -> None:
+        nonlocal dropped_total
+        dropped_total += len(dropped)
+        for reference in dropped:
+            if len(dropped_samples) < 12:
+                dropped_samples.append(reference.ancien)
+        if kept or dropped:
+            print(f"  {chunk.heading}: {len(kept)} kept, {len(dropped)} dropped")
 
     with LlamaCppGenerator(
         binary_path=binary_path, model_path=model_path, threads=threads
@@ -121,7 +130,15 @@ def run(
     total_dangling = sum(
         edge.ancien_dangling + edge.nouveau_dangling for edge in graph.edges
     )
-    print(f"  graph: {len(graph.edges)} edges, {total_dangling} dangling endpoint(s)")
+    print(
+        f"  graph: {len(graph.edges)} edges kept, {dropped_total} dropped as non-references, "
+        f"{total_dangling} dangling endpoint(s)"
+    )
+    if dropped_samples:
+        print("  sample dropped (non-reference 'ancien'):")
+        for sample in dropped_samples:
+            preview = " ".join(sample.split())
+            print(f"    - {preview[:70]}")
 
     # --- Retrieve, then follow edges 1 hop (retriever server, if any, closed after query). ---
     retriever = _build_retriever(engine_name)

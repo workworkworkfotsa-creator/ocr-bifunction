@@ -32,6 +32,30 @@ _REFERENCE_KEY_PATTERN = re.compile(
     r"(article|annexe|avenant)\s+(?:n[°ºo]\s*)?([ivxlc]+|\d+)", re.IGNORECASE
 )
 
+# A genuine reference NAMES a document element: it LEADS with a document-element type
+# (article / annexe / avenant / contrat), possibly after a determiner ("l'", "les", "du"…).
+# The LLM over-extracts on prose — emitting edges whose `ancien` is a delay, a date, a value,
+# or a party ("délai approprié", "01/04/2023 pour une durée d'un an", "les Parties"). Those do
+# NOT lead with a document element, so anchoring the check at the HEAD (not a substring, which
+# would wrongly keep "…avant le terme du Contrat Cadre") drops them. This is a structural
+# validity check on the model's output, not a rule-based re-extraction: the definition of "a
+# reference names a document" is stable, unlike the drifting business categories LLM extraction
+# was chosen to avoid.
+_LEADING_DETERMINER_PATTERN = re.compile(
+    r"^(?:l['’]|d['’]|les?\s+|du\s+|des\s+|de\s+la\s+|au[x]?\s+|à\s+l['’])",
+    re.IGNORECASE,
+)
+_DOCUMENT_ELEMENT_HEAD_PATTERN = re.compile(
+    r"^(?:articles?|annexes?|avenants?|contrat)\b", re.IGNORECASE
+)
+
+
+def is_document_reference(text: str) -> bool:
+    """True when `text` NAMES a document element (leads with article/annexe/avenant/contrat,
+    after an optional determiner) — i.e. it is a genuine reference, not over-extracted prose."""
+    stripped = _LEADING_DETERMINER_PATTERN.sub("", text.strip(), count=1).strip()
+    return bool(_DOCUMENT_ELEMENT_HEAD_PATTERN.match(stripped))
+
 
 @dataclass
 class ReferenceEdge:
@@ -100,17 +124,25 @@ def _resolve(reference_text: str | None, chunks: list[Chunk]) -> Chunk | None:
 def build_reference_graph(
     chunks: list[Chunk],
     generator: Generator,
-    on_progress: Callable[[Chunk, list[Reference]], None] | None = None,
+    on_progress: Callable[[Chunk, list[Reference], list[Reference]], None]
+    | None = None,
 ) -> ReferenceGraph:
     """Extract reference edges from every article chunk and resolve their endpoints.
 
-    One LLM call per chunk (cost is ~N calls — batch/nightly territory). `on_progress` is
-    called after each chunk with the raw references it produced, so a runner can stream
-    progress on a slow CPU model."""
+    One LLM call per chunk (cost is ~N calls — batch/nightly territory). Edges whose `ancien`
+    is not a document reference (`is_document_reference`) are DROPPED before the graph is
+    built — that is the denoising of the model's over-extraction on prose. `on_progress` is
+    called after each chunk with (chunk, kept_references, dropped_references), so a runner can
+    stream progress AND observe what the filter removed."""
     edges: list[ReferenceEdge] = []
     for chunk in chunks:
-        references = extract_references(generator, chunk.text)
-        for reference in references:
+        kept: list[Reference] = []
+        dropped: list[Reference] = []
+        for reference in extract_references(generator, chunk.text):
+            (kept if is_document_reference(reference.ancien) else dropped).append(
+                reference
+            )
+        for reference in kept:
             edges.append(
                 ReferenceEdge(
                     reference=reference,
@@ -120,5 +152,5 @@ def build_reference_graph(
                 )
             )
         if on_progress is not None:
-            on_progress(chunk, references)
+            on_progress(chunk, kept, dropped)
     return ReferenceGraph(chunks=chunks, edges=edges)
