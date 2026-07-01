@@ -19,13 +19,14 @@ config-driven (value-check HT+TVA=TTC).** POC solo sur `master`, pas de remote. 
 — oracle = runs réels sur vrais docs + smokes structurels/logiques + KAT (composite MRZ), conforme à la
 discipline smoke-first.
 
-> ▶ **NEXT (reprise) — BUILD Étape 2 : graphe de références contrats.** Concept LLM **prouvé** sur du réel
-> (granite-4.0-h-tiny extrait les arêtes `REMPLACE ancien/nouveau` de l'Avenant Art.2, direction juste,
-> verbatim). **Prompt validé + plan de build 1→2→3 + infra llama-swap** →
-> [docs/briefs/BRIEF-rag-ingestion-strategy.md](docs/briefs/BRIEF-rag-ingestion-strategy.md) (section « Étape 2
-> — CONCEPT PROUVÉ »). Build : slot `Generator` (patron `GgufEmbeddingRetriever`) → extraction sur les
-> chunks-articles → graphe + traversée 1-hop (runner `contrat_graph_check.py`). **Rien de codé** (smoke
-> throwaway). Anciennes pistes (tier génératif Q&A, lane suggestion-template) valides mais **après** le graphe.
+> ▶ **NEXT (reprise) — Étape 2 (graphe de références) LIVRÉE + PROUVÉE ; choix pour la suite.** Le graphe
+> LLM tourne sur les 3 vrais contrats (47 articles → **305 arêtes**) et la **traversée 1-hop répond à
+> l'oracle** « que modifie l'avenant 7 » : top-1 = `Avenant Article 2` avec ses 2 `REMPLACE` résolus verbatim
+> + provenance p.2 ; **résolution intra-doc prouvée** (`Article 1 —MODIFIE→ Article 2`). **Prochain pas au
+> choix** : (a) réduire le **bruit de sur-extraction** (305 arêtes / 536 pendants, beaucoup de spurious sur la
+> prose — **GBNF** ou prompt plus strict, cf. brief § Étape 2) ; (b) enrichir la **résolution** (segmenter les
+> ANNEXES en nœuds + doc-scoping `Contrat`/`Avenant`) ; (c) tiers différés (Q&A génératif, lane
+> suggestion-template). Détail → Fait (2026-07-01) ci-dessous.
 
 Historique : `3fcc7a8` baseline ①②③ · `3c3d055` HANDOFF+hook · `19e8041` slot Preprocessor ·
 `395e9e3` MRZ parse · `3680c87` rectifier + TD1.
@@ -116,7 +117,24 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   chemin absolu (`MSYS_NO_PATHCONV=1`) ; PowerShell bloqué par règle `deny` (pas dans `settings.json` global).
 
 ## Fait (2026-07-01)
-- **RAG contrat — Étape 2 (graphe de références) : CONCEPT LLM PROUVÉ, build à faire.** Décision
+- **RAG contrat — Étape 2 (graphe de références) LIVRÉE + PROUVÉE (run réel vert, 3 contrats).** Build 1→2→3
+  du brief : slot `Generator` jetable `ocr_bifunction/generation.py` (`LlamaCppGenerator`, **patron
+  `GgufEmbeddingRetriever` = llama-server DIRECT**, pas llama-swap → `close()` fiable sans orphelin ; prompt
+  validé copié verbatim + `parse_references` **tolérant** : salvage d'un array tronqué, garde-fou longueur,
+  fail-loud si aucun array) ; `ocr_bifunction/reference_graph.py` (`build_reference_graph` = 1 appel LLM /
+  article → arêtes résolues vers nœuds OU **pendantes** = signal de complétude ; `outgoing` = traversée
+  1-hop) ; runner `contrat_graph_check.py` (read→segment→graphe→retrieve tfidf→traversée). **Prouvé** (oracle
+  « que modifie l'avenant 7 », 47 articles, **305 arêtes**) : top-1 = `Avenant Article 2` → 2 `REMPLACE`
+  verbatim + provenance p.2 (Annexe 4/5 du Contrat → Annexe n°1/2 de l'Avenant n°7, **DANGLING** car les
+  annexes ne sont pas encore des nœuds) ; **résolution intra-doc prouvée** `Article 1 —MODIFIE→ Article 2`.
+  **Pièges perf soldés** (leçon : le timeout CPU = **taille de prompt, PAS threads**) : `segment_articles`
+  mesure des tokens-CONTENU qui sous-comptent les tokens-MODÈLE (Article V table = 13 734 chars / 1201
+  content-tok) → **cap 6000 chars** + `max_tokens` **800** + timeout **420** + **`-t 4`** (= cœurs physiques,
+  4/8 logiques ; cf. mémoire `llama-cpp-threads-physical-cores`, profils user jour=3/nuit=4). **Dette QUALITÉ
+  ouverte** : sur-extraction (305 arêtes / **536 pendants**, beaucoup de spurious sur la prose ; garde-fou
+  160-chars insuffisant) → **GBNF / prompt plus strict** (escalade prévue au brief). Oracle = run réel, pas de
+  pytest. Serveur fermé sans orphelin.
+- **RAG contrat — Étape 2 (graphe de références) : CONCEPT LLM PROUVÉ (build livré, cf. bullet ci-dessus).** Décision
   utilisateur : extraction d'arêtes **au LLM**, PAS rule-based (« le rule-based est une maintenance
   constante », vécu classification pièces SAV). **granite-4.0-h-tiny** (via **llama-swap** —
   `tools/llama-swap/` copié + gitignoré, port 8080, clé `granite-4.0-h-tiny-Q4_K_M`, TTL 300) extrait sur
