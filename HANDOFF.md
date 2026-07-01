@@ -19,10 +19,13 @@ config-driven (value-check HT+TVA=TTC).** POC solo sur `master`, pas de remote. 
 — oracle = runs réels sur vrais docs + smokes structurels/logiques + KAT (composite MRZ), conforme à la
 discipline smoke-first.
 
-> ▶ **NEXT (reprise) — au choix.** L'API dispatche maintenant par `document_type` vers le bon flux (cf.
-> Fait 2026-06-30). Pistes : (a) **tier génératif RAG** (résumé/Q&A LLM via `granite-chat` llama.cpp, comme
-> Personal Assistant — surfacer le résumé dans la réponse `needs_review` non-structurée) ; (b) **lane
-> suggestion-template** (SLM/GBNF, global). La limite « recto scoping » est **résolue** par le dispatch.
+> ▶ **NEXT (reprise) — BUILD Étape 2 : graphe de références contrats.** Concept LLM **prouvé** sur du réel
+> (granite-4.0-h-tiny extrait les arêtes `REMPLACE ancien/nouveau` de l'Avenant Art.2, direction juste,
+> verbatim). **Prompt validé + plan de build 1→2→3 + infra llama-swap** →
+> [docs/briefs/BRIEF-rag-ingestion-strategy.md](docs/briefs/BRIEF-rag-ingestion-strategy.md) (section « Étape 2
+> — CONCEPT PROUVÉ »). Build : slot `Generator` (patron `GgufEmbeddingRetriever`) → extraction sur les
+> chunks-articles → graphe + traversée 1-hop (runner `contrat_graph_check.py`). **Rien de codé** (smoke
+> throwaway). Anciennes pistes (tier génératif Q&A, lane suggestion-template) valides mais **après** le graphe.
 
 Historique : `3fcc7a8` baseline ①②③ · `3c3d055` HANDOFF+hook · `19e8041` slot Preprocessor ·
 `395e9e3` MRZ parse · `3680c87` rectifier + TD1.
@@ -112,7 +115,19 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   fait** → DoD non clos (cf. NEXT). Friction shell notée : `uv`/`git` hors PATH Git Bash → route `cmd.exe`
   chemin absolu (`MSYS_NO_PATHCONV=1`) ; PowerShell bloqué par règle `deny` (pas dans `settings.json` global).
 
-## Fait (2026-06-30)
+## Fait (2026-07-01)
+- **RAG contrat — Étape 2 (graphe de références) : CONCEPT LLM PROUVÉ, build à faire.** Décision
+  utilisateur : extraction d'arêtes **au LLM**, PAS rule-based (« le rule-based est une maintenance
+  constante », vécu classification pièces SAV). **granite-4.0-h-tiny** (via **llama-swap** —
+  `tools/llama-swap/` copié + gitignoré, port 8080, clé `granite-4.0-h-tiny-Q4_K_M`, TTL 300) extrait sur
+  du réel (Avenant Article 2) les **2 arêtes `REMPLACE`** avec **direction juste + valeurs verbatim**
+  (`ancien=Contrat Annexe 4/5` → `nouveau=Avenant Annexe 1/2`). **Leçon** : un schéma `cible/par` est
+  **instable** (label ET direction sautaient entre runs : RENVOIE↔REMPLACE, direction inversée) →
+  **stabilisé** par champs **directionnels** `ancien`/`nouveau` + enum **exact** + **one-shot**. Prompt
+  validé + plan build 1→2→3 (slot `Generator` → extraction→graphe → traversée 1-hop) →
+  [brief](docs/briefs/BRIEF-rag-ingestion-strategy.md) section « Étape 2 ». **Smoke throwaway, rien commité
+  côté code.** Serveurs fermés (0 orphelin). ⚠️ Ne PAS lancer granite (4.2 Go) si d'autres tâches lourdes
+  tournent (ex. VRP en série) — demander/attendre.
 - **RAG contrat — Étape 1a+1b livrée + prouvée sur 3 vrais contrats cross-référencés (born-digital,
   RAG PUR zéro OCR).** Besoin cadré (utilisateur) : un **STORE de contrats** (3000+ partenaires FR,
   groupe Europe → millions de chunks) **très fréquemment consulté**, **batch nuit OK**, et **toujours
