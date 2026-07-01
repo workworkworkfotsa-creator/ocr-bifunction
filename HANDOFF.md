@@ -147,6 +147,18 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   rappel-section vs coût/chauffe vs robustesse) → **pas d'auto-verdict**. Granularité forcée + fine
   (336 vs 86 chunks). Dette : chunking **tokenizer-aware** = cure propre (vs troncature au char-cap).
   Serveur fermé proprement (pas d'orphelin).
+- **CORRECTION — granite-embedding-r2 = 32K tokens de contexte, PAS 512 (erreur propagée, soldée).**
+  Le « 512 natif » (code + note ci-dessus) était **faux** : vérifié — IBM ([blog HF](https://huggingface.co/blog/ibm-granite/granite-embedding-multilingual-r2),
+  [arXiv 2508.21085](https://arxiv.org/pdf/2508.21085)) → **32768** (RoPE θ=160k), multilingue 200+ langues,
+  768-dim, Apache 2.0. On l'avait bridé nous-mêmes via `-c 512`. Fix (`rag.py`) :
+  `_EMBEDDING_CONTEXT_SIZE` 512→**8192** ; `-b/-ub` **alignés au contexte** (une séquence d'embedding
+  doit tenir en UN physical batch) ; char-cap 800→14000 (simple garde-fou). **Prouvé** : inputs 16000
+  chars OK (dim 768, `n_ctx=8192` au log) ; smoke **article-level** (`--target-tokens 1200`) → **47
+  chunks** (vs 336) = ~1 article = 1 vecteur, **zéro troncature**, top-3 embedding inchangé. → la
+  troncature char-cap + les micro-chunks de la note précédente sont **OBSOLÈTES** (faux problème).
+  Dette segmentation : le dernier `Article N` **absorbe les `ANNEXE` suivantes** (avenant Art.3 s'étend
+  p.2-9) — les annexes intra-doc ne sont pas segmentées à part. **Modèle embedding = à garder** (pas de
+  swap : 32K + FR + Apache = idéal). llama-swap + son yaml copiés (gitignorés) dans `tools/llama-swap/`.
 - **API : dispatch par `document_type` vers le flux du type déclaré — prouvé sur réel.** Le champ optionnel
   n'est plus un simple scope de matching : c'est la **clé de routage** (« ce doc est censé être un X » → l'API
   lance le bon flux, au lieu de toujours supposer une CI). `validate_document` dispatche : `carte_identite`

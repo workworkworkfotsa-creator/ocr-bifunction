@@ -358,17 +358,18 @@ _DEFAULT_EMBEDDING_MODEL = (
 _DEFAULT_EMBEDDING_BINARY = (
     r"C:\Users\filipeparente\Tools\llamacpp\b9542\llama-server.exe"
 )
-# granite-embedding's native window is 512 MODEL tokens, and the server REJECTS (HTTP
-# 400/500) any embedding input past it — it does NOT truncate an embedding. Dense legal
-# text runs as low as ~1.75 chars/model-token (measured: a 1109-char clause = 633 tokens),
-# so the per-input char cap is conservative to keep even dense text under 512 tokens.
-# (CONTENT tokens are a poor proxy here — they undercount model tokens ~4x on this text.)
-_EMBEDDING_CONTEXT_SIZE = 512
-_EMBEDDING_CHARACTER_BUDGET = 800
-# One /v1/embeddings request must fit the server's logical batch (default n_batch ~2048
-# model tokens): sending a whole corpus at once overruns it (HTTP 500). Batches are sized
-# by a CONTENT-token budget; model tokens run ~1.5-2x, so 800 stays safely under n_batch.
-_EMBEDDING_BATCH_TOKEN_BUDGET = 800
+# granite-embedding-multilingual-r2 supports a 32K-token window (RoPE-scaled; IBM). We run
+# the server at 8192 — ample for whole-article chunks — so an embedding input is NOT limited
+# to 512 (an earlier WRONG assumption that forced tiny chunks + truncation). The server still
+# REJECTS any input past -c (it does not truncate an embedding), so the per-input char cap
+# only guards a pathological over-long passage: dense legal text runs ~1.75 chars/model-token,
+# so ~14000 chars stays under 8192 tokens.
+_EMBEDDING_CONTEXT_SIZE = 8192
+_EMBEDDING_CHARACTER_BUDGET = 14000
+# One /v1/embeddings request must fit the server's physical batch (-ub, set to the context
+# below): sending a whole corpus at once overruns it (HTTP 500). Batches are sized by a
+# CONTENT-token budget; model tokens run ~3-4x on dense legal text, so ~2000 stays under -ub.
+_EMBEDDING_BATCH_TOKEN_BUDGET = 2000
 
 
 def _l2_normalize_dense(vector: list[float]) -> list[float]:
@@ -450,14 +451,13 @@ class GgufEmbeddingRetriever:
                 str(self._port),
                 "-c",
                 str(_EMBEDDING_CONTEXT_SIZE),
-                # A dense legal chunk can tokenize past the default 512-token PHYSICAL
-                # batch and 500 ("input too large to process"). Raise the (u)batch so such
-                # an input is processed — truncated to -c (granite's 512 native window) —
-                # instead of crashing the request. Finer chunking is the real cure.
+                # An embedding sequence must fit in ONE physical batch (pooling needs all its
+                # tokens together), so -ub must be >= the largest input. Match -b/-ub to the
+                # context so a whole-article chunk (up to -c tokens) is embedded in one go.
                 "-b",
-                "2048",
+                str(_EMBEDDING_CONTEXT_SIZE),
                 "-ub",
-                "2048",
+                str(_EMBEDDING_CONTEXT_SIZE),
                 "-t",
                 str(self._threads),
                 "-ngl",
