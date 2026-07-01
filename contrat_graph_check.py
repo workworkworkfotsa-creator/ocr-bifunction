@@ -22,7 +22,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from ocr_bifunction.generation import LlamaCppGenerator, Reference
+from ocr_bifunction.generation import LlamaSwapGenerator, Reference
 from ocr_bifunction.rag import (
     Chunk,
     GgufEmbeddingRetriever,
@@ -95,9 +95,8 @@ def run(
     top_k: int,
     engine_name: str,
     target_tokens: int,
-    binary_path: str | None,
-    model_path: str | None,
-    threads: int,
+    llama_swap_url: str | None,
+    model_key: str | None,
 ) -> int:
     print("=" * 72)
     print(f"corpus: {len(document_paths)} document(s)")
@@ -107,8 +106,10 @@ def run(
         return 1
     print(f"  total article chunks: {len(corpus)}")
 
-    # --- Build the reference graph (ONE llama-server child; one LLM call per article). ---
-    print(f"\n-- extracting reference edges ({len(corpus)} LLM calls; granite) --")
+    # --- Build the reference graph (one LLM call per article, via the shared llama-swap). ---
+    print(
+        f"\n-- extracting reference edges ({len(corpus)} LLM calls; granite via llama-swap) --"
+    )
     dropped_total = 0
     dropped_samples: list[str] = []
 
@@ -123,9 +124,7 @@ def run(
         if kept or dropped:
             print(f"  {chunk.heading}: {len(kept)} kept, {len(dropped)} dropped")
 
-    with LlamaCppGenerator(
-        binary_path=binary_path, model_path=model_path, threads=threads
-    ) as generator:
+    with LlamaSwapGenerator(base_url=llama_swap_url, model_key=model_key) as generator:
         graph = build_reference_graph(corpus, generator, on_progress=_progress)
     total_dangling = sum(
         edge.ancien_dangling + edge.nouveau_dangling for edge in graph.edges
@@ -185,15 +184,16 @@ def main() -> int:
         default=1200,
         help="Max content tokens per article chunk (article-level: ~1 chunk/article, ~1 LLM call each).",
     )
-    parser.add_argument("--binary", default=None, help="Override llama-server path.")
-    parser.add_argument("--model", default=None, help="Override generation GGUF path.")
     parser.add_argument(
-        "--threads",
-        type=int,
-        default=4,
-        help="llama-server CPU threads: match PHYSICAL cores (compute-bound matmul gains "
-        "nothing from hyperthreading; oversubscribing contends). This machine = 4 physical; "
-        "use 3 to leave a core for the OS / other tasks (the llama-swap config uses -t 3).",
+        "--llama-swap-url",
+        default=None,
+        help="Shared llama-swap base URL (default env LLAMA_SWAP_URL or http://127.0.0.1:8080). "
+        "CPU threads live in the llama-swap config, not here.",
+    )
+    parser.add_argument(
+        "--model-key",
+        default=None,
+        help="llama-swap model key for extraction (default granite-4.0-h-tiny-Q4_K_M).",
     )
     arguments = parser.parse_args()
     return run(
@@ -202,9 +202,8 @@ def main() -> int:
         arguments.top_k,
         arguments.engine,
         arguments.target_tokens,
-        arguments.binary,
-        arguments.model,
-        arguments.threads,
+        arguments.llama_swap_url,
+        arguments.model_key,
     )
 
 

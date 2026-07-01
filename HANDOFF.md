@@ -19,16 +19,15 @@ config-driven (value-check HT+TVA=TTC).** POC solo sur `master`, pas de remote. 
 — oracle = runs réels sur vrais docs + smokes structurels/logiques + KAT (composite MRZ), conforme à la
 discipline smoke-first.
 
-> ▶ **NEXT (reprise) — Étape 2 LIVRÉE + PROUVÉE + DÉ-BRUITÉE ; choix pour la suite.** Graphe LLM sur 3 vrais
-> contrats, traversée 1-hop répond à l'oracle « que modifie l'avenant 7 » (top-1 `Avenant Article 2` + 2
-> `REMPLACE` verbatim/provenance p.2 ; résolution intra-doc `Article 1 —MODIFIE→ Article 2`). **Sur-extraction
-> traitée** : filtre structurel `is_document_reference` → **305 → 58 arêtes (−81 % de bruit)**, oracle intact.
-> **Prochain pas au choix** : (b) enrichir la **résolution** (segmenter les ANNEXES en nœuds + doc-scoping
-> `Contrat`/`Avenant` → transformer les DANGLING en arêtes résolues) ; (c) tiers différés (Q&A génératif, lane
-> suggestion-template). **+ décision cross-projets EN ATTENTE** : converger les 4 projets SLM sur **UN
-> llama-swap partagé** (mon générateur redevient client → lazy-load/TTL, plus de spawn/`close()` à oublier ;
-> vraie douleur = oubli d'activer/couper le bon service, pas la RAM — l'utilisateur sérialise déjà à la main).
-> Cf. mémoires `shared-machine-3-slm-projects`, `llama-cpp-threads-physical-cores`. Détail → Fait (2026-07-01).
+> ▶ **NEXT (reprise) — PROD-PREP : convergence llama-swap + self-containment (en cours).** Générateur passé
+> **client llama-swap** (prouvé : granite via 8080, 2 `REMPLACE` verbatim) ; projet **self-contained** (binaire
+> b9542 + 3 GGUF dans `tools/`/`models/`, gitignorés ; `config.yaml` chemins-relatifs = **contrat déployable
+> tracké**). **Reste à converger de même** : (1) `GgufEmbeddingRetriever` → client llama-swap (clé
+> `granite-embedding-r2`, `/v1/embeddings`) ; (2) `LightOnOcrEngine` → client **multimodal HTTP** (clé
+> `lightonocr-2-1b`, GGUF+mmproj — **chemin HTTP NON prouvé**, valider qualité vs `llama-mtmd-cli`). Puis Étape
+> 2 (b) résolution (ANNEXES en nœuds + doc-scoping → DANGLING résolus) / (c) tiers différés. Modèles **figés** :
+> granite-4.0-h-tiny (gén.), granite-embedding-r2 (RAG), LightOnOCR-2-1B (OCR). Cf. mémoires
+> `shared-machine-3-slm-projects`, `llama-cpp-threads-physical-cores`. Détail → Fait (2026-07-01).
 
 Historique : `3fcc7a8` baseline ①②③ · `3c3d055` HANDOFF+hook · `19e8041` slot Preprocessor ·
 `395e9e3` MRZ parse · `3680c87` rectifier + TD1.
@@ -119,6 +118,21 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   chemin absolu (`MSYS_NO_PATHCONV=1`) ; PowerShell bloqué par règle `deny` (pas dans `settings.json` global).
 
 ## Fait (2026-07-01)
+- **PROD-PREP : générateur → client llama-swap + projet self-contained (prouvé).** Convergence infra pour la
+  mise en prod. (1) `LlamaCppGenerator` (spawn+close d'un llama-server) **remplacé** par `LlamaSwapGenerator` =
+  **client HTTP pur** du llama-swap partagé (`LLAMA_SWAP_URL` défaut `127.0.0.1:8080`, clé
+  `granite-4.0-h-tiny-Q4_K_M`) : **zéro process**, `close()` no-op, TTL décharge → plus de spawn/kill à oublier
+  (vraie douleur = l'oubli, pas la RAM ; l'utilisateur sérialise déjà ; cf. mémoire
+  `shared-machine-3-slm-projects`). (2) **Self-containment** : binaire llama.cpp b9542 (50 M) copié dans
+  `tools/llamacpp/`, granite-4.0 (4 G) copié dans `models/` (embedding + LightOnOCR + mmproj y étaient déjà) ;
+  `tools/llama-swap/config.yaml` **réécrit en chemins RELATIFS** (3 clés : `granite-4.0-h-tiny-Q4_K_M` gén.,
+  `granite-embedding-r2` RAG, `lightonocr-2-1b` OCR), lancé depuis la racine
+  (`tools/llama-swap/llama-swap.exe --config tools/llama-swap/config.yaml --listen 127.0.0.1:8080`). **Frontière
+  git** : binaires (`models/`, `tools/**/*.exe`, `tools/llamacpp/`) **gitignorés** (repo public, multi-Go) ;
+  `config.yaml` **tracké** = contrat déployable (0 PII, 0 chemin perso). **Prouvé** : appel Article 2 via
+  `LlamaSwapGenerator` → llama-swap lazy-load granite → **2 `REMPLACE` verbatim identiques au direct-server**
+  (101 s dont ~100 s load). Runner : `--threads/--binary/--model` retirés, `--llama-swap-url/--model-key` ajoutés.
+  **Reste** : convergence embedding + LightOCR (mêmes clés déjà dans le yaml ; LightOCR HTTP non prouvé).
 - **RAG contrat — Étape 2 DÉ-BRUITÉE (filtre structurel `is_document_reference`) — prouvé sur run réel.**
   Le modèle sur-extrayait sur la prose (arêtes dont `ancien` = un délai, une date, une valeur, un statut
   produit, « les Parties »…). Fix = garde-fou **déterministe** dans `build_reference_graph` : garder une arête

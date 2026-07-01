@@ -21,6 +21,7 @@ docs/Brainstoms/
 # Working briefs + cross-project meta-cadrage (Claude.ai discussions) — internal, not public
 docs/briefs/
 
-# Local llama-swap binary + machine-specific model config (absolute paths, personal model
-# zoo) — a jettisonable adapter, never public
-tools/llama-swap/
+# Local binaries — large / platform-specific, never committed. The llama-swap CONFIG is
+# TRACKED (it is the portable deployment contract: project-relative paths, no PII).
+tools/llama-swap/*.exe
+tools/llamacpp/

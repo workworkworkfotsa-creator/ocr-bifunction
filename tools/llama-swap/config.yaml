@@ -1,0 +1,51 @@
+# =====================================================================
+#  llama-swap config — OCR BiFunction (self-contained, project-relative)
+#
+#  Launch FROM THE PROJECT ROOT so the relative paths resolve:
+#    tools/llama-swap/llama-swap.exe --config tools/llama-swap/config.yaml --listen 127.0.0.1:8080
+#
+#  Paths are relative to the project root (the launch CWD). The binary
+#  (tools/llamacpp/) and the GGUF weights (models/) are gitignored — large /
+#  platform-specific. THIS file is the portable DEPLOYMENT CONTRACT: exactly the
+#  model keys + flags this project needs. No personal paths, no PII.
+#
+#  Serving model (RAM 8 GB, no GPU): ONE model resident at a time; llama-swap
+#  lazy-loads on first request and TTL-unloads when idle. Threads = -t 3 (leave
+#  a core; this machine has 4 physical cores — day profile).
+# =====================================================================
+
+healthCheckTimeout: 300
+logLevel: info
+
+models:
+  # --- Generation: contract reference-graph edge extraction (Étape 2). Proven. ---
+  "granite-4.0-h-tiny-Q4_K_M":
+    cmd: >
+      tools/llamacpp/b9542/llama-server.exe
+      -m models/granite-4.0-h-tiny-Q4_K_M.gguf
+      --host 127.0.0.1 --port ${PORT}
+      -c 16384 -t 3 -fa on -ngl 0 --mmap --jinja
+    ttl: 300
+
+  # --- RAG embedding: granite-embedding-r2 (32K ctx, run at 8192). Proven (rag.py). ---
+  # -b/-ub aligned to -c so a whole-article embedding fits one physical batch.
+  "granite-embedding-r2":
+    cmd: >
+      tools/llamacpp/b9542/llama-server.exe
+      -m models/granite-embedding-311M-multilingual-r2-Q8_0.gguf
+      --host 127.0.0.1 --port ${PORT}
+      -c 8192 -b 8192 -ub 8192 -t 3 -ngl 0 --mmap --embedding
+    ttl: 300
+
+  # --- OCR escalation: LightOnOCR-2-1B multimodal (GGUF + mmproj). ---
+  # NOTE: the HTTP/llama-server path is NOT yet proven for this model (it currently runs via
+  # llama-mtmd-cli). This entry is the TARGET for the LightOCR->llama-swap step; validate the
+  # multimodal HTTP quality before relying on it.
+  "lightonocr-2-1b":
+    cmd: >
+      tools/llamacpp/b9542/llama-server.exe
+      -m models/LightOnOCR-2-1B-Q8_0.gguf
+      --mmproj models/mmproj-LightOnOCR-2-1B-Q8_0.gguf
+      --host 127.0.0.1 --port ${PORT}
+      -c 8192 -t 3 -ngl 0 --mmap
+    ttl: 300

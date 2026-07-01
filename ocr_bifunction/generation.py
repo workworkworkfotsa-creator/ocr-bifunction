@@ -1,44 +1,35 @@
 """Generative slot — the LLM tier that extracts reference EDGES from contract articles.
 
-Jettisonable adapter, SAME shape as `GgufEmbeddingRetriever` in `rag.py`: a llama-server
-child owns one GGUF (granite-4.0-h-tiny), started lazily on first call and stopped on
-close() — use it as a context manager so the process never leaks. Following that pattern
-(one owned child process) rather than llama-swap keeps close() reliable: terminating the
-server kills the model, with no orphaned grandchild to `taskkill`.
+Jettisonable adapter that is a thin CLIENT of the shared **llama-swap** proxy — it does NOT
+spawn or own a llama-server. This machine is shared by several SLM projects (cf. memory
+`shared-machine-3-slm-projects`) and the real pain is FORGETTING to start/stop a service, not
+RAM (one model runs at a time, serialised by hand). llama-swap fixes exactly that: it
+lazy-LOADS the model by key on first request (nothing to remember to start) and TTL-UNLOADS it
+when idle (nothing to remember to stop). So this generator just POSTs to llama-swap and never
+manages a process — `close()` is a no-op; there is no server to leak or to `taskkill`.
 
 The one job today is REFERENCE EXTRACTION. Given one article's text, the model returns the
 links it creates to other documents/articles/annexes as DIRECTIONAL edges (ancien/nouveau).
 The prompt is the one PROVEN on the real Avenant Article 2 (2026-07-01): a free `cible/par`
 schema was unstable (both the label and the direction flipped between runs), so it is pinned
-by directional fields + an exact enum + a one-shot example. The Generator slot (process +
-HTTP) is generic; the prompt and the JSON parsing are pure functions on top, so parsing is
-testable without a server.
+by directional fields + an exact enum + a one-shot example. The HTTP transport is generic; the
+prompt and the JSON parsing are pure functions on top, so parsing is testable without a server.
 """
 
 from __future__ import annotations
 
 import json
 import os
-import socket
-import subprocess
-import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Protocol, runtime_checkable
 
-# The llama.cpp build + granite GGUF this concept was proven on (2026-07-01, via llama-swap
-# — the same binary and flags, launched directly here). IT overrides via env.
-_DEFAULT_GENERATION_BINARY = (
-    r"C:\Users\filipeparente\Tools\llamacpp\b9542\llama-server.exe"
-)
-_DEFAULT_GENERATION_MODEL = (
-    r"C:\Users\filipeparente\Models_gguf\granite-4.0-h-tiny-Q4_K_M.gguf"
-)
-# Mirror the proven llama-swap entry for this model: -c 16384 -t 3 -fa on -ngl 0 --mmap --jinja.
-_GENERATION_CONTEXT_SIZE = 16384
-_GENERATION_THREADS = 3
+# The shared llama-swap proxy this project talks to (OpenAI-compatible). Base URL WITHOUT the
+# /v1 suffix, matching the sibling projects' LLAMA_SWAP_URL convention; the model KEY is the
+# entry in llama-swap's config.yaml. IT / other projects override via env.
+_DEFAULT_LLAMA_SWAP_URL = "http://127.0.0.1:8080"
+_DEFAULT_GENERATION_MODEL_KEY = "granite-4.0-h-tiny-Q4_K_M"
 
 # The set of relations the model may emit (kept in sync with the enum in the prompt).
 RELATIONS: frozenset[str] = frozenset(
@@ -92,114 +83,46 @@ class Generator(Protocol):
         ...
 
 
-def _find_free_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-        probe.bind(("127.0.0.1", 0))
-        return probe.getsockname()[1]
+class LlamaSwapGenerator:
+    """Chat generator that is a thin CLIENT of the shared llama-swap proxy.
 
-
-class LlamaCppGenerator:
-    """Chat generator backed by a GGUF model served by llama-server (llama.cpp).
-
-    Disposable adapter (IT swaps binary / model / port via constructor args or env:
-    GENERATION_BINARY / GENERATION_MODEL). The server is started lazily on the first
-    complete() and stopped on close(); use it as a context manager so the process never
-    leaks. Flags mirror the proven llama-swap entry for granite-4.0-h-tiny.
+    It owns NO process: llama-swap lazy-loads the model by `model_key` on the first request
+    (nothing to start) and TTL-unloads it when idle (nothing to stop). Override the endpoint /
+    model / limits via constructor args or env (LLAMA_SWAP_URL, GENERATION_MODEL_KEY). `close()`
+    is a no-op and the context-manager methods exist only so callers can keep using `with`.
+    The first call may block while llama-swap loads the model on CPU, so the request timeout is
+    generous.
     """
 
-    name = "llamacpp-granite"
+    name = "llama-swap-granite"
 
     def __init__(
         self,
         *,
-        binary_path: str | os.PathLike[str] | None = None,
-        model_path: str | os.PathLike[str] | None = None,
-        host: str = "127.0.0.1",
-        port: int | None = None,
-        threads: int = _GENERATION_THREADS,
-        context_size: int = _GENERATION_CONTEXT_SIZE,
+        base_url: str | None = None,
+        model_key: str | None = None,
         max_output_tokens: int = 800,
-        startup_timeout_seconds: float = 300.0,
         request_timeout_seconds: float = 420.0,
     ) -> None:
-        self._binary_path = Path(
-            binary_path
-            or os.environ.get("GENERATION_BINARY", _DEFAULT_GENERATION_BINARY)
+        self._base_url = (
+            base_url or os.environ.get("LLAMA_SWAP_URL", _DEFAULT_LLAMA_SWAP_URL)
+        ).rstrip("/")
+        self._model_key = model_key or os.environ.get(
+            "GENERATION_MODEL_KEY", _DEFAULT_GENERATION_MODEL_KEY
         )
-        self._model_path = Path(
-            model_path or os.environ.get("GENERATION_MODEL", _DEFAULT_GENERATION_MODEL)
-        )
-        self._host = host
-        self._port = port
-        self._threads = threads
-        self._context_size = context_size
         self._max_output_tokens = max_output_tokens
-        self._startup_timeout_seconds = startup_timeout_seconds
         self._request_timeout_seconds = request_timeout_seconds
-        self._process: subprocess.Popen[bytes] | None = None
 
-    def __enter__(self) -> LlamaCppGenerator:
+    def __enter__(self) -> LlamaSwapGenerator:
         return self
 
     def __exit__(self, *_exc_info: object) -> None:
         self.close()
 
-    def _base_url(self) -> str:
-        return f"http://{self._host}:{self._port}"
-
-    def _ensure_server(self) -> None:
-        if self._process is not None:
-            return
-        if not self._binary_path.exists():
-            raise RuntimeError(f"llama-server binary not found: {self._binary_path}")
-        if not self._model_path.exists():
-            raise RuntimeError(f"generation model not found: {self._model_path}")
-        if self._port is None:
-            self._port = _find_free_port()
-        self._process = subprocess.Popen(
-            [
-                str(self._binary_path),
-                "-m",
-                str(self._model_path),
-                "--host",
-                self._host,
-                "--port",
-                str(self._port),
-                "-c",
-                str(self._context_size),
-                "-t",
-                str(self._threads),
-                "-fa",
-                "on",
-                "-ngl",
-                "0",
-                "--mmap",
-                "--jinja",
-            ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        deadline = time.monotonic() + self._startup_timeout_seconds
-        while time.monotonic() < deadline:
-            if self._process.poll() is not None:
-                raise RuntimeError("llama-server exited before becoming ready")
-            try:
-                with urllib.request.urlopen(
-                    f"{self._base_url()}/health", timeout=2
-                ) as response:
-                    if response.status == 200:
-                        return
-            except (urllib.error.URLError, ConnectionError, OSError):
-                pass  # not up yet — the model is still loading on CPU
-            time.sleep(0.5)
-        self.close()
-        raise RuntimeError("llama-server did not become ready in time")
-
     def complete(self, system_prompt: str, user_prompt: str) -> str:
-        self._ensure_server()
         payload = json.dumps(
             {
-                "model": "granite",
+                "model": self._model_key,
                 "messages": [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
@@ -212,7 +135,7 @@ class LlamaCppGenerator:
             }
         ).encode("utf-8")
         request = urllib.request.Request(
-            f"{self._base_url()}/v1/chat/completions",
+            f"{self._base_url}/v1/chat/completions",
             data=payload,
             headers={"Content-Type": "application/json"},
             method="POST",
@@ -227,17 +150,15 @@ class LlamaCppGenerator:
             raise RuntimeError(
                 f"generation server HTTP {error.code}: {detail}"
             ) from error
+        except urllib.error.URLError as error:
+            raise RuntimeError(
+                f"shared llama-swap unreachable at {self._base_url} "
+                f"(is it running?): {error.reason}"
+            ) from error
         return body["choices"][0]["message"]["content"]
 
     def close(self) -> None:
-        if self._process is None:
-            return
-        self._process.terminate()
-        try:
-            self._process.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            self._process.kill()
-        self._process = None
+        """No-op: llama-swap owns the model lifecycle (TTL-unload); nothing to stop here."""
 
 
 # A reference NAMES an element ("Annexe 4 du Contrat", ~20 chars); anything much longer is
