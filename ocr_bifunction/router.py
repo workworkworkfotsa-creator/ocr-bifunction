@@ -23,17 +23,25 @@ Two honesty guards:
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from ocr_bifunction.rag import Summary, chunk_document, summarize_extractive
-from ocr_bifunction.reader import OcrEngine, read_document
+from ocr_bifunction.reader import OcrEngine, TextLine, read_document
+from ocr_bifunction.suggestion import SuggestionOutcome
 from ocr_bifunction.template import (
     extract_fields,
     load_templates,
     match_template,
     validate_fields,
 )
+
+# The suggestion hook: called ONLY on a no-match (the brief's "downstream of pas de match"),
+# with the already-read text + lines so the doc is never read/OCR'd twice. (text, lines,
+# category) -> outcome. Default None = the hook never fires — the API fast path stays free of
+# the SLM (same opt-in pattern as escalation_engine); the batch regime wires it in.
+SuggesterHook = Callable[[str, list[TextLine], str | None], SuggestionOutcome | None]
 
 
 @dataclass
@@ -49,6 +57,7 @@ class RoutedDocument:
     fields: dict[str, str | None] = field(default_factory=dict)
     summary: Summary | None = None  # rag only
     chunk_count: int = 0  # rag only
+    suggestion: SuggestionOutcome | None = None  # rag only, when a suggester hook fired
 
 
 def route_document(
@@ -57,6 +66,7 @@ def route_document(
     engine: OcrEngine | None = None,
     category: str | None = None,
     templates: list[dict] | None = None,
+    suggester: SuggesterHook | None = None,
 ) -> RoutedDocument:
     """Read one document, decide its lane, and return that lane's first product.
 
@@ -68,6 +78,10 @@ def route_document(
     `templates` injects the template list directly — the D2 store read path (the worker
     reads ACTIVE templates from `ocr_templates`, cf. contrat-bd-destination.md) — instead
     of loading the committed JSON files; the `category` scoping applies either way.
+
+    `suggester` (opt-in, batch regime) fires ONLY on a no-match with readable text: the SLM
+    proposes a template from the closed list, deterministically re-verified downstream. The
+    outcome rides on the RoutedDocument; staging it (D3) is the caller's sink concern.
     """
     result = read_document(document_path, engine)
     if templates is None:
@@ -83,7 +97,10 @@ def route_document(
     if template is not None:
         return _structured_result(document_path.name, result.lines, template)
 
-    return _rag_result(document_path.name, result.text)
+    routed = _rag_result(document_path.name, result.text)
+    if suggester is not None and result.text.strip():
+        routed.suggestion = suggester(result.text, result.lines, category)
+    return routed
 
 
 def _structured_result(source: str, lines, template: dict) -> RoutedDocument:

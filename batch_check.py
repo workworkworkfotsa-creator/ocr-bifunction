@@ -34,6 +34,12 @@ from ocr_bifunction.repository import (
     Job,
     SqliteRepository,
 )
+from ocr_bifunction.review_repository import (
+    Review,
+    Suggestion,
+    SqliteReviewRepository,
+)
+from ocr_bifunction.template import load_templates
 
 PROJECT_ROOT = Path(__file__).parent
 TEMPLATES_DIRECTORY = PROJECT_ROOT / "templates"
@@ -116,11 +122,28 @@ def _job_from_record(record: DocumentRecord) -> Job:
 
 def _persist(result: BatchResult, store_path: str) -> None:
     """Write every record into D1, then RE-READ the review queue FROM the store — proving the
-    ⑤ queue is a table query ('en attente' = a status), not an in-memory list."""
+    ⑤ queue is a table query ('en attente' = a status), not an in-memory list. A record whose
+    suggester outcome VERIFIED also opens a D3 review staging the suggestion `pending` (the
+    growth loop fed by the live flow; the human validates -> promotion, cf. promotion.py)."""
     repository = SqliteRepository(store_path)
+    review_repository = SqliteReviewRepository(store_path)
     try:
+        staged_review_ids: list[int] = []
         for record in result.records:
-            repository.save(_job_from_record(record))
+            job_id = repository.save(_job_from_record(record))
+            if record.suggestion is not None and record.suggestion.verified:
+                staged_review_ids.append(
+                    review_repository.open_review(
+                        Review(
+                            job_id=job_id,
+                            projection={"source": record.source, "lane": record.lane},
+                            suggestion=Suggestion(
+                                template_id=record.suggestion.suggested_template_id,
+                                anchors=record.suggestion.confirmed_anchors,
+                            ),
+                        )
+                    )
+                )
         waiting = repository.pending(STATUS_NEEDS_REVIEW)
         print(f"\n-- D1 store: {store_path} --")
         print(
@@ -130,8 +153,20 @@ def _persist(result: BatchResult, store_path: str) -> None:
         for job in waiting:
             reason = job.reasons[0] if job.reasons else job.category_lane
             print(f"    #{job.job_id} {job.source}  [{job.category_lane}]  <- {reason}")
+        if staged_review_ids:
+            pending = review_repository.pending_suggestions()
+            print(
+                f"  D3: staged {len(staged_review_ids)} verified suggestion(s); "
+                f"{len(pending)} pending (queried from ocr_reviews):"
+            )
+            for review in pending:
+                print(
+                    f"    review #{review.review_id} (job #{review.job_id}) suggests "
+                    f"'{review.suggestion.template_id}'"
+                )
     finally:
         repository.close()
+        review_repository.close()
 
 
 def main() -> int:
@@ -159,6 +194,12 @@ def main() -> int:
         default="ocr_store.sqlite",
         help="SQLite D1 store path (records + status). Holds extracted fields (PII) -> gitignored.",
     )
+    parser.add_argument(
+        "--suggest",
+        action="store_true",
+        help="Wake the SLM on a single-doc no-match to propose a template from the closed "
+        "list (needs llama-swap); verified suggestions are staged pending in D3.",
+    )
     arguments = parser.parse_args()
 
     engine = _LazyRapidOcrEngine()
@@ -168,8 +209,33 @@ def main() -> int:
 
         escalation_engine = LightOnOcrEngine()
 
+    # One template load for the whole batch: the deterministic match and the SLM's closed
+    # list read the SAME list (swap in a D2 repository's active_templates() at IT time).
+    template_list = load_templates(TEMPLATES_DIRECTORY)
+    suggester = None
+    if arguments.suggest:
+        from ocr_bifunction.suggestion import SuggestionOutcome, suggest_template
+
+        def suggester(
+            text: str, lines: list[TextLine], category: str | None
+        ) -> SuggestionOutcome:
+            return suggest_template(
+                text,
+                lines,
+                TEMPLATES_DIRECTORY,
+                category=category,
+                templates=template_list,
+            )
+
     items = _build_items(arguments.documents, arguments.ci, arguments.document_type)
-    result = process_batch(items, TEMPLATES_DIRECTORY, engine, escalation_engine)
+    result = process_batch(
+        items,
+        TEMPLATES_DIRECTORY,
+        engine,
+        escalation_engine,
+        templates=template_list,
+        suggester=suggester,
+    )
     for record in result.records:
         _print_record(record)
     _print_split(result)

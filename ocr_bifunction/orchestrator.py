@@ -26,7 +26,8 @@ from pathlib import Path
 from ocr_bifunction.pipeline import CiSubmissionResult, process_ci_submission
 from ocr_bifunction.rag import Summary
 from ocr_bifunction.reader import OcrEngine
-from ocr_bifunction.router import RoutedDocument, route_document
+from ocr_bifunction.router import RoutedDocument, SuggesterHook, route_document
+from ocr_bifunction.suggestion import SuggestionOutcome
 
 # The document type that means "this upload is a CI" — dispatches to the recto+verso
 # submission flow instead of single-document routing (mirrors the API's document_type key).
@@ -64,6 +65,7 @@ class DocumentRecord:
     reasons: list[str] = field(default_factory=list)
     summary: Summary | None = None  # rag lane only
     chunk_count: int = 0  # rag lane only
+    suggestion: SuggestionOutcome | None = None  # rag lane only, when a suggester fired
 
 
 @dataclass
@@ -86,10 +88,28 @@ class BatchResult:
         return [record for record in self.records if record.outcome == "review"]
 
 
+def _suggestion_reason(suggestion: SuggestionOutcome) -> str:
+    """One human-readable line for the review queue, whatever the suggestion's fate."""
+    if suggestion.verified:
+        return (
+            f"SLM suggests template '{suggestion.suggested_template_id}' "
+            "(anchors confirmed + fit validated) — pending human validation"
+        )
+    if suggestion.suggested_template_id is None:
+        return "SLM suggestion: UNKNOWN (no known template fits)"
+    return (
+        f"SLM suggested '{suggestion.suggested_template_id}' but it did not verify "
+        "(hallucinated anchors or failed fit) — plain human review"
+    )
+
+
 def _record_from_routed(routed: RoutedDocument) -> DocumentRecord:
     # Only a structured doc that passed its single-doc validation is auto; a RAG-lane doc is
     # by construction unidentified -> always the human queue.
     is_auto = routed.lane == "structured" and routed.verdict == "auto"
+    reasons = list(routed.reasons)
+    if routed.suggestion is not None:
+        reasons.append(_suggestion_reason(routed.suggestion))
     return DocumentRecord(
         source=routed.source,
         lane=routed.lane,
@@ -98,9 +118,10 @@ def _record_from_routed(routed: RoutedDocument) -> DocumentRecord:
         category=routed.category,
         template_id=routed.template_id,
         fields=routed.fields,
-        reasons=routed.reasons,
+        reasons=reasons,
         summary=routed.summary,
         chunk_count=routed.chunk_count,
+        suggestion=routed.suggestion,
     )
 
 
@@ -135,12 +156,14 @@ def process_document(
     engine: OcrEngine,
     escalation_engine: OcrEngine | None = None,
     templates: list[dict] | None = None,
+    suggester: SuggesterHook | None = None,
 ) -> DocumentRecord:
     """Dispatch one item to its core (CI submission or single-doc router) -> a record.
 
     `templates` injects the single-doc template list (the D2 store read path) instead of the
     JSON files; the CI submission flow still reads the directory (its templates are not in the
-    suggestion/growth loop yet)."""
+    suggestion/growth loop yet). `suggester` (opt-in, like escalation) wakes the SLM on a
+    single-doc no-match; the outcome rides on the record for the sink to stage into D3."""
     if item.document_type == CI_CATEGORY:
         result = process_ci_submission(
             item.paths,
@@ -156,6 +179,7 @@ def process_document(
         engine,
         category=item.document_type,
         templates=templates,
+        suggester=suggester,
     )
     return _record_from_routed(routed)
 
@@ -166,17 +190,23 @@ def process_batch(
     engine: OcrEngine,
     escalation_engine: OcrEngine | None = None,
     templates: list[dict] | None = None,
+    suggester: SuggesterHook | None = None,
 ) -> BatchResult:
     """Run every item through its core and collect the uniform records (④/⑤ split included).
 
     Sequential on purpose: one SLM runs at a time on the 8 GB / no-GPU target, and escalation
     (LightOCR) is heavy — the batch regime tolerates the latency. Returns a `BatchResult`; the
     caller decides where the records are persisted (the sink seam). `templates` = the D2 read
-    path (see process_document)."""
+    path; `suggester` = the opt-in SLM suggestion hook (see process_document)."""
     return BatchResult(
         records=[
             process_document(
-                item, templates_directory, engine, escalation_engine, templates
+                item,
+                templates_directory,
+                engine,
+                escalation_engine,
+                templates,
+                suggester,
             )
             for item in items
         ]

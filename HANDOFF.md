@@ -21,9 +21,10 @@ discipline smoke-first.
 
 > ▶ **NEXT (reprise) — les 3 domaines D1/D2/D3 sont proxifiés + CONSOLIDÉS end-to-end (2026-07-02).** La chaîne
 > complète (intake batch → D1 → revue D3 → suggestion → promotion D2 → re-match déterministe → job D1 fermé)
-> tourne en UNE démo (`consolidation_check.py`), templates lus depuis D2. Reste du plan : **#4 placement RAG
-> contrat** (seul item ouvert) ; + suites optionnelles : câbler la lane SLM dans le flux live (`route_document`
-> no-match → suggestion D3 au lieu de RAG seul), fermer la boucle côté API.
+> tourne en UNE démo (`consolidation_check.py`), templates lus depuis D2 ; **la lane SLM est câblée EN LIVE
+> dans le batch** (`batch_check --suggest` : no-match → SLM → suggestion vérifiée stagée D3 par le flux).
+> Reste du plan : **#4 placement RAG contrat** (seul item ouvert) ; + suite optionnelle : fermer la boucle
+> côté API (revue/promotion exposées).
 >
 > **PLAN ACTÉ (ordre convenu, même lecture — reprendre ICI en session fraîche) :**
 > 1. ✅ **FAIT (2026-07-02) — `_jobs` dict de l'API migré sur `repository`.** D1 unifié : API + batch écrivent
@@ -130,6 +131,23 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   chemin absolu (`MSYS_NO_PATHCONV=1`) ; PowerShell bloqué par règle `deny` (pas dans `settings.json` global).
 
 ## Fait (2026-07-02)
+- **Lane SLM câblée EN LIVE dans le flux batch — la suggestion ne vit plus dans son runner (prouvé réel,
+  3 legs).** Le hook se pose **DANS `route_document`** (seul endroit où text/lines sont en scope → zéro
+  double-read/OCR) : param **`suggester`** opt-in (défaut `None` = le fast-path API ne réveille JAMAIS le SLM —
+  même patron qu'`escalation_engine`), tiré **uniquement** sur no-match avec texte lisible. Type
+  `SuggesterHook = (text, lines, category) -> SuggestionOutcome` (`router.py`). L'orchestrateur **reste
+  storage-agnostic** : l'outcome voyage sur `DocumentRecord.suggestion` + une raison lisible dans `reasons`
+  (`_suggestion_reason`) ; c'est le **sink** (`batch_check._persist`) qui stage les suggestions **vérifiées** en
+  D3 (`open_review` + suggestion `pending`) à côté du persist D1 — même frontière que le bridge D1. Cohérence
+  liste-fermée : `suggest_template` a gagné le param **`templates`** (miroir du seam D2 du router, trou noté à
+  l'étape 2 maintenant exercé) et `batch_check` charge les templates **UNE fois** pour le match ET le SLM
+  (`--suggest`). **Prouvé live (llama-swap, granite, runs réels)** : (1) HP `Image.jpeg` scopé `preuve_test` →
+  no-match → SLM → gates 1+2 OK → **D1 job `needs_review` + D3 review `pending` stagés PAR LE FLUX** ; (2)
+  facture 14a → match déterministe → **SLM endormi** (AUTO) ; (3) courrier → SLM non-vérifié → review avec
+  raison explicative, **PAS de ligne D3** (état final vérifié en table : 3 jobs, 1 seule review pending).
+  Régression sans `--suggest` : iso. **Note croissance réelle observée** : pour Image.jpeg le bon geste de
+  promotion est une **variante** `grow_template_from_base` (le template de base existe ; c'est sa SIGNATURE de
+  match qui rate cette photo) — le mécanisme existe déjà (`promotion.py`). Machine rendue llama-free (0 orphelin).
 - **CONSOLIDATION end-to-end — la chaîne complète D1→D3→D2→re-match en UNE démo (prouvée réel) ; 2 trous
   d'intégration révélés ET soudés.** Runner `consolidation_check.py` (déterministe, sans llama, un seul store) :
   PHASE A intake = **le vrai `process_batch`** avec **templates lus DEPUIS D2** (seedée moins `facture_entrante_03`)

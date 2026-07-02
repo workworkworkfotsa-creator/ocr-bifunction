@@ -174,6 +174,7 @@ def suggest_template(
     category: str | None = None,
     base_url: str | None = None,
     model_key: str | None = None,
+    templates: list[dict] | None = None,
 ) -> SuggestionOutcome:
     """Wake the SLM for a doc that matched no template, then DISPOSE of its answer deterministically
     through the brief's two gates: anti-hallucination (proposed anchors present in the OCR) and FIT
@@ -182,8 +183,17 @@ def suggest_template(
     `verified` only when a KNOWN id was proposed, an anchor re-verified, AND the tried template
     validated. UNKNOWN / out-of-list id / all-hallucinated anchors / validation failure -> human.
     `lines` (geometry) is needed to actually try the template. The caller runs `match_template`
-    FIRST and only calls this on a miss."""
-    templates = load_templates(templates_directory, category)
+    FIRST and only calls this on a miss.
+
+    `templates` injects the template list directly (the D2 store read path, mirroring
+    route_document) instead of loading the JSON files; `category` scoping applies either way —
+    the closed list the model picks from must be the SAME list the deterministic match used."""
+    if templates is None:
+        templates = load_templates(templates_directory, category)
+    elif category is not None:
+        templates = [
+            template for template in templates if template.get("category") == category
+        ]
     template_ids = [
         template["template_id"] for template in templates if template.get("template_id")
     ]
