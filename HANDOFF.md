@@ -32,10 +32,11 @@ discipline smoke-first.
 > 2. ✅ **FAIT (2026-07-02) — D3 store + lane SLM de suggestion (GBNF prouvé actif, lane end-to-end).**
 >    Store `ocr_reviews` (loop `pending`→`validated`) + lane deterministic-first (GBNF liste-fermée,
 >    re-vérif anchors + fit test extract/validate, → stage D3). Détail → Fait (2026-07-02) ci-dessous.
->    **Reste D3→D2** : seam de promotion (valider une suggestion écrit/active le template) = **étape 3**.
-> 3. **D2 — templates → table** (`ocr_templates_*`) : **ÉMERGE de la promotion D3→D2** (valider une suggestion
->    écrit/active le template). PAS avant — les `templates/*.json` marchent en lecture (anti-cimetière/YAGNI).
+> 3. ✅ **FAIT (2026-07-02) — D2 émerge (`ocr_templates`) + seam de promotion D3→D2.** Boucle de croissance
+>    organique prouvée déterministe : miss → curate → validate → promote → **match déterministe** + auto.
+>    Détail → Fait (2026-07-02) ci-dessous. **→ Les 3 domaines D1/D2/D3 sont désormais tous proxifiés.**
 > 4. **#3 — placement RAG contrat** (flux batch vs lane « store de contrats ») : indépendant, ne bloque rien.
+>    **← seul item restant du plan.**
 >
 > **À co-geler avec l'IT** (le jour J, pas avant) : les COLONNES de `ocr_jobs` (MariaDB 5.5 : `NOW()` explicite,
 > InnoDB/utf8, index ≤767 o) — cf. `docs/contrat-bd-destination.md`. Détail → Fait (2026-07-02).
@@ -129,6 +130,23 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   chemin absolu (`MSYS_NO_PATHCONV=1`) ; PowerShell bloqué par règle `deny` (pas dans `settings.json` global).
 
 ## Fait (2026-07-02)
+- **Étape 3 — D2 ÉMERGE (`ocr_templates`) + seam de promotion D3→D2 ; boucle de croissance organique prouvée.**
+  Dernier des 3 domaines : **D2 rendu store** (`ocr_bifunction/template_repository.py` : `TemplateRepository`
+  ABC + `SqliteTemplateRepository`, table `ocr_templates` — `template_id` PK, `category`, match/fields/validation
+  en **colonnes JSON**, `active`, `version`, timestamps). Les critères **voyagent avec** le template (bloc
+  `validation`, pas de table séparée). `seed_from_directory` importe les `templates/*.json` **anonymisés** (le
+  SEED) ; `active_templates(category)` rend des dicts **shape identique aux JSON** → `match_template`/
+  `extract_fields` (`template.py`) le consomment **INCHANGÉS** (on back le read path, on ne le touche pas). D2
+  émerge MAINTENANT car la promotion en a besoin d'écrire (avant : fichiers OK en lecture, YAGNI). **Seam de
+  promotion** (`ocr_bifunction/promotion.py`, l'écrivain « Promotion » du contrat) : `promote_suggestion` upsert
+  un template **actif** en D2 + flip `suggestion_status`→`validated` (transaction unique côté MariaDB ; en proxy,
+  2 stores séparés en séquence) ; `grow_template_from_base` (pur) mint une variante réutilisant fields/validation
+  d'une base quand le SLM pointe un id connu mais que `match_template` a raté le layout. **Prouvé déterministe
+  (sans llama, PII-safe, `promotion_check.py`)** : D2 seedée moins `facture_entrante_03` → doc **miss**
+  (`match=None`) → D1 `needs_review` + D3 review `pending` (contenu curé = le JSON committé anonymisé) → **promote**
+  → D2 actif + D3 `validated` → doc **matche** `facture_entrante_03` → extract+validate → **auto**. Chaîne
+  D1→D3→D2 dans **un seul store**, aucun fichier PII écrit (D2 = `.sqlite` gitignoré), aucune valeur imprimée.
+  Oracle = run réel. **Bilan : le sketch `docs/contrat-bd-destination.md` (3 domaines) est intégralement proxifié.**
 - **Étape 2 (D3) — lane SLM de suggestion LIVRÉE + prouvée end-to-end (GBNF actif, deterministic-first).**
   Suite du store D3 (ci-dessous), la lane qui écrit les suggestions `pending`. **D'abord le harnais diagnostic
   GBNF** (`gbnf_diag.py`, brief délivrable 1) : test « banane » (grammaire `root ::= "BANANE"` + prompt qui
