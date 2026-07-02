@@ -1,0 +1,101 @@
+<!doctype html>
+<!-- Review page — disposable local-test adapter of destination domain 3 (the human surface).
+     It only READS D1 (the needs_review queue) and WRITES D3 (decision / suggestion validation)
+     through the review endpoints; the watchdog closes D1 on its next sweep. Validation criteria
+     are displayed READ-ONLY (v1 scope). No PII in this file. -->
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <title>OCR BiFunction — Revue humaine</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 2rem auto; max-width: 60rem; color: #222; }
+    h1 { font-size: 1.3rem; }  h2 { font-size: 1.1rem; margin-top: 2rem; }
+    .card { border: 1px solid #ccc; border-radius: 8px; padding: 0.9rem 1.1rem; margin: 0.8rem 0; }
+    .card h3 { margin: 0 0 0.4rem; font-size: 1rem; }
+    .fields td { padding: 0.1rem 0.8rem 0.1rem 0; font-size: 0.9rem; }
+    ul { margin: 0.3rem 0; padding-left: 1.2rem; font-size: 0.9rem; }
+    .muted { color: #666; font-size: 0.85rem; }
+    .criteria { background: #f6f6f6; border-radius: 6px; padding: 0.5rem 0.8rem; font-size: 0.85rem; }
+    button { padding: 0.35rem 1rem; cursor: pointer; margin-right: 0.5rem; }
+    button.accept { background: #e7f6e7; }  button.reject { background: #fdeaea; }
+    input[type=text] { width: 24rem; }
+    .done { color: #2a7a2a; font-weight: 600; }
+    a { color: #2a5db0; }
+  </style>
+</head>
+<body>
+  <h1>OCR BiFunction — Revue humaine</h1>
+  <p class="muted">Vos décisions écrivent D3 ; le watchdog clôt les jobs D1 à son prochain passage
+     (l'UI ne touche jamais <code>D1.status</code>). Dépôt : <a href="/">page upload</a>.</p>
+
+  <h2>File de revue (D1 <code>needs_review</code>)</h2>
+  <div id="queue"><p class="muted">Chargement…</p></div>
+
+  <h2>Suggestions de templates en attente (D3 <code>pending</code>)</h2>
+  <div id="suggestions"><p class="muted">Chargement…</p></div>
+
+  <script>
+    function escapeHtml(text) {
+      return String(text).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+    }
+
+    async function loadQueue() {
+      const body = await (await fetch("/v1/reviews/queue")).json();
+      const container = document.getElementById("queue");
+      if (!body.jobs.length) { container.innerHTML = '<p class="muted">File vide.</p>'; return; }
+      container.innerHTML = body.jobs.map(job => `
+        <div class="card">
+          <h3>#${job.job_id} — ${escapeHtml(job.source)} <span class="muted">[${job.category_lane}${job.template_id ? " / " + escapeHtml(job.template_id) : ""}]</span></h3>
+          ${Object.keys(job.record_fields).length ? "<table class='fields'>" +
+            Object.entries(job.record_fields).map(([name, value]) =>
+              `<tr><td>${escapeHtml(name)}</td><td><b>${escapeHtml(value ?? "—")}</b></td></tr>`).join("") + "</table>" : ""}
+          <ul>${job.reasons.map(reason => `<li>${escapeHtml(reason)}</li>`).join("")}</ul>
+          ${job.decision
+            ? `<p class="done">Décision enregistrée : ${job.decision} (clôture au prochain passage du watchdog)</p>`
+            : `<input type="text" id="comment_${job.job_id}" placeholder="commentaire (optionnel)" />
+               <div style="margin-top:0.5rem">
+                 <button class="accept" onclick="decide(${job.job_id}, 'accept')">Accepter</button>
+                 <button class="reject" onclick="decide(${job.job_id}, 'reject')">Rejeter</button>
+               </div>`}
+        </div>`).join("");
+    }
+
+    async function decide(jobId, decision) {
+      const comment = document.getElementById("comment_" + jobId)?.value || null;
+      await fetch(`/v1/reviews/${jobId}/decision`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ decision, comment }),
+      });
+      loadQueue();
+    }
+
+    async function loadSuggestions() {
+      const body = await (await fetch("/v1/suggestions/pending")).json();
+      const container = document.getElementById("suggestions");
+      if (!body.suggestions.length) { container.innerHTML = '<p class="muted">Aucune suggestion en attente.</p>'; return; }
+      container.innerHTML = body.suggestions.map(suggestion => `
+        <div class="card">
+          <h3>Review #${suggestion.review_id} (job #${suggestion.job_id}) → template
+              <b>${escapeHtml(suggestion.template_id)}</b></h3>
+          <p class="muted">Anchors confirmés sur l'OCR :</p>
+          <ul>${suggestion.anchors.map(anchor => `<li>${escapeHtml(anchor)}</li>`).join("")}</ul>
+          <div class="criteria"><b>Critères d'auto-validation du template</b> (lecture seule — v1) :
+            <pre>${escapeHtml(JSON.stringify(suggestion.validation, null, 2))}</pre></div>
+          <div style="margin-top:0.5rem">
+            <button class="accept" onclick="actOnSuggestion(${suggestion.review_id}, 'validate')">Valider → activer en D2</button>
+            <button class="reject" onclick="actOnSuggestion(${suggestion.review_id}, 'reject')">Rejeter</button>
+          </div>
+        </div>`).join("");
+    }
+
+    async function actOnSuggestion(reviewId, action) {
+      await fetch(`/v1/suggestions/${reviewId}/${action}`, { method: "POST" });
+      loadSuggestions();
+    }
+
+    loadQueue();
+    loadSuggestions();
+  </script>
+</body>
+</html>

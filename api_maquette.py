@@ -43,9 +43,11 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Response, status
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from ocr_bifunction.pipeline import CiSubmissionResult, process_ci_submission
+from ocr_bifunction.promotion import promote_suggestion
 from ocr_bifunction.reader import OcrEngine
 from ocr_bifunction.repository import (
     STATUS_DONE,
@@ -56,7 +58,19 @@ from ocr_bifunction.repository import (
     Repository,
     SqliteRepository,
 )
+from ocr_bifunction.review_repository import (
+    SUGGESTION_PENDING,
+    SUGGESTION_REJECTED,
+    Review,
+    ReviewRepository,
+    SqliteReviewRepository,
+)
 from ocr_bifunction.router import RoutedDocument, route_document
+from ocr_bifunction.template import load_templates
+from ocr_bifunction.template_repository import (
+    SqliteTemplateRepository,
+    TemplateRepository,
+)
 
 PROJECT_ROOT = Path(__file__).parent
 TEMPLATES_DIRECTORY = PROJECT_ROOT / "templates"
@@ -502,3 +516,194 @@ def get_job(job_id: int) -> JobResponse:
         verdict=job.verdict,  # type: ignore[arg-type]
         reasons=job.reasons,
     )
+
+
+# --- Local-test UI + review surface (disposable adapters, BRIEF-fonctionnement-mix). ---
+# The pages are plain HTML files (ui/), skins over the endpoints below. Writer contract:
+# these endpoints READ D1 and WRITE D3 (decision, suggestion validation) — never D1.status;
+# the watchdog closes D1 on its sweep. Promotion (validate a suggestion) writes D2.
+
+UI_DIRECTORY = PROJECT_ROOT / "ui"
+
+_review_repository: ReviewRepository | None = None
+_template_repository: TemplateRepository | None = None
+
+
+def _ensure_review_repository() -> ReviewRepository:
+    """Build the shared D3 store once (lazy). Caller MUST hold `_repository_lock`."""
+    global _review_repository
+    if _review_repository is None:
+        _review_repository = SqliteReviewRepository(STORE_PATH, check_same_thread=False)
+    return _review_repository
+
+
+def _ensure_template_repository() -> TemplateRepository:
+    """Build the shared D2 store once (lazy). Caller MUST hold `_repository_lock`."""
+    global _template_repository
+    if _template_repository is None:
+        _template_repository = SqliteTemplateRepository(
+            STORE_PATH, check_same_thread=False
+        )
+    return _template_repository
+
+
+@app.get("/", response_class=HTMLResponse, include_in_schema=False)
+def upload_page() -> str:
+    return (UI_DIRECTORY / "upload.html").read_text(encoding="utf-8")
+
+
+@app.get("/review", response_class=HTMLResponse, include_in_schema=False)
+def review_page() -> str:
+    return (UI_DIRECTORY / "review.html").read_text(encoding="utf-8")
+
+
+@app.get("/v1/document-types")
+def document_types() -> dict:
+    """The upload select box options — DERIVED from the template categories, never hardcoded."""
+    categories = sorted(
+        {
+            template.get("category")
+            for template in load_templates(TEMPLATES_DIRECTORY)
+            if template.get("category")
+        }
+    )
+    return {"document_types": categories}
+
+
+@app.get("/v1/reviews/queue")
+def review_queue() -> dict:
+    """The D1 needs_review rows + each one's D3 decision state (what the human sees)."""
+    with _repository_lock:
+        jobs = _ensure_repository().pending(STATUS_NEEDS_REVIEW)
+        review_repository = _ensure_review_repository()
+        payload = []
+        for job in jobs:
+            review = review_repository.by_job(job.job_id)
+            payload.append(
+                {
+                    "job_id": job.job_id,
+                    "source": job.source,
+                    "category_lane": job.category_lane,
+                    "category": job.category,
+                    "template_id": job.template_id,
+                    "record_fields": job.record_fields,
+                    "reasons": job.reasons,
+                    "decision": review.decision if review else None,
+                }
+            )
+    return {"jobs": payload}
+
+
+class DecisionRequest(BaseModel):
+    """The human's verdict on a reviewed record — written to D3, never to D1."""
+
+    decision: Literal["accept", "reject"]
+    comment: str | None = None
+
+
+@app.post("/v1/reviews/{job_id}/decision")
+def record_review_decision(job_id: int, request: DecisionRequest) -> dict:
+    """Record the human decision in D3 (opening the review row if none exists yet). The D1
+    job stays needs_review here — the WATCHDOG closes it on its next sweep (one writer)."""
+    with _repository_lock:
+        job = _ensure_repository().get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail=f"unknown job_id: {job_id}")
+        review_repository = _ensure_review_repository()
+        review = review_repository.by_job(job_id)
+        if review is None:
+            review_id = review_repository.open_review(
+                Review(
+                    job_id=job_id,
+                    projection={
+                        "source": job.source,
+                        "lane": job.category_lane,
+                        "verdict": job.verdict,
+                    },
+                )
+            )
+        else:
+            review_id = review.review_id
+        review_repository.record_decision(
+            review_id, comment=request.comment, decision=request.decision
+        )
+    return {
+        "review_id": review_id,
+        "decision": request.decision,
+        "note": "D1 job will be closed by the watchdog's next sweep",
+    }
+
+
+@app.get("/v1/suggestions/pending")
+def pending_suggestions() -> dict:
+    """The D3 pending template suggestions + the target template's validation criteria
+    (READ-ONLY v1 — editing the criteria is a separate Backoffice surface)."""
+    with _repository_lock:
+        pending = _ensure_review_repository().pending_suggestions()
+    templates_by_id = {
+        template["template_id"]: template
+        for template in load_templates(TEMPLATES_DIRECTORY)
+    }
+    return {
+        "suggestions": [
+            {
+                "review_id": review.review_id,
+                "job_id": review.job_id,
+                "template_id": review.suggestion.template_id,
+                "anchors": review.suggestion.anchors,
+                "validation": templates_by_id.get(
+                    review.suggestion.template_id or "", {}
+                ).get("validation", {}),
+            }
+            for review in pending
+        ]
+    }
+
+
+@app.post("/v1/suggestions/{review_id}/validate")
+def validate_suggestion(review_id: int) -> dict:
+    """Promote a pending suggestion: the curated template becomes ACTIVE in D2 and the D3
+    suggestion flips validated (promotion.py, the third writer of the column contract)."""
+    with _repository_lock:
+        review = _ensure_review_repository().get(review_id)
+        if review is None or review.suggestion is None:
+            raise HTTPException(
+                status_code=404, detail=f"no suggestion on review {review_id}"
+            )
+        if review.suggestion.status != SUGGESTION_PENDING:
+            raise HTTPException(
+                status_code=409,
+                detail=f"suggestion already {review.suggestion.status}",
+            )
+        templates_by_id = {
+            template["template_id"]: template
+            for template in load_templates(TEMPLATES_DIRECTORY)
+        }
+        curated_template = templates_by_id.get(review.suggestion.template_id or "")
+        if curated_template is None:
+            raise HTTPException(
+                status_code=409,
+                detail="curated template not found — v1 promotes known template ids only",
+            )
+        promoted_template_id = promote_suggestion(
+            review_id,
+            curated_template,
+            template_repository=_ensure_template_repository(),
+            review_repository=_ensure_review_repository(),
+        )
+    return {"promoted_template_id": promoted_template_id, "active": True}
+
+
+@app.post("/v1/suggestions/{review_id}/reject")
+def reject_suggestion(review_id: int) -> dict:
+    """Reject a pending suggestion (the model was wrong, or the human declines) — D3 only."""
+    with _repository_lock:
+        review = _ensure_review_repository().get(review_id)
+        if review is None or review.suggestion is None:
+            raise HTTPException(
+                status_code=404, detail=f"no suggestion on review {review_id}"
+            )
+        _ensure_review_repository().set_suggestion_status(
+            review_id, SUGGESTION_REJECTED
+        )
+    return {"review_id": review_id, "suggestion_status": SUGGESTION_REJECTED}

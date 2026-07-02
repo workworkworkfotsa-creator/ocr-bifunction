@@ -131,6 +131,23 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   chemin absolu (`MSYS_NO_PATHCONV=1`) ; PowerShell bloqué par règle `deny` (pas dans `settings.json` global).
 
 ## Fait (2026-07-02)
+- **MIX local, étapes B+C — les 2 pages HTML (upload + revue) livrées + prouvées dans un VRAI navigateur
+  (Playwright), zéro llama.** Adaptateurs jetables `ui/upload.html` + `ui/review.html` (0 dép front, servies
+  par FastAPI `GET /` et `GET /review`) — peaux sur le contrat prouvé, AUCUNE logique métier côté client.
+  **Upload** : select box `document_type` **dérivée du serveur** (`GET /v1/document-types` = les categories des
+  templates, jamais codée en dur) + files multiples → base64 → `POST /v1/documents:validate` (contrat inchangé)
+  → rendu status/verdict/reasons/missing + **poll auto du job** si `pending`. **Revue** : `GET /v1/reviews/queue`
+  (rows D1 `needs_review` + état de décision D3), Accepter/Rejeter + commentaire → `POST
+  /v1/reviews/{job}/decision` (**écrit D3 seulement** — la clôture D1 = le sweep du watchdog, contrat
+  d'écrivains respecté à l'écran : « l'UI ne touche jamais D1.status ») ; suggestions D3 `pending` +
+  **critères d'auto-validation du template affichés READ-ONLY** (Q3 v1) → Valider = `POST
+  /v1/suggestions/{review}/validate` (promotion D2 + D3 validated, 409 au replay) / Rejeter. **Prouvé** :
+  (1) `ui_smoke.py` versionné (TestClient + vrai process watchdog) **9/9 PASS** (pages servies, select dérivée,
+  facture→validated+row, courrier→queue, accept→sweep→file vidée, suggestion+critères→promotion D2, replay 409) ;
+  (2) **navigateur réel** (uvicorn :8123 + Playwright) : facture uploadée via la page → « Résultat : validated » ;
+  courrier → needs_review → visible dans /review (raisons + keywords) → clic Accepter → « Décision enregistrée » →
+  watchdog `--once` → reload → **« File vide »**. Le fonctionnement mix est TESTABLE localement de bout en bout :
+  `uvicorn api_maquette:app` + `python worker_watchdog.py` + un navigateur.
 - **MIX local, étape A — worker WATCHDOG (process séparé) remplace le worker in-process ; la table EST la
   file, durcie (prouvé réel, 5 preuves, zéro llama).** Cadrage → `docs/briefs/BRIEF-fonctionnement-mix.md`
   (gitignoré) ; décisions user : Q1 watchdog-table (avec durcissement), Q2 persist-all, Q3 critères v1
