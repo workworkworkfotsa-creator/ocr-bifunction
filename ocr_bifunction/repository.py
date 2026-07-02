@@ -132,9 +132,16 @@ class SqliteRepository(Repository):
         database_path: str | Path = "ocr_store.sqlite",
         *,
         clock: Callable[[], str] | None = None,
+        check_same_thread: bool = True,
     ) -> None:
         self._clock = clock or (lambda: datetime.now().isoformat(timespec="seconds"))
-        self._connection = sqlite3.connect(str(database_path))
+        # check_same_thread=False lets the async escalation worker and the request threads
+        # share ONE connection — D1's documented role (a worker writes `status`, readers poll
+        # it). The caller must then serialize access with a lock (the API does), which covers
+        # the dropped per-thread guard. Batch stays single-threaded, so the default is True.
+        self._connection = sqlite3.connect(
+            str(database_path), check_same_thread=check_same_thread
+        )
         self._connection.row_factory = sqlite3.Row
         self._connection.executescript(_SCHEMA)
         self._connection.commit()

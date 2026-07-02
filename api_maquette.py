@@ -19,9 +19,10 @@ Two lanes, one door:
     single serialized worker drains the queue (the ~171 s/img VLM must not run concurrently
     on the 8 GB target), flips the job pending->done, and the client polls GET /v1/jobs/{id}.
 
-The in-memory `_jobs` dict and `queue.Queue` are the disposable proxy of the destination DB
-"domain 1 — jobs + queue". IT swaps the store, queue, hosting, auth, TLS — disposable
-adapters. The job/upload SHAPE is what survives the frontier.
+The D1 `Repository` (SqliteRepository proxy) and `queue.Queue` are the disposable adapters of
+destination "domain 1 — jobs + queue": both regimes — this API and the batch orchestrator — now
+write the SAME `ocr_jobs` table (repository.py), so one column contract is exercised by two
+producers. IT swaps the store, queue, hosting, auth, TLS. The TABLE shape survives the frontier.
 
 Run it:
     uv run uvicorn api_maquette:app --reload
@@ -31,10 +32,10 @@ from __future__ import annotations
 
 import base64
 import binascii
+import os
 import queue
 import tempfile
 import threading
-import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Literal
@@ -42,8 +43,18 @@ from typing import Callable, Literal
 from fastapi import FastAPI, HTTPException, Response, status
 from pydantic import BaseModel, Field
 
-from ocr_bifunction.pipeline import CiSubmissionResult, process_ci_submission
+from ocr_bifunction.pipeline import CiRecord, CiSubmissionResult, process_ci_submission
 from ocr_bifunction.reader import OcrEngine
+from ocr_bifunction.repository import (
+    STATUS_DONE,
+    STATUS_FAILED,
+    STATUS_NEEDS_REVIEW,
+    STATUS_PROCESSING,
+    STATUS_RECEIVED,
+    Job,
+    Repository,
+    SqliteRepository,
+)
 from ocr_bifunction.router import RoutedDocument, route_document
 
 PROJECT_ROOT = Path(__file__).parent
@@ -62,12 +73,56 @@ app = FastAPI(
     description="Thin mock door over the CI submission pipeline. Not production.",
 )
 
-# --- Toy in-memory state (NOT production: lost on restart, never persisted). ---------
-# `_jobs` is the disposable proxy of destination domain 1 (`ocr_jobs_*`). Mutated from the
-# worker thread, read from request threads: whole-entry replacement is atomic under the GIL.
-_jobs: dict[str, dict[str, object]] = {}
-# Idempotency cache keyed by request_id: a replay returns the same result (same job_id).
+# --- D1 store: the SAME `ocr_jobs` table the batch regime writes (repository.py). ----
+# The escalation lifecycle (received -> processing -> done|needs_review|failed) now lives in
+# D1, so this API and the batch orchestrator exercise ONE column contract. A single shared
+# connection is opened lazily and every access is guarded by `_repository_lock`: the worker
+# thread writes `status`, request threads read/enqueue — one writer per phase, no race.
+STORE_PATH = os.environ.get("OCR_STORE_PATH", "ocr_store.sqlite")
+
+_repository: Repository | None = None
+_repository_lock = threading.Lock()
+
+# Idempotency cache keyed by request_id: a replay returns the same result (same job_id). Stays
+# in memory — it dedupes the whole response envelope, not just persisted jobs (out of D1 scope).
 _idempotency_cache: dict[str, "ValidateResponse"] = {}
+
+
+def _ensure_repository() -> Repository:
+    """Build the shared D1 store once (lazy). Caller MUST hold `_repository_lock`."""
+    global _repository
+    if _repository is None:
+        _repository = SqliteRepository(STORE_PATH, check_same_thread=False)
+    return _repository
+
+
+def _save_job(job: Job) -> int:
+    with _repository_lock:
+        return _ensure_repository().save(job)
+
+
+def _get_job_row(job_id: int) -> Job | None:
+    with _repository_lock:
+        return _ensure_repository().get(job_id)
+
+
+def _update_job(
+    job_id: int,
+    status: str,
+    *,
+    verdict: str | None = None,
+    record_fields: dict[str, str | None] | None = None,
+    reasons: list[str] | None = None,
+) -> None:
+    with _repository_lock:
+        _ensure_repository().update_status(
+            job_id,
+            status,
+            verdict=verdict,
+            record_fields=record_fields,
+            reasons=reasons,
+        )
+
 
 # The fast OCR engine is heavy to build (loads ONNX models on CPU): built once, reused.
 _engine: OcrEngine | None = None
@@ -168,17 +223,17 @@ class ValidateResponse(BaseModel):
     verdict: Literal["auto", "human"] | None
     reasons: list[str] = Field(default_factory=list)
     missing: list[str] = Field(default_factory=list)  # subset of ["recto", "verso"]
-    job_id: str | None = None
+    job_id: int | None = None  # the D1 row id (ocr_jobs.job_id), assigned on enqueue
 
 
 class JobResponse(BaseModel):
-    """The async follow-up. The worker flips a job pending->done; `verdict`/`reasons`
-    carry the final escalated outcome (which may still be `human`)."""
+    """The async follow-up. The worker advances a job to a terminal D1 state; `verdict`/`reasons`
+    carry the final escalated outcome (which may still be `human`). The verso-read provenance —
+    a CI-only diagnostic with no D1 column — is folded into `reasons` ('verso read via: …')."""
 
     status: Literal["pending", "done"]
     verdict: Literal["auto", "human"] | None = None
     reasons: list[str] = Field(default_factory=list)
-    verso_read_path: str | None = None
 
 
 def _http_status_for(response: ValidateResponse) -> int:
@@ -215,7 +270,7 @@ class _EscalationJob:
     """One unit of escalation work, carrying the uploaded files so the worker re-runs the
     whole submission WITH the VLM. Bytes live in memory only until processed."""
 
-    job_id: str
+    job_id: int  # the D1 row id assigned by repository.save
     files: list[tuple[str, bytes]]  # (filename, bytes)
     category: str | None
 
@@ -238,30 +293,42 @@ def _ensure_workers_started() -> None:
         _workers_started = True
 
 
+def _terminal_from_record(
+    record: CiRecord | None,
+) -> tuple[str, str | None, dict[str, str | None] | None, list[str]]:
+    """Map an escalation result to a D1 terminal state (mirrors the batch bridge in
+    batch_check.py): auto -> done/auto; doubtful -> needs_review/human; no record ->
+    needs_review. The verso-read provenance (no D1 column) is folded into `reasons`."""
+    if record is None:
+        return STATUS_NEEDS_REVIEW, None, None, ["escalation produced no record"]
+    reasons = [*record.reasons, f"verso read via: {record.verso_read_path}"]
+    if record.verdict == "auto":
+        return STATUS_DONE, "auto", record.fields, reasons
+    return STATUS_NEEDS_REVIEW, "human", record.fields, reasons
+
+
 def _escalation_worker() -> None:
-    """Drain the queue one job at a time, re-running the submission WITH the VLM engine."""
+    """Drain the queue one job at a time, re-running the submission WITH the VLM engine, and
+    write the lifecycle into D1: `processing` at pickup, then the terminal state + record."""
     while True:
         job = _escalation_queue.get()
         try:
-            _jobs[job.job_id] = {**_jobs[job.job_id], "status": "processing"}
+            _update_job(job.job_id, STATUS_PROCESSING)
             record = _escalate(job)
-            _jobs[job.job_id] = {
-                "status": "done",
-                "lane": "escalation",
-                "verdict": record.verdict if record else None,
-                "reasons": record.reasons
-                if record
-                else ["escalation produced no record"],
-                "verso_read_path": record.verso_read_path if record else "none",
-            }
+            status_value, verdict, fields, reasons = _terminal_from_record(record)
+            _update_job(
+                job.job_id,
+                status_value,
+                verdict=verdict,
+                record_fields=fields,
+                reasons=reasons,
+            )
         except Exception as error:  # surface the failure in the job, do not hide it
-            _jobs[job.job_id] = {
-                "status": "failed",
-                "lane": "escalation",
-                "verdict": None,
-                "reasons": [f"escalation failure: {type(error).__name__}"],
-                "verso_read_path": "none",
-            }
+            _update_job(
+                job.job_id,
+                STATUS_FAILED,
+                reasons=[f"escalation failure: {type(error).__name__}"],
+            )
         finally:
             _escalation_queue.task_done()
 
@@ -297,18 +364,24 @@ def _escalate(job: _EscalationJob):
 
 
 def _enqueue_escalation(
-    files: list[tuple[str, bytes]], category: str | None, fast_reasons: list[str]
-) -> str:
-    """Register a `received` job, enqueue it for the worker, and hand back its id."""
+    files: list[tuple[str, bytes]],
+    category: str | None,
+    fast_reasons: list[str],
+    request_id: str | None,
+) -> int:
+    """Insert a `received` CI job into D1, enqueue it for the worker, and hand back its row id."""
     _ensure_workers_started()
-    job_id = f"job_{uuid.uuid4().hex[:8]}"
-    _jobs[job_id] = {
-        "status": "received",
-        "lane": "escalation",
-        "verdict": None,
-        "reasons": fast_reasons,  # WHY the fast path doubted, visible while pending
-        "verso_read_path": "none",
-    }
+    source = ", ".join(filename for filename, _ in files)
+    job = Job(
+        source=source,
+        category_lane="ci",
+        status=STATUS_RECEIVED,
+        execution_lane="escalation",
+        category=category,
+        reasons=fast_reasons,  # WHY the fast path doubted, visible while pending
+        request_id=request_id,
+    )
+    job_id = _save_job(job)
     _escalation_queue.put(_EscalationJob(job_id, files, category))
     return job_id
 
@@ -380,14 +453,16 @@ def _run_route_document(
 
 
 def _handle_ci_submission(
-    files: list[tuple[str, bytes]], document_type: str | None
+    files: list[tuple[str, bytes]], document_type: str | None, request_id: str | None
 ) -> ValidateResponse:
     """The CI lane: complete -> validated / pending(escalate); else incomplete / unrecognized."""
     result = _run_fast_submission(files, document_type)
     if result.status == "complete" and result.record.verdict == "auto":
         return _map_complete_auto(result)
     if result.status == "complete":  # doubtful -> escalate off the request path
-        job_id = _enqueue_escalation(files, document_type, result.record.reasons)
+        job_id = _enqueue_escalation(
+            files, document_type, result.record.reasons, request_id
+        )
         return ValidateResponse(
             status="pending", verdict=None, reasons=result.record.reasons, job_id=job_id
         )
@@ -436,7 +511,9 @@ def validate_document(request: ValidateRequest, response: Response) -> ValidateR
 
     files = _decode_files(request)  # may raise 400
     if request.document_type == "carte_identite":
-        wire = _handle_ci_submission(files, request.document_type)  # may raise 500
+        wire = _handle_ci_submission(
+            files, request.document_type, request.request_id
+        )  # may raise 500
     else:
         wire = _handle_single_document(files, request.document_type)  # may raise 500
 
@@ -447,17 +524,20 @@ def validate_document(request: ValidateRequest, response: Response) -> ValidateR
 
 
 @app.get("/v1/jobs/{job_id}", response_model=JobResponse)
-def get_job(job_id: str) -> JobResponse:
-    """Poll an escalation job. 404 if unknown. Maps the internal lifecycle
-    (`received`/`processing`/`done`/`failed`) to the client's pending|done view."""
-    job = _jobs.get(job_id)
+def get_job(job_id: int) -> JobResponse:
+    """Poll an escalation job by its D1 row id. 404 if unknown. Maps the D1 lifecycle
+    (received/processing/done/needs_review/failed) to the client's pending|done view — every
+    terminal state reads as `done` (the async work is finished; `verdict` says auto vs human)."""
+    job = _get_job_row(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail=f"unknown job_id: {job_id}")
-    internal_status = job["status"]
-    client_status = "done" if internal_status in ("done", "failed") else "pending"
+    client_status = (
+        "done"
+        if job.status in (STATUS_DONE, STATUS_NEEDS_REVIEW, STATUS_FAILED)
+        else "pending"
+    )
     return JobResponse(
         status=client_status,  # type: ignore[arg-type]
-        verdict=job["verdict"],  # type: ignore[arg-type]
-        reasons=job["reasons"],  # type: ignore[arg-type]
-        verso_read_path=job.get("verso_read_path"),  # type: ignore[arg-type]
+        verdict=job.verdict,  # type: ignore[arg-type]
+        reasons=job.reasons,
     )

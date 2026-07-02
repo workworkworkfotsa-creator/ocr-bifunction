@@ -104,7 +104,7 @@ def run(
     print("\n-- job after polling --")
     print(f"status       = {job.get('status') if job else None}")
     print(f"verdict      = {job.get('verdict') if job else None}")
-    print(f"verso_path   = {job.get('verso_read_path') if job else None}")
+    # verso-read provenance is now folded into `reasons` ('verso read via: …'), no own field.
     for reason in (job or {}).get("reasons", []):
         print(f"  - {reason}")
     print(f"escalation engine called = {fake_engine.called}")

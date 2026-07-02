@@ -26,12 +26,11 @@ discipline smoke-first.
 > le signal**) → `processing` → `done` + record réécrit.
 >
 > **PLAN ACTÉ (ordre convenu, même lecture — reprendre ICI en session fraîche) :**
-> 1. **Migrer le `_jobs` dict de l'API (`api_maquette.py`) sur `repository`.** COMPLÈTE D1 = **un seul store,
->    les 2 régimes** (batch + API écrivent la même table `ocr_jobs`). Dé-risque le contrat de colonnes en
->    l'exerçant depuis **2 producteurs** AVANT d'empiler. Petit (l'API a déjà tout le lifecycle
->    received→processing→done). **← démarrer par là.**
+> 1. ✅ **FAIT (2026-07-02) — `_jobs` dict de l'API migré sur `repository`.** D1 unifié : API + batch écrivent
+>    la MÊME table `ocr_jobs` (prouvé : 3 lignes, 2 producteurs coexistent, file ⑤ = 1 requête SQL). Détail
+>    → Fait (2026-07-02) ci-dessous.
 > 2. **D3 — revue + suggestion-template** (`ocr_review_*`, FK `job_id`) : la valeur (boucle de croissance
->    organique), MÊME loop status-driven (autre `type`). Réf D1 → nécessite D1 unifié (étape 1) d'abord.
+>    organique), MÊME loop status-driven (autre `type`). Réf D1 → D1 unifié OK. **← démarrer par là.**
 > 3. **D2 — templates → table** (`ocr_templates_*`) : **ÉMERGE de la promotion D3→D2** (valider une suggestion
 >    écrit/active le template). PAS avant — les `templates/*.json` marchent en lecture (anti-cimetière/YAGNI).
 > 4. **#3 — placement RAG contrat** (flux batch vs lane « store de contrats ») : indépendant, ne bloque rien.
@@ -128,6 +127,27 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   chemin absolu (`MSYS_NO_PATHCONV=1`) ; PowerShell bloqué par règle `deny` (pas dans `settings.json` global).
 
 ## Fait (2026-07-02)
+- **Étape 1 du plan acté — API migrée sur `repository` : D1 UNIFIÉ, un seul store, 2 régimes (prouvé réel).**
+  Le `_jobs` dict en mémoire de `api_maquette.py` est **remplacé par le `SqliteRepository`** (même table
+  `ocr_jobs` que le batch). Le lifecycle escalade (received→processing→done|**needs_review**|failed) vit
+  désormais en D1. **3 frictions de contrat résolues** en exerçant les colonnes depuis 2 producteurs : (a)
+  `job_id` **str→int** (autoincrement D1 ; path `GET /v1/jobs/{id}` typé `int`) ; (b) terminal douteux
+  **unifié sur `needs_review`** (l'API faisait `done`+human) — le client mappe tout terminal→`done`, verdict
+  dit auto/human ; (c) **`verso_read_path` n'a PAS de colonne D1** (le batch ne le porte pas) → **plié dans
+  `reasons`** (`"verso read via: raw"`), champ retiré de `JobResponse`. **Thread-safety** : `SqliteRepository`
+  gagne un kwarg `check_same_thread=False` (défaut inchangé pour le batch mono-thread) + l'API sérialise TOUT
+  accès sous `_repository_lock` (1 écrivain par phase ; le VLM ~171 s tourne HORS lock). `request_id` porté sur
+  la ligne (colonne exercée). Store path env-overridable `OCR_STORE_PATH` (défaut `ocr_store.sqlite`, gitignoré).
+  **Prouvé (oracle = runs réels, smokes versionnés)** : (1) fast auto `recto_verso.pdf`→`validated`, **0 write
+  D1** (le fast-path ne persiste pas) ; (2) `api_smoke_async` recto A+verso B→202 `job_id=1`→worker→`done`,
+  ligne D1 re-lue (status `needs_review`, exec `escalation`, verdict human, `record_fields` réécrit,
+  `created_at`≠`updated_at`) ; (3) `api_smoke_real --expect pending` vert ; (4) **unification** : `batch_check
+  --store <même fichier>` → `ocr_jobs` porte 3 lignes de 2 producteurs (API `ci/escalation`, batch
+  `structured/fast` + `rag/fast`), file ⑤ = 1 requête SQL cross-régime. Limite notée : `--expect-escalation`
+  de `api_smoke_async` **inatteignable via le contrat submission** (un verso à MRZ VLM-only est déclaré
+  `incomplete` en fast-path AVANT enfilement — propriété du flux, pas de la migration) ; `template_id` pas
+  réécrit au terminal (`update_status` ne le couvre pas — sans régression, l'API ne le suivait pas). Oracle
+  = run réel, pas de pytest.
 - **#2 sink ④⑤ — D1 proxy (store jobs+records) bâti + comm async prouvée.** Décision utilisateur : **table, PAS
   JSON** (« JSON = temporaire ; table = organisation du travail ; le JSON vit en COLONNE »). `ocr_bifunction/
   repository.py` : **`Repository` ABC** (seam DI → l'IT swappe un `MariaDbRepository`, doctrine fabrique) +
