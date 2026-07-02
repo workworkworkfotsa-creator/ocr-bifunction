@@ -28,6 +28,12 @@ from ocr_bifunction.orchestrator import (
     process_batch,
 )
 from ocr_bifunction.reader import TextLine
+from ocr_bifunction.repository import (
+    STATUS_DONE,
+    STATUS_NEEDS_REVIEW,
+    Job,
+    SqliteRepository,
+)
 
 PROJECT_ROOT = Path(__file__).parent
 TEMPLATES_DIRECTORY = PROJECT_ROOT / "templates"
@@ -87,6 +93,47 @@ def _print_split(result: BatchResult) -> None:
             print(f"  · {record.source}  [{record.lane}/{record.detail}]  <- {reason}")
 
 
+def _job_from_record(record: DocumentRecord) -> Job:
+    """Bridge a batch record to a D1 job row. The RUNNER owns this mapping so orchestrator and
+    repository stay independent (neither imports the other). auto -> done/auto; anything
+    doubtful -> needs_review (the human queue)."""
+    if record.outcome == "auto":
+        status, verdict = STATUS_DONE, "auto"
+    else:
+        status = STATUS_NEEDS_REVIEW
+        verdict = "human" if record.detail in ("human", "complete") else None
+    return Job(
+        source=record.source,
+        category_lane=record.lane,
+        status=status,
+        verdict=verdict,
+        category=record.category,
+        template_id=record.template_id,
+        record_fields=record.fields,
+        reasons=record.reasons,
+    )
+
+
+def _persist(result: BatchResult, store_path: str) -> None:
+    """Write every record into D1, then RE-READ the review queue FROM the store — proving the
+    ⑤ queue is a table query ('en attente' = a status), not an in-memory list."""
+    repository = SqliteRepository(store_path)
+    try:
+        for record in result.records:
+            repository.save(_job_from_record(record))
+        waiting = repository.pending(STATUS_NEEDS_REVIEW)
+        print(f"\n-- D1 store: {store_path} --")
+        print(
+            f"  persisted {len(result.records)} job(s); {len(waiting)} in status "
+            f"'{STATUS_NEEDS_REVIEW}' (queried from the table):"
+        )
+        for job in waiting:
+            reason = job.reasons[0] if job.reasons else job.category_lane
+            print(f"    #{job.job_id} {job.source}  [{job.category_lane}]  <- {reason}")
+    finally:
+        repository.close()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Run a batch of documents end-to-end; print the ④ auto / ⑤ review split."
@@ -107,6 +154,11 @@ def main() -> int:
         action="store_true",
         help="Allow LightOCR escalation for the CI verso (needs llama-swap running).",
     )
+    parser.add_argument(
+        "--store",
+        default="ocr_store.sqlite",
+        help="SQLite D1 store path (records + status). Holds extracted fields (PII) -> gitignored.",
+    )
     arguments = parser.parse_args()
 
     engine = _LazyRapidOcrEngine()
@@ -121,6 +173,7 @@ def main() -> int:
     for record in result.records:
         _print_record(record)
     _print_split(result)
+    _persist(result, arguments.store)
     return 0
 
 

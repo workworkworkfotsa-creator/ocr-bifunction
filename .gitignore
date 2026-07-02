@@ -12,6 +12,10 @@ outputs/
 # Real input documents — may contain personal data (CI, factures); keep out of git
 inputs/
 
+# D1 store (records + status) — the SQLite proxy holds extracted fields (PII), never committed
+*.sqlite
+*.sqlite-journal
+
 # Local OCR model weights (GGUF) — large binaries, never committed
 models/
 

@@ -19,14 +19,15 @@ config-driven (value-check HT+TVA=TTC).** POC solo sur `master`, pas de remote. 
 — oracle = runs réels sur vrais docs + smokes structurels/logiques + KAT (composite MRZ), conforme à la
 discipline smoke-first.
 
-> ▶ **NEXT (reprise) — Backbone BATCH monté + prouvé (bout-en-bout, hors persistance) ; À DISCUTER : sink ④⑤.**
-> `orchestrator.py` (`process_batch` : items → route/CI-submission → `DocumentRecord` uniforme → split **④ auto
-> / ⑤ review**) + runner `batch_check.py`. Prouvé sur mix réel (sans llama) : facture→STRUCTURED/auto,
-> courrier→RAG/review, screenshot→RAG/review = **AUTO 1 / REVIEW 2**. **Persistance = seam ouvert EXPRÈS**
-> (`BatchResult` retourné, rien de figé). **À trancher avec l'utilisateur (IT-critique)** : **#2** forme du sink
-> ④⑤ (SQLite records + file de revue ? dump JSON/CSV ? = proxy de la table IT à co-geler) ; **#3** placement du
-> RAG contrat (dans ce flux batch, ou lane séparée « store de contrats »). Convergence llama SOLDÉE (3 slots
-> clients). Modèles **figés** : granite-4.0-h-tiny, granite-embedding-r2, LightOnOCR-2-1B. Détail → Fait (2026-07-02).
+> ▶ **NEXT (reprise) — D1 proxy (store jobs+records) bâti + comm async prouvée ; suite du store.** Le backbone
+> batch persiste dans **D1** (`ocr_bifunction/repository.py` : `Repository` ABC + `SqliteRepository`, table
+> `ocr_jobs`) ; le ⑤ review queue est une **requête SQL** (`pending('needs_review')`). **Comm async prouvée** :
+> record en attente = ligne `status='received'`/`escalation` que le worker dépile (pas de bus — **la colonne EST
+> le signal**) → `processing` → `done` + record réécrit. **Prochain pas** : (D2) templates → table
+> (`ocr_templates_*`, ce que `templates/*.json` proxysent) ; (D3) revue + **suggestion-template** (`ocr_review_*`,
+> FK `job_id`, MÊME loop status-driven) ; migrer le `_jobs` dict de l'API sur `repository`. **À co-geler avec
+> l'IT** : les COLONNES de `ocr_jobs` (MariaDB 5.5 : `NOW()` explicite, InnoDB/utf8) — cf.
+> `docs/contrat-bd-destination.md`. **#3** placement RAG contrat toujours ouvert. Détail → Fait (2026-07-02).
 
 Historique : `3fcc7a8` baseline ①②③ · `3c3d055` HANDOFF+hook · `19e8041` slot Preprocessor ·
 `395e9e3` MRZ parse · `3680c87` rectifier + TD1.
@@ -117,6 +118,20 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   chemin absolu (`MSYS_NO_PATHCONV=1`) ; PowerShell bloqué par règle `deny` (pas dans `settings.json` global).
 
 ## Fait (2026-07-02)
+- **#2 sink ④⑤ — D1 proxy (store jobs+records) bâti + comm async prouvée.** Décision utilisateur : **table, PAS
+  JSON** (« JSON = temporaire ; table = organisation du travail ; le JSON vit en COLONNE »). `ocr_bifunction/
+  repository.py` : **`Repository` ABC** (seam DI → l'IT swappe un `MariaDbRepository`, doctrine fabrique) +
+  **`SqliteRepository`** (proxy jetable), table **`ocr_jobs`** = record consolidé (**source unique**) + `status`
+  (`received`/`processing`/`needs_review`/`done`/`failed`) + `execution_lane` (`fast`/`escalation`) + `verdict`
+  + `record_fields`/`reasons` en **colonnes JSON** ; timestamps **explicites** (MariaDB 5.5 sans DEFAULT
+  CURRENT_TIMESTAMP). **La comm inter-tables = la colonne `status`** (pas de bus) : « record en attente d'async »
+  = `pending('received','escalation')`, le worker dépile → `processing` → `done` + record réécrit. La
+  **suggestion-template** suivra le MÊME loop (autre type ; D3 réf D1 par `job_id`). Garde-fou course = **1 seul
+  écrivain par phase** (worker écrit `D1.status` ; l'UI lit seulement). Batch câblé (`batch_check.py --store` ;
+  bridge `DocumentRecord→Job` **dans le runner** → `orchestrator`/`repository` restent indépendants). **Prouvé** :
+  batch 3 docs → 2 auto/`done` + 1 rag/`needs_review` **re-lu depuis la table** ; démo async received→done, file
+  vidée + record récupérable. Le `.sqlite` (PII) **gitignoré**. Contrat = les COLONNES, à co-geler IT (sketch
+  `docs/contrat-bd-destination.md` màj). Oracle = run réel.
 - **Backbone BATCH monté + prouvé (end-to-end, colonne vertébrale du régime batch).** `ocr_bifunction/
   orchestrator.py` : `process_batch(items, …) -> BatchResult`. Chaque `BatchItem` (1 doc, ou une submission CI
   multi-fichiers via `document_type=carte_identite`) est dispatché sur le **même cœur que l'API** —

@@ -15,7 +15,7 @@ tables préfixées** (pas 3 bases). « 3 BD » = **3 domaines** = 3 lifecycles +
 
 | Domaine | Préfixe proposé | Surface (handoff-it) | Propriétaire | Lifecycle | Proxy actuel |
 |---|---|---|---|---|---|
-| **1 — Jobs + queue async** | `ocr_jobs_*` | Infra / exécution | **IT** | opérationnel / transient | `_jobs` dict (`api_maquette.py`) |
+| **1 — Jobs + queue async** | `ocr_jobs_*` | Infra / exécution | **IT** | opérationnel / transient | **`ocr_bifunction/repository.py` (`SqliteRepository`, table `ocr_jobs`)** + `_jobs` dict (`api_maquette.py`, à migrer) |
 | **2 — Templates (+ critères validés)** | `ocr_templates_*` | Dictionnaire métier | **Expert métier / Backoffice** (PAS IT, PAS algo) | référence, lent | `templates/*.json` |
 | **3 — Revue / curation** | `ocr_review_*` | Métier (revue) + staging | **User / reviewer** | curation, croissance organique | — (à venir) |
 
