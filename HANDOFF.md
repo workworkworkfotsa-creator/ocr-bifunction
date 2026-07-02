@@ -23,11 +23,21 @@ discipline smoke-first.
 > batch persiste dans **D1** (`ocr_bifunction/repository.py` : `Repository` ABC + `SqliteRepository`, table
 > `ocr_jobs`) ; le ⑤ review queue est une **requête SQL** (`pending('needs_review')`). **Comm async prouvée** :
 > record en attente = ligne `status='received'`/`escalation` que le worker dépile (pas de bus — **la colonne EST
-> le signal**) → `processing` → `done` + record réécrit. **Prochain pas** : (D2) templates → table
-> (`ocr_templates_*`, ce que `templates/*.json` proxysent) ; (D3) revue + **suggestion-template** (`ocr_review_*`,
-> FK `job_id`, MÊME loop status-driven) ; migrer le `_jobs` dict de l'API sur `repository`. **À co-geler avec
-> l'IT** : les COLONNES de `ocr_jobs` (MariaDB 5.5 : `NOW()` explicite, InnoDB/utf8) — cf.
-> `docs/contrat-bd-destination.md`. **#3** placement RAG contrat toujours ouvert. Détail → Fait (2026-07-02).
+> le signal**) → `processing` → `done` + record réécrit.
+>
+> **PLAN ACTÉ (ordre convenu, même lecture — reprendre ICI en session fraîche) :**
+> 1. **Migrer le `_jobs` dict de l'API (`api_maquette.py`) sur `repository`.** COMPLÈTE D1 = **un seul store,
+>    les 2 régimes** (batch + API écrivent la même table `ocr_jobs`). Dé-risque le contrat de colonnes en
+>    l'exerçant depuis **2 producteurs** AVANT d'empiler. Petit (l'API a déjà tout le lifecycle
+>    received→processing→done). **← démarrer par là.**
+> 2. **D3 — revue + suggestion-template** (`ocr_review_*`, FK `job_id`) : la valeur (boucle de croissance
+>    organique), MÊME loop status-driven (autre `type`). Réf D1 → nécessite D1 unifié (étape 1) d'abord.
+> 3. **D2 — templates → table** (`ocr_templates_*`) : **ÉMERGE de la promotion D3→D2** (valider une suggestion
+>    écrit/active le template). PAS avant — les `templates/*.json` marchent en lecture (anti-cimetière/YAGNI).
+> 4. **#3 — placement RAG contrat** (flux batch vs lane « store de contrats ») : indépendant, ne bloque rien.
+>
+> **À co-geler avec l'IT** (le jour J, pas avant) : les COLONNES de `ocr_jobs` (MariaDB 5.5 : `NOW()` explicite,
+> InnoDB/utf8, index ≤767 o) — cf. `docs/contrat-bd-destination.md`. Détail → Fait (2026-07-02).
 
 Historique : `3fcc7a8` baseline ①②③ · `3c3d055` HANDOFF+hook · `19e8041` slot Preprocessor ·
 `395e9e3` MRZ parse · `3680c87` rectifier + TD1.
