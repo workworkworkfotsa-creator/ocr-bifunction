@@ -19,15 +19,14 @@ config-driven (value-check HT+TVA=TTC).** POC solo sur `master`, pas de remote. 
 — oracle = runs réels sur vrais docs + smokes structurels/logiques + KAT (composite MRZ), conforme à la
 discipline smoke-first.
 
-> ▶ **NEXT (reprise) — Convergence llama-swap TERMINÉE (3 slots) ; sujet llama SOLDÉ.** Générateur, embedding
-> ET LightOCR sont tous **clients llama-swap** (aucun process possédé ; lazy-load/TTL, plus de spawn/kill à
-> oublier). Projet self-contained (config relative trackée, binaires/GGUF gitignorés). Les 3 chemins prouvés
-> sur du réel (dont le multimodal HTTP de LightOCR, doute levé). **Prochain pas au choix (aucun chantier llama
-> restant)** : Étape 2 (b) enrichir la **résolution** (segmenter les ANNEXES en nœuds + doc-scoping
-> `Contrat`/`Avenant` → transformer les DANGLING en arêtes résolues) ; (c) tiers différés (Q&A génératif, lane
-> suggestion-template) ; ou autre. Modèles **figés** : granite-4.0-h-tiny (gén.), granite-embedding-r2 (RAG),
-> LightOnOCR-2-1B (OCR). Cf. mémoires `shared-machine-3-slm-projects`, `llama-cpp-threads-physical-cores`.
-> Détail → Fait (2026-07-02).
+> ▶ **NEXT (reprise) — Backbone BATCH monté + prouvé (bout-en-bout, hors persistance) ; À DISCUTER : sink ④⑤.**
+> `orchestrator.py` (`process_batch` : items → route/CI-submission → `DocumentRecord` uniforme → split **④ auto
+> / ⑤ review**) + runner `batch_check.py`. Prouvé sur mix réel (sans llama) : facture→STRUCTURED/auto,
+> courrier→RAG/review, screenshot→RAG/review = **AUTO 1 / REVIEW 2**. **Persistance = seam ouvert EXPRÈS**
+> (`BatchResult` retourné, rien de figé). **À trancher avec l'utilisateur (IT-critique)** : **#2** forme du sink
+> ④⑤ (SQLite records + file de revue ? dump JSON/CSV ? = proxy de la table IT à co-geler) ; **#3** placement du
+> RAG contrat (dans ce flux batch, ou lane séparée « store de contrats »). Convergence llama SOLDÉE (3 slots
+> clients). Modèles **figés** : granite-4.0-h-tiny, granite-embedding-r2, LightOnOCR-2-1B. Détail → Fait (2026-07-02).
 
 Historique : `3fcc7a8` baseline ①②③ · `3c3d055` HANDOFF+hook · `19e8041` slot Preprocessor ·
 `395e9e3` MRZ parse · `3680c87` rectifier + TD1.
@@ -118,6 +117,18 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   chemin absolu (`MSYS_NO_PATHCONV=1`) ; PowerShell bloqué par règle `deny` (pas dans `settings.json` global).
 
 ## Fait (2026-07-02)
+- **Backbone BATCH monté + prouvé (end-to-end, colonne vertébrale du régime batch).** `ocr_bifunction/
+  orchestrator.py` : `process_batch(items, …) -> BatchResult`. Chaque `BatchItem` (1 doc, ou une submission CI
+  multi-fichiers via `document_type=carte_identite`) est dispatché sur le **même cœur que l'API** —
+  `process_ci_submission` (CI) ou `route_document` (2-lane) — puis mappé en `DocumentRecord` uniforme (source,
+  lane, `outcome` ∈ {auto, review}, detail, fields, reasons, summary). `BatchResult` expose le **split ④/⑤**
+  (`.auto` = centralise-ready, `.review` = file de revue humaine). Escalade LightOCR câblée pour le verso CI
+  seulement (opt-in `--escalate`). **Persistance VOLONTAIREMENT hors-scope** : `process_batch` RETOURNE les
+  records, le SINK (SQLite/JSON/MariaDB) se branche sur `BatchResult` — c'est le contrat ④/⑤ à co-geler avec
+  l'IT (#2, non figé). Runner `batch_check.py` (lazy RapidOCR ; `--ci` groupe une submission ; `--escalate`).
+  **Prouvé** (mix réel, sans llama) : `14a FACTURE…`→STRUCTURED/**auto** (facture_entrante_03, total_ht
+  5909.74) ; courrier mise-en-demeure→RAG/review ; screenshot log-API→RAG/review (RapidOCR a tiré, aucun
+  template) → **AUTO 1 / REVIEW 2**. Zéro edit d'appelant (réutilise les cœurs). Oracle = run réel.
 - **Convergence llama-swap TERMINÉE — embedding + LightOCR passés clients (prouvés). Sujet llama SOLDÉ.**
   Suite du générateur (`187ddaf`), les 2 derniers slots SLM convergent sur le llama-swap partagé, chacun
   prouvé sur du réel. (1) **`GgufEmbeddingRetriever`** (`rag.py`) ne spawn plus de `llama-server --embedding`
