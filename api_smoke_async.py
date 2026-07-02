@@ -1,71 +1,79 @@
-"""API maquette async smoke — prove the escalation lane lifecycle on a real pair.
+"""API async smoke — prove the DOOR + WATCHDOG topology on a real pair (no llama).
 
-    uv run python api_smoke_async.py <recto_image> <verso_image>
-    uv run python api_smoke_async.py <recto_2021> <verso_2021> --expect-escalation
+    uv run python api_smoke_async.py <recto_image> <verso_image> [--document-type carte_identite]
 
-Drives the real `validate_document` + worker via TestClient (no server, no port). A fast
-FAKE escalation engine is injected so the async SHAPE runs WITHOUT paying the ~171 s VLM:
-the fake records whether the worker reached the escalation tier and returns no lines. The
-real VLM's MRZ recovery is proven separately (4/4 ICAO checksums, cf. HANDOFF) — this smoke
-proves the LIFECYCLE the cadrage NEXT asked for:
+Drives the REAL two-process shape the mix runs locally:
 
-    doubtful fast verdict -> 202 {"status": "pending", "job_id": ...}
-                          -> worker drains the queue off the request path
-                          -> GET /v1/jobs/{id} flips pending -> done
+    POST (TestClient, real validate_document)  ->  202 pending + job_id
+        the door spooled the bytes and wrote a D1 row status='received'
+    worker_watchdog.py --once --fake-escalation  (a REAL SEPARATE PROCESS)
+        claims the row atomically, re-runs the submission, writes the terminal state,
+        purges the spool
+    GET /v1/jobs/{id}  ->  done
 
-Pass a doubtful pair (recto A + verso B, OR a verso whose MRZ raw+enhance both miss). With
---expect-escalation the run also asserts the worker actually invoked the escalation engine
-(use the missed-MRZ pair: a plain mismatch reads the verso MRZ raw, so escalation never
-fires — correct, but the fake stays uncalled).
+The fake escalation engine (a watchdog flag, not an import seam) returns no lines, so the
+async SHAPE runs in seconds without llama — the VLM's actual recovery quality was proven
+separately (4/4 ICAO checksums, cf. HANDOFF). Escalation-reached is asserted from the
+watchdog's output ("claimed job #<id>") — the WORKER did the work, not the request thread.
 
-No PII lives in this file: the images come from the command line (the real inputs are
-gitignored) and identity values appear only in the runtime output, never in the repo.
+No PII in this file: images come from the command line (real inputs are gitignored) and
+identity values appear only in runtime output. Store + spool live in a scratch directory.
 """
 
 from __future__ import annotations
 
 import argparse
 import base64
-import time
+import os
+import subprocess
+import sys
+import tempfile
 from pathlib import Path
 
-from fastapi.testclient import TestClient
+PROJECT_ROOT = Path(__file__).parent
 
-import api_maquette
-from api_maquette import app
-from ocr_bifunction.reader import TextLine
+# The door reads store/spool locations from env AT IMPORT — set them to scratch BEFORE
+# importing api_maquette so this smoke never touches the default local store.
+_SCRATCH = Path(tempfile.mkdtemp(prefix="ocr_bifunction_async_smoke_"))
+os.environ["OCR_STORE_PATH"] = str(_SCRATCH / "smoke_store.sqlite")
+os.environ["OCR_SPOOL_PATH"] = str(_SCRATCH / "spool")
 
+from fastapi.testclient import TestClient  # noqa: E402  (env must precede the import)
 
-class _FakeEscalationEngine:
-    """A fast stand-in for the VLM. Records that the worker reached the escalation tier
-    and returns no lines, so the async lifecycle runs in seconds, not minutes."""
-
-    name = "fake-escalation"
-
-    def __init__(self) -> None:
-        self.called = False
-
-    def recognize(self, image_png_bytes: bytes) -> list[TextLine]:
-        self.called = True
-        return []
+from api_maquette import app  # noqa: E402
 
 
 def _encode_image(image_path: Path) -> str:
     return base64.b64encode(image_path.read_bytes()).decode("ascii")
 
 
-def run(
-    recto_path: Path,
-    verso_path: Path,
-    document_type: str | None,
-    expect_escalation: bool,
-    timeout_seconds: float = 180.0,
-    poll_interval_seconds: float = 0.25,
-) -> int:
-    """POST a doubtful pair, then poll the job until done. Returns a process exit code."""
-    fake_engine = _FakeEscalationEngine()
-    api_maquette.set_escalation_engine_factory(lambda: fake_engine)
+def _run_watchdog_once() -> str:
+    """Run the real watchdog process one pass (fake escalation engine); return its stdout."""
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(PROJECT_ROOT / "worker_watchdog.py"),
+            "--once",
+            "--fake-escalation",
+            "--store",
+            os.environ["OCR_STORE_PATH"],
+            "--pid-file",
+            str(_SCRATCH / "watchdog.pid"),
+        ],
+        capture_output=True,
+        text=True,
+        cwd=PROJECT_ROOT,
+        timeout=600,
+    )
+    print("-- watchdog output --")
+    for line in completed.stdout.splitlines():
+        print(f"   {line}")
+    if completed.returncode != 0:
+        print(f"   (exit {completed.returncode}) {completed.stderr[:400]}")
+    return completed.stdout
 
+
+def run(recto_path: Path, verso_path: Path, document_type: str | None) -> int:
     payload: dict[str, object] = {
         "files": [
             {"filename": recto_path.name, "content_base64": _encode_image(recto_path)},
@@ -75,11 +83,9 @@ def run(
     if document_type is not None:
         payload["document_type"] = document_type
 
-    job: dict | None = None
     with TestClient(app) as client:
         post = client.post("/v1/documents:validate", json=payload)
         post_status, post_body = post.status_code, post.json()
-
         print(f"recto   = {recto_path.name}")
         print(f"verso   = {verso_path.name}")
         print(f"POST    = HTTP {post_status} / status {post_body.get('status')}")
@@ -94,53 +100,36 @@ def run(
             return 1
         print(f"job_id  = {job_id}")
 
-        deadline = time.monotonic() + timeout_seconds
-        while time.monotonic() < deadline:
-            job = client.get(f"/v1/jobs/{job_id}").json()
-            if job.get("status") == "done":
-                break
-            time.sleep(poll_interval_seconds)
+        watchdog_output = _run_watchdog_once()
 
-    print("\n-- job after polling --")
-    print(f"status       = {job.get('status') if job else None}")
-    print(f"verdict      = {job.get('verdict') if job else None}")
-    # verso-read provenance is now folded into `reasons` ('verso read via: …'), no own field.
-    for reason in (job or {}).get("reasons", []):
+        job = client.get(f"/v1/jobs/{job_id}").json()
+
+    print("\n-- job after the watchdog pass --")
+    print(f"status       = {job.get('status')}")
+    print(f"verdict      = {job.get('verdict')}")
+    for reason in job.get("reasons", []):
         print(f"  - {reason}")
-    print(f"escalation engine called = {fake_engine.called}")
 
-    completed = job is not None and job.get("status") == "done"
-    passed = completed
-    if expect_escalation:
-        passed = passed and fake_engine.called
-
-    label = "lifecycle + escalation fired" if expect_escalation else "lifecycle"
-    print(f"\nEXPECT {label}: {'PASS' if passed else 'FAIL'}")
+    claimed_by_worker = f"claimed job #{job_id}" in watchdog_output
+    completed = job.get("status") == "done"
+    passed = completed and claimed_by_worker
+    print(f"\nworker claimed the row : {claimed_by_worker}")
+    print(f"EXPECT door->watchdog->done lifecycle: {'PASS' if passed else 'FAIL'}")
     return 0 if passed else 1
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Prove the async escalation lane lifecycle on a real CI pair."
+        description="Prove the door + watchdog async lifecycle on a real CI pair."
     )
     parser.add_argument("recto_image", type=Path, help="Path to the recto image.")
     parser.add_argument("verso_image", type=Path, help="Path to the verso image.")
     parser.add_argument(
         "--document-type",
-        default=None,
-        help="Optional document-type hint (e.g. carte_identite) scoping template match.",
-    )
-    parser.add_argument(
-        "--expect-escalation",
-        action="store_true",
-        help="Also assert the worker invoked the escalation engine (use a missed-MRZ pair).",
+        default="carte_identite",
+        help="Document-type hint (default carte_identite -> the CI submission flow).",
     )
     arguments = parser.parse_args()
     raise SystemExit(
-        run(
-            arguments.recto_image,
-            arguments.verso_image,
-            arguments.document_type,
-            arguments.expect_escalation,
-        )
+        run(arguments.recto_image, arguments.verso_image, arguments.document_type)
     )

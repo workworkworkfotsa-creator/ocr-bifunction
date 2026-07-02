@@ -16,6 +16,11 @@ inputs/
 *.sqlite
 *.sqlite-journal
 
+# Async spool: uploaded document bytes waiting for the watchdog worker (PII), purged on
+# terminal state — never committed. The watchdog PID lockfile is runtime state.
+spool/
+*.pid
+
 # Local OCR model weights (GGUF) — large binaries, never committed
 models/
 

@@ -131,6 +131,28 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   chemin absolu (`MSYS_NO_PATHCONV=1`) ; PowerShell bloqué par règle `deny` (pas dans `settings.json` global).
 
 ## Fait (2026-07-02)
+- **MIX local, étape A — worker WATCHDOG (process séparé) remplace le worker in-process ; la table EST la
+  file, durcie (prouvé réel, 5 preuves, zéro llama).** Cadrage → `docs/briefs/BRIEF-fonctionnement-mix.md`
+  (gitignoré) ; décisions user : Q1 watchdog-table (avec durcissement), Q2 persist-all, Q3 critères v1
+  affichage seul. ⚠️ Contrainte session : **zéro SLM (stress test VRP)** — preuves fake-engine + born-digital.
+  (1) **D1 durci** (`repository.py`) : colonnes `document_ref` (pointeur spool — était déjà dans le sketch
+  contrat) + `attempts` (+ migration auto des .sqlite existants) ; **`claim_next`** = claim ATOMIQUE portable
+  (SELECT candidat → `UPDATE … WHERE status='received'`, rowcount 0 = pris — MariaDB-compatible) ;
+  **`recover_stale`** = lease timeout (crash mi-job → `processing` périmé re-devient `received` ; cap
+  `attempts` → `failed` = anti poison-pill). (2) **API = pure porte** (`api_maquette.py`) : worker
+  thread/queue.Queue SUPPRIMÉS (perdaient les jobs au restart) ; le douteux est **spoolé sur disque**
+  (`spool/<sub>/` gitignoré, purgé au terminal — les bytes traversent les process par le disque, pas la
+  mémoire) + row `received` ; **persist-all** : CHAQUE issue laisse une row D1 (`done`/auto avec record,
+  `needs_review` sync, `received`) → `job_id` sur TOUTES les réponses. (3) **`worker_watchdog.py`** : recover
+  → drain (1 job à la fois, 8 Go) → **sweep décisions D3** (accept→`done`, reject→`failed` — l'UI écrit D3,
+  le WORKER écrit D1, idempotent par construction) ; `--once` (parité cron IT + smokes), `--fake-escalation`
+  (seam smoke sans VLM), **PID-lockfile** (2e instance refuse). D3 gagne `decided()`. **Prouvé** : micro-smoke
+  claim/lease/poison-pill/migration ; cycle réel door→**watchdog process séparé**→done (`api_smoke_async.py`
+  réécrit : lance le VRAI process, assert « claimed job » dans sa sortie) ; PID-lock refuse (exit 2) ; sweep
+  vérifié en table ; régression `api_smoke_real --expect validated` verte + row `done/auto` 7 champs.
+  **Reste (étapes B/C du brief)** : page upload `GET /` (select box type), page revue `GET /review`
+  (accept/reject → D3, valider suggestion → promotion D2, critères read-only). Étape D (SLM sur les nouvelles
+  attestations/habilitations d'`inputs/`) = machine libre.
 - **Lane SLM câblée EN LIVE dans le flux batch — la suggestion ne vit plus dans son runner (prouvé réel,
   3 legs).** Le hook se pose **DANS `route_document`** (seul endroit où text/lines sont en scope → zéro
   double-read/OCR) : param **`suggester`** opt-in (défaut `None` = le fast-path API ne réveille JAMAIS le SLM —

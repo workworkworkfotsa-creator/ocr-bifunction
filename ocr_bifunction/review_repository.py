@@ -104,6 +104,11 @@ class ReviewRepository(ABC):
         """The rows whose suggestion is pending — the organic-growth queue the human works."""
 
     @abstractmethod
+    def decided(self) -> list[Review]:
+        """The rows where the human HAS decided (accept/reject) — what the worker's sweep
+        reads to close the corresponding D1 jobs (the UI never writes D1.status itself)."""
+
+    @abstractmethod
     def record_decision(
         self, review_id: int, *, comment: str | None = None, decision: str | None = None
     ) -> None:
@@ -232,6 +237,13 @@ class SqliteReviewRepository(ReviewRepository):
             f"SELECT {_COLUMNS} FROM ocr_reviews WHERE suggestion_status = ? "
             "ORDER BY review_id",
             (SUGGESTION_PENDING,),
+        ).fetchall()
+        return [self._row_to_review(row) for row in rows]
+
+    def decided(self) -> list[Review]:
+        rows = self._connection.execute(
+            f"SELECT {_COLUMNS} FROM ocr_reviews WHERE decision IS NOT NULL "
+            "ORDER BY review_id"
         ).fetchall()
         return [self._row_to_review(row) for row in rows]
 

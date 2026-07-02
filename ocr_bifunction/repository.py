@@ -29,7 +29,7 @@ import sqlite3
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 # The async-coordination states. A doc "waiting for async" = received/escalation; the worker
@@ -59,6 +59,10 @@ class Job:
     record_fields: dict[str, str | None] = field(default_factory=dict)
     reasons: list[str] = field(default_factory=list)
     request_id: str | None = None  # idempotence key (API); None for batch
+    document_ref: str | None = (
+        None  # storage pointer (spool dir) for async work on the bytes
+    )
+    attempts: int = 0  # times a worker claimed this row (poison-pill cap)
     job_id: int | None = None  # assigned by the store on save
     created_at: str | None = None
     updated_at: str | None = None
@@ -78,6 +82,19 @@ class Repository(ABC):
     @abstractmethod
     def pending(self, status: str, execution_lane: str | None = None) -> list[Job]:
         """The rows in `status` (optionally scoped to an execution_lane) — the queue query."""
+
+    @abstractmethod
+    def claim_next(self, execution_lane: str | None = None) -> Job | None:
+        """Atomically claim the OLDEST `received` row: flip it to `processing` (+1 attempt) and
+        return it, or None when the queue is empty. The claim is the portable two-step (SELECT
+        candidate, then UPDATE ... WHERE status='received' checking rowcount) so two workers can
+        NEVER process the same row — the same pattern IT reproduces in MariaDB."""
+
+    @abstractmethod
+    def recover_stale(self, lease_seconds: float, max_attempts: int) -> tuple[int, int]:
+        """Re-queue `processing` rows whose lease expired (a worker crashed mid-job): back to
+        `received` for a retry, or `failed` once attempts reached max (poison-pill cap).
+        Returns (requeued_count, failed_count)."""
 
     @abstractmethod
     def update_status(
@@ -108,15 +125,25 @@ CREATE TABLE IF NOT EXISTS ocr_jobs (
     verdict        TEXT,
     record_fields  TEXT,
     reasons        TEXT,
+    document_ref   TEXT,
+    attempts       INTEGER NOT NULL DEFAULT 0,
     created_at     TEXT NOT NULL,
     updated_at     TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_ocr_jobs_status ON ocr_jobs (status, execution_lane);
 """
 
+# Columns added after the first proxy shipped; existing local .sqlite files gain them on open.
+# (The MariaDB DDL at handoff bakes them in — this is proxy-only migration.)
+_MIGRATION_COLUMNS = {
+    "document_ref": "ALTER TABLE ocr_jobs ADD COLUMN document_ref TEXT",
+    "attempts": "ALTER TABLE ocr_jobs ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0",
+}
+
 _COLUMNS = (
     "job_id, request_id, source, category_lane, category, template_id, status, "
-    "execution_lane, verdict, record_fields, reasons, created_at, updated_at"
+    "execution_lane, verdict, record_fields, reasons, document_ref, attempts, "
+    "created_at, updated_at"
 )
 
 
@@ -144,6 +171,13 @@ class SqliteRepository(Repository):
         )
         self._connection.row_factory = sqlite3.Row
         self._connection.executescript(_SCHEMA)
+        existing_columns = {
+            row["name"]
+            for row in self._connection.execute("PRAGMA table_info(ocr_jobs)")
+        }
+        for column_name, alter_statement in _MIGRATION_COLUMNS.items():
+            if column_name not in existing_columns:
+                self._connection.execute(alter_statement)
         self._connection.commit()
 
     def save(self, job: Job) -> int:
@@ -151,7 +185,8 @@ class SqliteRepository(Repository):
         cursor = self._connection.execute(
             "INSERT INTO ocr_jobs (request_id, source, category_lane, category, "
             "template_id, status, execution_lane, verdict, record_fields, reasons, "
-            "created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            "document_ref, attempts, created_at, updated_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 job.request_id,
                 job.source,
@@ -163,6 +198,8 @@ class SqliteRepository(Repository):
                 job.verdict,
                 json.dumps(job.record_fields, ensure_ascii=False),
                 json.dumps(job.reasons, ensure_ascii=False),
+                job.document_ref,
+                job.attempts,
                 now,
                 now,
             ),
@@ -184,6 +221,8 @@ class SqliteRepository(Repository):
             verdict=row["verdict"],
             record_fields=json.loads(row["record_fields"] or "{}"),
             reasons=json.loads(row["reasons"] or "[]"),
+            document_ref=row["document_ref"],
+            attempts=row["attempts"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
@@ -203,6 +242,61 @@ class SqliteRepository(Repository):
         query += " ORDER BY job_id"
         rows = self._connection.execute(query, parameters).fetchall()
         return [self._row_to_job(row) for row in rows]
+
+    def claim_next(self, execution_lane: str | None = None) -> Job | None:
+        # Portable two-step claim (works verbatim on MariaDB 5.5): pick the oldest candidate,
+        # then flip it ONLY IF still 'received' — rowcount 0 means another worker won the race,
+        # so try the next candidate. With the PID-locked single watchdog this never loops; the
+        # guard is belt-and-braces for the day two crons overlap.
+        while True:
+            candidate = self._connection.execute(
+                f"SELECT {_COLUMNS} FROM ocr_jobs WHERE status = ?"
+                + (" AND execution_lane = ?" if execution_lane is not None else "")
+                + " ORDER BY job_id LIMIT 1",
+                (STATUS_RECEIVED, execution_lane)
+                if execution_lane is not None
+                else (STATUS_RECEIVED,),
+            ).fetchone()
+            if candidate is None:
+                return None
+            cursor = self._connection.execute(
+                "UPDATE ocr_jobs SET status = ?, attempts = attempts + 1, "
+                "updated_at = ? WHERE job_id = ? AND status = ?",
+                (
+                    STATUS_PROCESSING,
+                    self._clock(),
+                    candidate["job_id"],
+                    STATUS_RECEIVED,
+                ),
+            )
+            self._connection.commit()
+            if cursor.rowcount == 1:
+                return self.get(candidate["job_id"])
+
+    def recover_stale(self, lease_seconds: float, max_attempts: int) -> tuple[int, int]:
+        now = datetime.fromisoformat(self._clock())
+        cutoff = (now - timedelta(seconds=lease_seconds)).isoformat(timespec="seconds")
+        stale_rows = self._connection.execute(
+            f"SELECT {_COLUMNS} FROM ocr_jobs WHERE status = ? AND updated_at < ?",
+            (STATUS_PROCESSING, cutoff),
+        ).fetchall()
+        requeued_count, failed_count = 0, 0
+        for row in stale_rows:
+            job = self._row_to_job(row)
+            if job.attempts >= max_attempts:
+                self.update_status(
+                    job.job_id,
+                    STATUS_FAILED,
+                    reasons=[
+                        *job.reasons,
+                        f"stale lease after {job.attempts} attempt(s) — gave up",
+                    ],
+                )
+                failed_count += 1
+            else:
+                self.update_status(job.job_id, STATUS_RECEIVED)
+                requeued_count += 1
+        return requeued_count, failed_count
 
     def update_status(
         self,

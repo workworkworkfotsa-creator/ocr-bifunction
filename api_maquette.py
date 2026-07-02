@@ -12,20 +12,23 @@ The upload-facing contract has four outcomes (the upload UI acts on `status`):
   - incomplete  (200) — one side missing: `missing` says which to ask the user for;
   - unrecognized(200) — not a CI submission at all.
 
-Two lanes, one door:
-  - FAST PATH (in the request) — process_ci_submission with NO escalation engine.
-  - ESCALATION (off the request path) — a complete-but-doubtful (`human`) submission is not
-    returned synchronously: it enqueues a heavy re-run WITH the VLM and answers pending. A
-    single serialized worker drains the queue (the ~171 s/img VLM must not run concurrently
-    on the 8 GB target), flips the job pending->done, and the client polls GET /v1/jobs/{id}.
+Two lanes, one DOOR — the API never processes async work itself:
+  - FAST PATH (in the request) — process_ci_submission with NO escalation engine; EVERY
+    outcome leaves a D1 row (done/auto, needs_review, …) so D1 is the single source (④).
+  - ESCALATION (off the request path) — a complete-but-doubtful (`human`) submission is
+    SPOOLED to disk (`spool/<sub>/`, the row's `document_ref`) and written as a D1 row
+    `status='received'`, answered `202 pending`. The row IS the queue entry: the SEPARATE
+    watchdog worker process (worker_watchdog.py) claims it, re-runs WITH the VLM, and flips
+    it to a terminal state. Restart-safe: the table survives, an in-memory queue would not.
 
-The D1 `Repository` (SqliteRepository proxy) and `queue.Queue` are the disposable adapters of
-destination "domain 1 — jobs + queue": both regimes — this API and the batch orchestrator — now
-write the SAME `ocr_jobs` table (repository.py), so one column contract is exercised by two
-producers. IT swaps the store, queue, hosting, auth, TLS. The TABLE shape survives the frontier.
+The D1 `Repository` (SqliteRepository proxy) and the spool directory are the disposable
+adapters of destination "domain 1 — jobs + queue": this API, the batch orchestrator and the
+watchdog all write/read the SAME `ocr_jobs` table (repository.py) — one column contract,
+several producers/consumers, one writer per phase. IT swaps store, hosting, auth, TLS.
 
 Run it:
-    uv run uvicorn api_maquette:app --reload
+    uv run uvicorn api_maquette:app --reload          # the door
+    uv run python worker_watchdog.py                  # the worker (separate process)
 """
 
 from __future__ import annotations
@@ -33,23 +36,21 @@ from __future__ import annotations
 import base64
 import binascii
 import os
-import queue
 import tempfile
 import threading
-from dataclasses import dataclass
+import uuid
 from pathlib import Path
-from typing import Callable, Literal
+from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Response, status
 from pydantic import BaseModel, Field
 
-from ocr_bifunction.pipeline import CiRecord, CiSubmissionResult, process_ci_submission
+from ocr_bifunction.pipeline import CiSubmissionResult, process_ci_submission
 from ocr_bifunction.reader import OcrEngine
 from ocr_bifunction.repository import (
     STATUS_DONE,
     STATUS_FAILED,
     STATUS_NEEDS_REVIEW,
-    STATUS_PROCESSING,
     STATUS_RECEIVED,
     Job,
     Repository,
@@ -62,10 +63,9 @@ TEMPLATES_DIRECTORY = PROJECT_ROOT / "templates"
 # Default suffix when an uploaded filename carries none (a CI photo is usually one format).
 DEFAULT_SUFFIX = ".jpg"
 
-# Escalation runs the VLM (~171 s/img, ~1.8 GB RAM on the 8 GB target). It MUST stay
-# serialized: a single worker drains the queue one job at a time. 1-2 is the safe band
-# (2 VLMs ~= 3.6 GB) — IT owns this lever (cf. contrat-bd-destination.md, 4th surface).
-ESCALATION_WORKER_COUNT = 1
+# Where doubtful submissions' bytes wait for the watchdog (PII on disk, gitignored; the
+# worker purges each job's directory on terminal state). Env-overridable like the store.
+SPOOL_ROOT = Path(os.environ.get("OCR_SPOOL_PATH", "spool"))
 
 app = FastAPI(
     title="OCR BiFunction — API maquette",
@@ -137,34 +137,6 @@ def _get_engine() -> OcrEngine:
     return _engine
 
 
-# --- The escalation engine: the heavy VLM, built lazily, swappable for tests. ---------
-EscalationEngineFactory = Callable[[], OcrEngine]
-
-
-def _default_escalation_factory() -> OcrEngine:
-    from ocr_bifunction.lightonocr_engine import LightOnOcrEngine
-
-    return LightOnOcrEngine()
-
-
-_escalation_engine: OcrEngine | None = None
-_escalation_engine_factory: EscalationEngineFactory = _default_escalation_factory
-
-
-def set_escalation_engine_factory(factory: EscalationEngineFactory) -> None:
-    """Override the escalation engine (test/smoke seam). Resets the cached instance."""
-    global _escalation_engine_factory, _escalation_engine
-    _escalation_engine_factory = factory
-    _escalation_engine = None
-
-
-def _get_escalation_engine() -> OcrEngine:
-    global _escalation_engine
-    if _escalation_engine is None:
-        _escalation_engine = _escalation_engine_factory()
-    return _escalation_engine
-
-
 # --- The contract, written black on white (this is what IT wants to see). ------------
 
 
@@ -223,7 +195,9 @@ class ValidateResponse(BaseModel):
     verdict: Literal["auto", "human"] | None
     reasons: list[str] = Field(default_factory=list)
     missing: list[str] = Field(default_factory=list)  # subset of ["recto", "verso"]
-    job_id: int | None = None  # the D1 row id (ocr_jobs.job_id), assigned on enqueue
+    # The D1 row id (ocr_jobs.job_id). EVERY submission now leaves a row (single source,
+    # stage ④), so this is set on every response — pollable for `pending`, a trace otherwise.
+    job_id: int | None = None
 
 
 class JobResponse(BaseModel):
@@ -262,75 +236,7 @@ def _map_incomplete_or_unrecognized(result: CiSubmissionResult) -> ValidateRespo
     )
 
 
-# --- Escalation lane: enqueue off the request path, drain with one serialized worker. -
-
-
-@dataclass
-class _EscalationJob:
-    """One unit of escalation work, carrying the uploaded files so the worker re-runs the
-    whole submission WITH the VLM. Bytes live in memory only until processed."""
-
-    job_id: int  # the D1 row id assigned by repository.save
-    files: list[tuple[str, bytes]]  # (filename, bytes)
-    category: str | None
-
-
-_escalation_queue: "queue.Queue[_EscalationJob]" = queue.Queue()
-_workers_started = False
-_workers_lock = threading.Lock()
-
-
-def _ensure_workers_started() -> None:
-    """Start the serialized escalation worker(s) once, lazily on first enqueue."""
-    global _workers_started
-    with _workers_lock:
-        if _workers_started:
-            return
-        for _ in range(ESCALATION_WORKER_COUNT):
-            threading.Thread(
-                target=_escalation_worker, name="escalation-worker", daemon=True
-            ).start()
-        _workers_started = True
-
-
-def _terminal_from_record(
-    record: CiRecord | None,
-) -> tuple[str, str | None, dict[str, str | None] | None, list[str]]:
-    """Map an escalation result to a D1 terminal state (mirrors the batch bridge in
-    batch_check.py): auto -> done/auto; doubtful -> needs_review/human; no record ->
-    needs_review. The verso-read provenance (no D1 column) is folded into `reasons`."""
-    if record is None:
-        return STATUS_NEEDS_REVIEW, None, None, ["escalation produced no record"]
-    reasons = [*record.reasons, f"verso read via: {record.verso_read_path}"]
-    if record.verdict == "auto":
-        return STATUS_DONE, "auto", record.fields, reasons
-    return STATUS_NEEDS_REVIEW, "human", record.fields, reasons
-
-
-def _escalation_worker() -> None:
-    """Drain the queue one job at a time, re-running the submission WITH the VLM engine, and
-    write the lifecycle into D1: `processing` at pickup, then the terminal state + record."""
-    while True:
-        job = _escalation_queue.get()
-        try:
-            _update_job(job.job_id, STATUS_PROCESSING)
-            record = _escalate(job)
-            status_value, verdict, fields, reasons = _terminal_from_record(record)
-            _update_job(
-                job.job_id,
-                status_value,
-                verdict=verdict,
-                record_fields=fields,
-                reasons=reasons,
-            )
-        except Exception as error:  # surface the failure in the job, do not hide it
-            _update_job(
-                job.job_id,
-                STATUS_FAILED,
-                reasons=[f"escalation failure: {type(error).__name__}"],
-            )
-        finally:
-            _escalation_queue.task_done()
+# --- Escalation lane: spool the bytes, write a `received` row — the watchdog does the rest.
 
 
 def _write_files(files: list[tuple[str, bytes]], directory: Path) -> list[Path]:
@@ -344,46 +250,33 @@ def _write_files(files: list[tuple[str, bytes]], directory: Path) -> list[Path]:
     return paths
 
 
-def _escalate(job: _EscalationJob):
-    """Re-run the whole submission WITH the escalation engine wired in, on temp files."""
-    # ignore_cleanup_errors: this runs in a daemon worker; if the process exits mid-job the
-    # temp-dir rmtree can race interpreter shutdown on Windows (WinError 145). A transient
-    # cleanup miss must not crash; the PII still goes when the dir is removed.
-    with tempfile.TemporaryDirectory(
-        prefix="ocr_bifunction_esc_", ignore_cleanup_errors=True
-    ) as temp_directory:
-        paths = _write_files(job.files, Path(temp_directory))
-        result = process_ci_submission(
-            paths,
-            _get_engine(),
-            TEMPLATES_DIRECTORY,
-            category=job.category,
-            escalation_engine=_get_escalation_engine(),
-        )
-        return result.record
-
-
-def _enqueue_escalation(
+def _spool_and_enqueue(
     files: list[tuple[str, bytes]],
     category: str | None,
     fast_reasons: list[str],
     request_id: str | None,
 ) -> int:
-    """Insert a `received` CI job into D1, enqueue it for the worker, and hand back its row id."""
-    _ensure_workers_started()
+    """Persist the uploaded bytes to the spool and insert a `received` D1 row pointing at them.
+
+    That row IS the queue entry (the status column is the signal): the watchdog worker — a
+    separate process — claims it, re-runs the submission WITH the VLM from the spooled files
+    (`document_ref`), writes the terminal state and purges the spool directory (PII hygiene)."""
+    spool_directory = SPOOL_ROOT / f"sub_{uuid.uuid4().hex[:12]}"
+    spool_directory.mkdir(parents=True, exist_ok=False)
+    _write_files(files, spool_directory)
     source = ", ".join(filename for filename, _ in files)
-    job = Job(
-        source=source,
-        category_lane="ci",
-        status=STATUS_RECEIVED,
-        execution_lane="escalation",
-        category=category,
-        reasons=fast_reasons,  # WHY the fast path doubted, visible while pending
-        request_id=request_id,
+    return _save_job(
+        Job(
+            source=source,
+            category_lane="ci",
+            status=STATUS_RECEIVED,
+            execution_lane="escalation",
+            category=category,
+            reasons=fast_reasons,  # WHY the fast path doubted, visible while pending
+            request_id=request_id,
+            document_ref=str(spool_directory),
+        )
     )
-    job_id = _save_job(job)
-    _escalation_queue.put(_EscalationJob(job_id, files, category))
-    return job_id
 
 
 # --- Fast path: decode + run the submission with no escalation, in the request. ------
@@ -455,41 +348,107 @@ def _run_route_document(
 def _handle_ci_submission(
     files: list[tuple[str, bytes]], document_type: str | None, request_id: str | None
 ) -> ValidateResponse:
-    """The CI lane: complete -> validated / pending(escalate); else incomplete / unrecognized."""
+    """The CI lane: complete -> validated / pending(spool for the watchdog); else
+    incomplete / unrecognized. EVERY outcome leaves a D1 row (single source, stage ④)."""
     result = _run_fast_submission(files, document_type)
+    source = ", ".join(filename for filename, _ in files)
     if result.status == "complete" and result.record.verdict == "auto":
-        return _map_complete_auto(result)
-    if result.status == "complete":  # doubtful -> escalate off the request path
-        job_id = _enqueue_escalation(
+        record = result.record
+        job_id = _save_job(
+            Job(
+                source=source,
+                category_lane="ci",
+                status=STATUS_DONE,
+                execution_lane="fast",
+                verdict="auto",
+                category=document_type,
+                template_id=record.template_id,
+                record_fields=record.fields,
+                reasons=record.reasons,
+                request_id=request_id,
+            )
+        )
+        wire = _map_complete_auto(result)
+        wire.job_id = job_id
+        return wire
+    if result.status == "complete":  # doubtful -> spool, the watchdog escalates
+        job_id = _spool_and_enqueue(
             files, document_type, result.record.reasons, request_id
         )
         return ValidateResponse(
             status="pending", verdict=None, reasons=result.record.reasons, job_id=job_id
         )
-    return _map_incomplete_or_unrecognized(result)
+    # incomplete / unrecognized: terminal, no async or human work pends on OUR side (the
+    # uploader must act) -> persisted `done` with the story in reasons, verdict None.
+    trace_reasons = list(result.reasons)
+    if result.missing:
+        trace_reasons.append(f"missing side(s): {', '.join(result.missing)}")
+    job_id = _save_job(
+        Job(
+            source=source,
+            category_lane="ci",
+            status=STATUS_DONE,
+            execution_lane="fast",
+            category=document_type,
+            reasons=trace_reasons,
+            request_id=request_id,
+        )
+    )
+    wire = _map_incomplete_or_unrecognized(result)
+    wire.job_id = job_id
+    return wire
 
 
 def _handle_single_document(
-    files: list[tuple[str, bytes]], document_type: str | None
+    files: list[tuple[str, bytes]], document_type: str | None, request_id: str | None
 ) -> ValidateResponse:
     """Non-CI document types: validate ONE doc via the 2-lane router (no VLM escalation).
 
     Structured + auto -> validated; structured + human -> needs_review; non-structured
     (RAG lane) -> needs_review (a human handles it). Multiple files: only the first is used.
+    EVERY outcome leaves a D1 row; the sync needs_review rows are what the review UI lists.
     """
     routed = _run_route_document(files, document_type)
+    source = files[0][0]  # the original filename (routed.source is the temp name)
     if routed.lane == "structured":
-        if routed.verdict == "auto":
-            return ValidateResponse(
-                status="validated", verdict="auto", reasons=routed.reasons
+        is_auto = routed.verdict == "auto"
+        job_id = _save_job(
+            Job(
+                source=source,
+                category_lane="structured",
+                status=STATUS_DONE if is_auto else STATUS_NEEDS_REVIEW,
+                execution_lane="fast",
+                verdict=routed.verdict,
+                category=routed.category,
+                template_id=routed.template_id,
+                record_fields=routed.fields,
+                reasons=routed.reasons,
+                request_id=request_id,
             )
+        )
         return ValidateResponse(
-            status="needs_review", verdict="human", reasons=routed.reasons
+            status="validated" if is_auto else "needs_review",
+            verdict=routed.verdict,  # type: ignore[arg-type]
+            reasons=routed.reasons,
+            job_id=job_id,
         )
     reasons = ["non-structured document — routed to retrieval / human review"]
     if routed.summary is not None and routed.summary.keywords:
         reasons.append("keywords: " + ", ".join(routed.summary.keywords))
-    return ValidateResponse(status="needs_review", verdict=None, reasons=reasons)
+    job_id = _save_job(
+        Job(
+            source=source,
+            category_lane="rag",
+            status=STATUS_NEEDS_REVIEW,
+            execution_lane="fast",
+            category=routed.category,
+            reasons=reasons,
+            request_id=request_id,
+        )
+    )
+    return ValidateResponse(
+        status="needs_review", verdict=None, reasons=reasons, job_id=job_id
+    )
 
 
 # --- Endpoints ------------------------------------------------------------------------
@@ -515,7 +474,9 @@ def validate_document(request: ValidateRequest, response: Response) -> ValidateR
             files, request.document_type, request.request_id
         )  # may raise 500
     else:
-        wire = _handle_single_document(files, request.document_type)  # may raise 500
+        wire = _handle_single_document(
+            files, request.document_type, request.request_id
+        )  # may raise 500
 
     if request.request_id:
         _idempotency_cache[request.request_id] = wire
