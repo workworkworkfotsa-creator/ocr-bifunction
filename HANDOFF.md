@@ -29,8 +29,9 @@ discipline smoke-first.
 > 1. ✅ **FAIT (2026-07-02) — `_jobs` dict de l'API migré sur `repository`.** D1 unifié : API + batch écrivent
 >    la MÊME table `ocr_jobs` (prouvé : 3 lignes, 2 producteurs coexistent, file ⑤ = 1 requête SQL). Détail
 >    → Fait (2026-07-02) ci-dessous.
-> 2. **D3 — revue + suggestion-template** (`ocr_review_*`, FK `job_id`) : la valeur (boucle de croissance
->    organique), MÊME loop status-driven (autre `type`). Réf D1 → D1 unifié OK. **← démarrer par là.**
+> 2. **D3 — revue + suggestion-template** (`ocr_reviews`, FK `job_id`). **Store FAIT (2026-07-02)** : loop
+>    status-driven `pending`→`validated` prouvé (stub, sans SLM). **EN COURS** : lane SLM (harnais GBNF
+>    d'abord, cf. `BRIEF-suggestion-template.md`), puis seam promotion D3→D2. **← reprendre au GBNF.**
 > 3. **D2 — templates → table** (`ocr_templates_*`) : **ÉMERGE de la promotion D3→D2** (valider une suggestion
 >    écrit/active le template). PAS avant — les `templates/*.json` marchent en lecture (anti-cimetière/YAGNI).
 > 4. **#3 — placement RAG contrat** (flux batch vs lane « store de contrats ») : indépendant, ne bloque rien.
@@ -127,6 +128,20 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   chemin absolu (`MSYS_NO_PATHCONV=1`) ; PowerShell bloqué par règle `deny` (pas dans `settings.json` global).
 
 ## Fait (2026-07-02)
+- **Étape 2 (D3) — store `ocr_reviews` bâti + boucle de croissance organique prouvée (stub, sans SLM).**
+  Domaine 3 (revue/curation) rendu réel, **séparé de D1** (autre propriétaire : l'UI de revue écrit D3, le
+  worker écrit D1 ; D3 **référence** le job par `job_id`, **ne duplique pas** le record — source unique en D1).
+  `ocr_bifunction/review_repository.py` : **`ReviewRepository` ABC** (seam DI → l'IT swappe un
+  `MariaDbReviewRepository`) + **`SqliteReviewRepository`**, table **`ocr_reviews`** (review_id PK, job_id FK,
+  `projection` = **vue** pour l'humain PAS 2e vérité, `comment`/`decision` accept|reject, suggestion =
+  `suggested_template_id`/`category`/`anchors`/`suggestion_status`). **La comm = la colonne `suggestion_status`**
+  (comme `status` en D1) : suggestion en attente = `pending`, l'humain flippe → `validated` (→ promotion D2,
+  étape 3) | `rejected`. **1 écrivain par phase** (reviewer possède la décision ; promotion possède l'écriture
+  D2). Runner `review_check.py` (jobs D1 synthétiques PII-free, **un seul store** — `ocr_jobs`=D1 +
+  `ocr_reviews`=D3). **Prouvé** : 2 jobs `needs_review` → 2 revues (structured avec suggestion `pending`, rag
+  sans) → file `pending_suggestions()`=1 → `validated` → 0 (loop fermée) + décisions accept/reject
+  enregistrées. Oracle = run réel, pas de pytest. **Suite** : harnais diagnostic GBNF, puis lane SLM qui écrit
+  les suggestions `pending` (deterministic-first, GBNF liste-fermée, re-vérif anchors), puis seam promotion D3→D2.
 - **Étape 1 du plan acté — API migrée sur `repository` : D1 UNIFIÉ, un seul store, 2 régimes (prouvé réel).**
   Le `_jobs` dict en mémoire de `api_maquette.py` est **remplacé par le `SqliteRepository`** (même table
   `ocr_jobs` que le batch). Le lifecycle escalade (received→processing→done|**needs_review**|failed) vit
