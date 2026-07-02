@@ -56,6 +56,7 @@ def route_document(
     templates_directory: Path,
     engine: OcrEngine | None = None,
     category: str | None = None,
+    templates: list[dict] | None = None,
 ) -> RoutedDocument:
     """Read one document, decide its lane, and return that lane's first product.
 
@@ -63,11 +64,21 @@ def route_document(
     via their text layer and need none). `category` scopes structured matching to one
     declared document type (e.g. "facture"): a doc declared one type but matching no such
     template falls through to the RAG lane. None tries EVERY structured category.
+
+    `templates` injects the template list directly — the D2 store read path (the worker
+    reads ACTIVE templates from `ocr_templates`, cf. contrat-bd-destination.md) — instead
+    of loading the committed JSON files; the `category` scoping applies either way.
     """
     result = read_document(document_path, engine)
-    template = match_template(
-        result.lines, load_templates(templates_directory, category)
-    )
+    if templates is None:
+        available_templates = load_templates(templates_directory, category)
+    else:
+        available_templates = [
+            template
+            for template in templates
+            if category is None or template.get("category") == category
+        ]
+    template = match_template(result.lines, available_templates)
 
     if template is not None:
         return _structured_result(document_path.name, result.lines, template)

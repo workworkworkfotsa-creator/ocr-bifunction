@@ -110,6 +110,11 @@ class ReviewRepository(ABC):
         """The human's verdict on the reviewed record (comment and/or accept/reject)."""
 
     @abstractmethod
+    def stage_suggestion(self, review_id: int, suggestion: Suggestion) -> None:
+        """Attach a suggestion to an EXISTING review (a review is opened at intake; the SLM lane
+        or the reviewer stages the candidate later — two writes, one row)."""
+
+    @abstractmethod
     def set_suggestion_status(self, review_id: int, status: str) -> None:
         """Advance a suggestion (pending -> validated | rejected) — the loop transition."""
 
@@ -245,6 +250,22 @@ class SqliteReviewRepository(ReviewRepository):
         self._connection.execute(
             f"UPDATE ocr_reviews SET {', '.join(assignments)} WHERE review_id = ?",
             parameters,
+        )
+        self._connection.commit()
+
+    def stage_suggestion(self, review_id: int, suggestion: Suggestion) -> None:
+        self._connection.execute(
+            "UPDATE ocr_reviews SET suggested_template_id = ?, suggested_category = ?, "
+            "suggested_anchors = ?, suggestion_status = ?, updated_at = ? "
+            "WHERE review_id = ?",
+            (
+                suggestion.template_id,
+                suggestion.category,
+                json.dumps(suggestion.anchors, ensure_ascii=False),
+                suggestion.status,
+                self._clock(),
+                review_id,
+            ),
         )
         self._connection.commit()
 

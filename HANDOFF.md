@@ -19,11 +19,11 @@ config-driven (value-check HT+TVA=TTC).** POC solo sur `master`, pas de remote. 
 — oracle = runs réels sur vrais docs + smokes structurels/logiques + KAT (composite MRZ), conforme à la
 discipline smoke-first.
 
-> ▶ **NEXT (reprise) — D1 proxy (store jobs+records) bâti + comm async prouvée ; suite du store.** Le backbone
-> batch persiste dans **D1** (`ocr_bifunction/repository.py` : `Repository` ABC + `SqliteRepository`, table
-> `ocr_jobs`) ; le ⑤ review queue est une **requête SQL** (`pending('needs_review')`). **Comm async prouvée** :
-> record en attente = ligne `status='received'`/`escalation` que le worker dépile (pas de bus — **la colonne EST
-> le signal**) → `processing` → `done` + record réécrit.
+> ▶ **NEXT (reprise) — les 3 domaines D1/D2/D3 sont proxifiés + CONSOLIDÉS end-to-end (2026-07-02).** La chaîne
+> complète (intake batch → D1 → revue D3 → suggestion → promotion D2 → re-match déterministe → job D1 fermé)
+> tourne en UNE démo (`consolidation_check.py`), templates lus depuis D2. Reste du plan : **#4 placement RAG
+> contrat** (seul item ouvert) ; + suites optionnelles : câbler la lane SLM dans le flux live (`route_document`
+> no-match → suggestion D3 au lieu de RAG seul), fermer la boucle côté API.
 >
 > **PLAN ACTÉ (ordre convenu, même lecture — reprendre ICI en session fraîche) :**
 > 1. ✅ **FAIT (2026-07-02) — `_jobs` dict de l'API migré sur `repository`.** D1 unifié : API + batch écrivent
@@ -130,6 +130,20 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   chemin absolu (`MSYS_NO_PATHCONV=1`) ; PowerShell bloqué par règle `deny` (pas dans `settings.json` global).
 
 ## Fait (2026-07-02)
+- **CONSOLIDATION end-to-end — la chaîne complète D1→D3→D2→re-match en UNE démo (prouvée réel) ; 2 trous
+  d'intégration révélés ET soudés.** Runner `consolidation_check.py` (déterministe, sans llama, un seul store) :
+  PHASE A intake = **le vrai `process_batch`** avec **templates lus DEPUIS D2** (seedée moins `facture_entrante_03`)
+  → 14a **miss** (rag/review), 20a **hit auto via D2** (`facture_entrante_01` — le read-path D2 prouvé sur un hit
+  aussi), courrier → rag/review ; tout persisté D1. PHASE B file `needs_review` → reviews D3. PHASE C curation →
+  suggestion `pending` **sur la review existante**. PHASE D promote → D2 active, file vide. PHASE E re-match
+  depuis D2 → `structured/auto` (`facture_entrante_03`) → **le worker ferme le job D1** (`done/auto`, record
+  réécrit — la boucle se voit dans la table jobs elle-même). **Les 2 trous soudés** (la raison d'être de la
+  consolidation) : (1) le contrat de colonnes dit « le worker LIT D2 » mais `route_document`/`process_batch`
+  lisaient les fichiers → **param `templates` optionnel** (rétrocompatible, `None` = fichiers), exercé par le
+  run ; le flux CI garde le répertoire (ses templates hors boucle de suggestion, documenté) ; (2) D3 ne savait
+  pas stager une suggestion sur une review EXISTANTE (la lane la posait à la création ; le vrai flux = review à
+  l'intake, candidat PLUS TARD) → **`stage_suggestion(review_id, suggestion)`** ajouté au contrat
+  `ReviewRepository`. Régressions : `review_check` + `promotion_check` re-passés VERTS. Oracle = runs réels.
 - **Étape 3 — D2 ÉMERGE (`ocr_templates`) + seam de promotion D3→D2 ; boucle de croissance organique prouvée.**
   Dernier des 3 domaines : **D2 rendu store** (`ocr_bifunction/template_repository.py` : `TemplateRepository`
   ABC + `SqliteTemplateRepository`, table `ocr_templates` — `template_id` PK, `category`, match/fields/validation

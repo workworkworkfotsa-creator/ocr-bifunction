@@ -134,8 +134,13 @@ def process_document(
     templates_directory: Path,
     engine: OcrEngine,
     escalation_engine: OcrEngine | None = None,
+    templates: list[dict] | None = None,
 ) -> DocumentRecord:
-    """Dispatch one item to its core (CI submission or single-doc router) -> a record."""
+    """Dispatch one item to its core (CI submission or single-doc router) -> a record.
+
+    `templates` injects the single-doc template list (the D2 store read path) instead of the
+    JSON files; the CI submission flow still reads the directory (its templates are not in the
+    suggestion/growth loop yet)."""
     if item.document_type == CI_CATEGORY:
         result = process_ci_submission(
             item.paths,
@@ -146,7 +151,11 @@ def process_document(
         )
         return _record_from_ci(result, item)
     routed = route_document(
-        item.paths[0], templates_directory, engine, category=item.document_type
+        item.paths[0],
+        templates_directory,
+        engine,
+        category=item.document_type,
+        templates=templates,
     )
     return _record_from_routed(routed)
 
@@ -156,15 +165,19 @@ def process_batch(
     templates_directory: Path,
     engine: OcrEngine,
     escalation_engine: OcrEngine | None = None,
+    templates: list[dict] | None = None,
 ) -> BatchResult:
     """Run every item through its core and collect the uniform records (④/⑤ split included).
 
     Sequential on purpose: one SLM runs at a time on the 8 GB / no-GPU target, and escalation
     (LightOCR) is heavy — the batch regime tolerates the latency. Returns a `BatchResult`; the
-    caller decides where the records are persisted (the sink seam)."""
+    caller decides where the records are persisted (the sink seam). `templates` = the D2 read
+    path (see process_document)."""
     return BatchResult(
         records=[
-            process_document(item, templates_directory, engine, escalation_engine)
+            process_document(
+                item, templates_directory, engine, escalation_engine, templates
+            )
             for item in items
         ]
     )
