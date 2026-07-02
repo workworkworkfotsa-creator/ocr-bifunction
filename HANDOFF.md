@@ -19,15 +19,15 @@ config-driven (value-check HT+TVA=TTC).** POC solo sur `master`, pas de remote. 
 — oracle = runs réels sur vrais docs + smokes structurels/logiques + KAT (composite MRZ), conforme à la
 discipline smoke-first.
 
-> ▶ **NEXT (reprise) — PROD-PREP : convergence llama-swap + self-containment (en cours).** Générateur passé
-> **client llama-swap** (prouvé : granite via 8080, 2 `REMPLACE` verbatim) ; projet **self-contained** (binaire
-> b9542 + 3 GGUF dans `tools/`/`models/`, gitignorés ; `config.yaml` chemins-relatifs = **contrat déployable
-> tracké**). **Reste à converger de même** : (1) `GgufEmbeddingRetriever` → client llama-swap (clé
-> `granite-embedding-r2`, `/v1/embeddings`) ; (2) `LightOnOcrEngine` → client **multimodal HTTP** (clé
-> `lightonocr-2-1b`, GGUF+mmproj — **chemin HTTP NON prouvé**, valider qualité vs `llama-mtmd-cli`). Puis Étape
-> 2 (b) résolution (ANNEXES en nœuds + doc-scoping → DANGLING résolus) / (c) tiers différés. Modèles **figés** :
-> granite-4.0-h-tiny (gén.), granite-embedding-r2 (RAG), LightOnOCR-2-1B (OCR). Cf. mémoires
-> `shared-machine-3-slm-projects`, `llama-cpp-threads-physical-cores`. Détail → Fait (2026-07-01).
+> ▶ **NEXT (reprise) — Convergence llama-swap TERMINÉE (3 slots) ; sujet llama SOLDÉ.** Générateur, embedding
+> ET LightOCR sont tous **clients llama-swap** (aucun process possédé ; lazy-load/TTL, plus de spawn/kill à
+> oublier). Projet self-contained (config relative trackée, binaires/GGUF gitignorés). Les 3 chemins prouvés
+> sur du réel (dont le multimodal HTTP de LightOCR, doute levé). **Prochain pas au choix (aucun chantier llama
+> restant)** : Étape 2 (b) enrichir la **résolution** (segmenter les ANNEXES en nœuds + doc-scoping
+> `Contrat`/`Avenant` → transformer les DANGLING en arêtes résolues) ; (c) tiers différés (Q&A génératif, lane
+> suggestion-template) ; ou autre. Modèles **figés** : granite-4.0-h-tiny (gén.), granite-embedding-r2 (RAG),
+> LightOnOCR-2-1B (OCR). Cf. mémoires `shared-machine-3-slm-projects`, `llama-cpp-threads-physical-cores`.
+> Détail → Fait (2026-07-02).
 
 Historique : `3fcc7a8` baseline ①②③ · `3c3d055` HANDOFF+hook · `19e8041` slot Preprocessor ·
 `395e9e3` MRZ parse · `3680c87` rectifier + TD1.
@@ -116,6 +116,21 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   (202/job/404/400/idempotence via `TestClient`). **Smoke vraies images (validated/needs_review) PAS encore
   fait** → DoD non clos (cf. NEXT). Friction shell notée : `uv`/`git` hors PATH Git Bash → route `cmd.exe`
   chemin absolu (`MSYS_NO_PATHCONV=1`) ; PowerShell bloqué par règle `deny` (pas dans `settings.json` global).
+
+## Fait (2026-07-02)
+- **Convergence llama-swap TERMINÉE — embedding + LightOCR passés clients (prouvés). Sujet llama SOLDÉ.**
+  Suite du générateur (`187ddaf`), les 2 derniers slots SLM convergent sur le llama-swap partagé, chacun
+  prouvé sur du réel. (1) **`GgufEmbeddingRetriever`** (`rag.py`) ne spawn plus de `llama-server --embedding`
+  → **client `/v1/embeddings`** (clé `granite-embedding-r2` ; env `LLAMA_SWAP_URL` / `RAG_EMBEDDING_MODEL_KEY`) ;
+  `close()` no-op ; batching token-budget conservé. **Prouvé** : 3 chunks + requête « comment mettre fin au
+  contrat » → top-1 = clause de résiliation (0.884), dim 768, 7,3 s (lazy-load inclus). (2) **`LightOnOcrEngine`**
+  (`lightonocr_engine.py`) ne shelle plus `llama-mtmd-cli` → **client multimodal HTTP** (`/v1/chat/completions`,
+  image en base64 data-URL, clé `lightonocr-2-1b`). **Doute levé : le chemin multimodal serveur b9542 marche** —
+  verso CI 2021 → llama-swap charge modèle + mmproj → **3 lignes MRZ TD1 récupérées** + champs carte. Les 3 slots
+  gardent des constructeurs **sans-args** → **zéro edit d'appelant** (`api_maquette`, `ci_submission_check`,
+  `contrat_check`, `rag_check`, `contrat_graph_check`). **Latence LightOCR ~482 s** (max_tokens 2048 → 436 lignes
+  dont micro-texte décoratif) : batch/escalade OK, `max_tokens` = bouton de réglage vitesse. Machine rendue
+  llama-free (TaskStop, 0 orphelin). Oracle = runs réels.
 
 ## Fait (2026-07-01)
 - **PROD-PREP : générateur → client llama-swap + projet self-contained (prouvé).** Convergence infra pour la

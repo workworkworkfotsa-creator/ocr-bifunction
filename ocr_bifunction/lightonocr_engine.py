@@ -1,37 +1,35 @@
 """LightOnOCR-2 — the VLM escalation OcrEngine for the batch / escalade lane.
 
-A 1B vision-language OCR model (LightOn, French/EU — preferred for PII per RGPD) run
-through llama.cpp's multimodal CLI (`llama-mtmd-cli`), CPU-only. It is the HEAVY fallback
-for the hard cases RapidOCR cannot read (e.g. an ID-card MRZ that fails to parse): proven
-to recover a TD1 MRZ that RapidOCR misses, all check digits passing. Per the cadrage it is
-**batch / escalade only, NEVER the API fast-path** (~171 s/img, ~1.8 GB RAM on the 8 GB
-target). It plugs behind the same jettisonable OcrEngine slot as RapidOCR and Docling.
+A 1B vision-language OCR model (LightOn, French/EU — preferred for PII per RGPD), served by
+the shared llama-swap proxy as a multimodal llama-server (GGUF + its vision projector mmproj),
+CPU-only. It is the HEAVY fallback for the hard cases RapidOCR cannot read (e.g. an ID-card MRZ
+that fails to parse). Per the cadrage it is **batch / escalade only, NEVER the API fast-path**
+(~171 s/img, ~1.8 GB RAM on the 8 GB target). It plugs behind the same jettisonable OcrEngine
+slot as RapidOCR and Docling.
 
-It shells out to the llama.cpp binary instead of binding a Python lib: the proven runtime
-is a prebuilt llama.cpp (build b9542) with the LightOnOCR-2 GGUF + its vision projector
-(mmproj). IT swaps the binary / model / mmproj via constructor args or env vars
-(LIGHTONOCR_BINARY / LIGHTONOCR_MODEL / LIGHTONOCR_MMPROJ) — the disposable adapter.
+Like the generator and the embedding retriever, it is a thin CLIENT of llama-swap: it owns no
+process (llama-swap lazy-loads the model by key and TTL-unloads it). The image is sent to the
+OpenAI-compatible /v1/chat/completions endpoint as a base64 data URL; llama-swap must serve the
+`lightonocr-2-1b` key with a multimodal llama-server (mmproj in its config). Override the
+endpoint / model via env (LLAMA_SWAP_URL / LIGHTONOCR_MODEL_KEY).
 
-The model emits markdown text, not boxes, so the TextLines carry NO real geometry (a
-synthetic top-to-bottom bbox preserves reading order only). This engine is therefore for
-CONTENT-based extraction (the MRZ, read by character pattern), not the geometry-anchored
-recto templates.
+The model emits markdown text, not boxes, so the TextLines carry NO real geometry (a synthetic
+top-to-bottom bbox preserves reading order only). This engine is therefore for CONTENT-based
+extraction (the MRZ, read by character pattern), not the geometry-anchored recto templates.
 """
 
 from __future__ import annotations
 
+import base64
+import json
 import os
-import subprocess
-import tempfile
-from pathlib import Path
+import urllib.error
+import urllib.request
 
 from ocr_bifunction.reader import TextLine
 
-_REPO_ROOT = Path(__file__).resolve().parent.parent
-_DEFAULT_MODEL = _REPO_ROOT / "models" / "LightOnOCR-2-1B-Q8_0.gguf"
-_DEFAULT_MMPROJ = _REPO_ROOT / "models" / "mmproj-LightOnOCR-2-1B-Q8_0.gguf"
-# The llama.cpp multimodal CLI this POC was proven on. IT overrides via LIGHTONOCR_BINARY.
-_DEFAULT_BINARY = r"C:\Users\filipeparente\Tools\llamacpp\b9542\llama-mtmd-cli.exe"
+_DEFAULT_LLAMA_SWAP_URL = "http://127.0.0.1:8080"
+_DEFAULT_MODEL_KEY = "lightonocr-2-1b"
 
 DEFAULT_PROMPT = (
     "Transcribe all the text in this image, including the machine-readable zone "
@@ -69,71 +67,65 @@ class LightOnOcrEngine:
     def __init__(
         self,
         *,
-        binary_path: str | os.PathLike[str] | None = None,
-        model_path: str | os.PathLike[str] | None = None,
-        mmproj_path: str | os.PathLike[str] | None = None,
-        threads: int = 4,
-        context_size: int = 4096,
-        max_tokens: int = 1024,
+        base_url: str | None = None,
+        model_key: str | None = None,
         prompt: str = DEFAULT_PROMPT,
-        timeout_seconds: float = 600.0,
+        max_tokens: int = 2048,
+        request_timeout_seconds: float = 600.0,
     ) -> None:
-        self._binary_path = Path(
-            binary_path or os.environ.get("LIGHTONOCR_BINARY", _DEFAULT_BINARY)
+        self._base_url = (
+            base_url or os.environ.get("LLAMA_SWAP_URL", _DEFAULT_LLAMA_SWAP_URL)
+        ).rstrip("/")
+        self._model_key = model_key or os.environ.get(
+            "LIGHTONOCR_MODEL_KEY", _DEFAULT_MODEL_KEY
         )
-        self._model_path = Path(
-            model_path or os.environ.get("LIGHTONOCR_MODEL", str(_DEFAULT_MODEL))
-        )
-        self._mmproj_path = Path(
-            mmproj_path or os.environ.get("LIGHTONOCR_MMPROJ", str(_DEFAULT_MMPROJ))
-        )
-        self._threads = threads
-        self._context_size = context_size
-        self._max_tokens = max_tokens
         self._prompt = prompt
-        self._timeout_seconds = timeout_seconds
+        self._max_tokens = max_tokens
+        self._request_timeout_seconds = request_timeout_seconds
 
     def recognize(self, image_png_bytes: bytes) -> list[TextLine]:
         return _lines_from_text(self._transcribe(image_png_bytes))
 
     def _transcribe(self, image_bytes: bytes) -> str:
-        # The CLI treats commas in --image as a path separator and mangles non-ASCII argv
-        # on Windows; writing to an ASCII temp path sidesteps both. stb decodes by content,
-        # so the .png suffix is cosmetic.
-        with tempfile.TemporaryDirectory(prefix="lightonocr_") as temp_directory:
-            image_path = Path(temp_directory) / "page.png"
-            image_path.write_bytes(image_bytes)
-            completed = subprocess.run(
-                [
-                    str(self._binary_path),
-                    "-m",
-                    str(self._model_path),
-                    "--mmproj",
-                    str(self._mmproj_path),
-                    "--image",
-                    str(image_path),
-                    "-p",
-                    self._prompt,
-                    "-ngl",
-                    "0",
-                    "-t",
-                    str(self._threads),
-                    "--temp",
-                    "0",
-                    "-c",
-                    str(self._context_size),
-                    "-n",
-                    str(self._max_tokens),
+        data_url = "data:image/png;base64," + base64.b64encode(image_bytes).decode(
+            "ascii"
+        )
+        payload = json.dumps(
+            {
+                "model": self._model_key,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": self._prompt},
+                            {"type": "image_url", "image_url": {"url": data_url}},
+                        ],
+                    }
                 ],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=self._timeout_seconds,
-            )
-        if completed.returncode != 0:
+                "temperature": 0.0,
+                "max_tokens": self._max_tokens,
+                "stream": False,
+            }
+        ).encode("utf-8")
+        request = urllib.request.Request(
+            f"{self._base_url}/v1/chat/completions",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(
+                request, timeout=self._request_timeout_seconds
+            ) as response:
+                body = json.loads(response.read())
+        except urllib.error.HTTPError as error:
+            detail = error.read().decode("utf-8", "replace")[:300]
             raise RuntimeError(
-                f"llama-mtmd-cli failed (exit {completed.returncode}): "
-                f"{completed.stderr[-500:]}"
-            )
-        return completed.stdout
+                f"lightonocr server HTTP {error.code}: {detail}"
+            ) from error
+        except urllib.error.URLError as error:
+            raise RuntimeError(
+                f"shared llama-swap unreachable at {self._base_url} "
+                f"(is it running?): {error.reason}"
+            ) from error
+        return body["choices"][0]["message"]["content"]

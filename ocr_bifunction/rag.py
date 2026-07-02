@@ -22,14 +22,10 @@ import json
 import math
 import os
 import re
-import socket
-import subprocess
-import time
 import urllib.error
 import urllib.request
 from collections import Counter
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from ocr_bifunction.reader import TextLine
@@ -344,31 +340,24 @@ def summarize_extractive(
     return Summary(keywords=keywords, key_sentences=key_sentences)
 
 
-# --- Semantic retriever: GGUF embeddings via llama.cpp's llama-server. ----------------
-# The second `Retriever` impl, swapped in behind the same slot — no torch, reuses the
-# existing llama.cpp binary. Config verified against a working sibling project
-# (Personal Assistant, 2026-06-29): the build ships no `llama-embedding` CLI, so embeddings
-# come from `llama-server --embedding` over its OpenAI-compatible /v1/embeddings endpoint.
+# --- Semantic retriever: GGUF embeddings via the shared llama-swap proxy. -------------
+# The second `Retriever` impl, swapped in behind the same slot — no torch, no owned process.
+# It is a thin CLIENT of the shared llama-swap proxy (cf. generation.py, memory
+# `shared-machine-3-slm-projects`): llama-swap lazy-loads the embedding model by key on the
+# first request and TTL-unloads it when idle, so there is nothing to start or stop. Embeddings
+# come from llama-swap's OpenAI-compatible /v1/embeddings endpoint; override the endpoint /
+# model via env (LLAMA_SWAP_URL / RAG_EMBEDDING_MODEL_KEY).
 
-_REPO_ROOT = Path(__file__).resolve().parent.parent
-_DEFAULT_EMBEDDING_MODEL = (
-    _REPO_ROOT / "models" / "granite-embedding-311M-multilingual-r2-Q8_0.gguf"
-)
-# The llama.cpp server this POC was proven on. IT overrides via RAG_EMBEDDING_BINARY.
-_DEFAULT_EMBEDDING_BINARY = (
-    r"C:\Users\filipeparente\Tools\llamacpp\b9542\llama-server.exe"
-)
-# granite-embedding-multilingual-r2 supports a 32K-token window (RoPE-scaled; IBM). We run
-# the server at 8192 — ample for whole-article chunks — so an embedding input is NOT limited
-# to 512 (an earlier WRONG assumption that forced tiny chunks + truncation). The server still
-# REJECTS any input past -c (it does not truncate an embedding), so the per-input char cap
-# only guards a pathological over-long passage: dense legal text runs ~1.75 chars/model-token,
-# so ~14000 chars stays under 8192 tokens.
-_EMBEDDING_CONTEXT_SIZE = 8192
+_DEFAULT_LLAMA_SWAP_URL = "http://127.0.0.1:8080"
+_DEFAULT_EMBEDDING_MODEL_KEY = "granite-embedding-r2"
+# granite-embedding-r2 has a 32K window but the llama-swap config runs it at 8192 (-b/-ub
+# aligned). The server REJECTS any input past -c (it does not truncate an embedding), so the
+# per-input char cap only guards a pathological over-long passage: dense legal text runs
+# ~1.75 chars/model-token, so ~14000 chars stays under 8192 tokens.
 _EMBEDDING_CHARACTER_BUDGET = 14000
-# One /v1/embeddings request must fit the server's physical batch (-ub, set to the context
-# below): sending a whole corpus at once overruns it (HTTP 500). Batches are sized by a
-# CONTENT-token budget; model tokens run ~3-4x on dense legal text, so ~2000 stays under -ub.
+# One /v1/embeddings request must fit the server's physical batch: sending a whole corpus at
+# once overruns it (HTTP 500). Batches are sized by a CONTENT-token budget; model tokens run
+# ~3-4x on dense legal text, so ~2000 stays under -ub (8192).
 _EMBEDDING_BATCH_TOKEN_BUDGET = 2000
 
 
@@ -382,20 +371,14 @@ def _dense_dot(left: list[float], right: list[float]) -> float:
     return sum(x * y for x, y in zip(left, right))
 
 
-def _find_free_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-        probe.bind(("127.0.0.1", 0))
-        return probe.getsockname()[1]
-
-
 class GgufEmbeddingRetriever:
-    """Semantic retriever backed by a GGUF embedding model served by llama-server.
+    """Semantic retriever backed by a GGUF embedding model served by the shared llama-swap.
 
-    Disposable adapter (IT swaps binary / model / port via constructor args or env:
-    RAG_EMBEDDING_BINARY / RAG_EMBEDDING_MODEL). The server is started lazily on first
-    embed and stopped on close(); use it as a context manager so the process never leaks.
-    Vectors come back L2-normalized (llama-server --embd-normalize default 2), so ranking
-    is a plain dot product. Proven flags mirror the sibling project: -c 512, CPU, --mmap.
+    Disposable adapter that owns NO process: llama-swap lazy-loads the model by key and
+    TTL-unloads it (nothing to start/stop). Override endpoint / model via constructor args or
+    env (LLAMA_SWAP_URL / RAG_EMBEDDING_MODEL_KEY). Vectors come back L2-normalized
+    (llama-server --embd-normalize default 2), so ranking is a plain dot product. `close()`
+    is a no-op; the context-manager methods exist only so callers can keep using `with`.
     """
 
     name = "gguf-embedding"
@@ -403,26 +386,17 @@ class GgufEmbeddingRetriever:
     def __init__(
         self,
         *,
-        binary_path: str | os.PathLike[str] | None = None,
-        model_path: str | os.PathLike[str] | None = None,
-        host: str = "127.0.0.1",
-        port: int | None = None,
-        threads: int = 4,
-        startup_timeout_seconds: float = 180.0,
+        base_url: str | None = None,
+        model_key: str | None = None,
+        request_timeout_seconds: float = 300.0,
     ) -> None:
-        self._binary_path = Path(
-            binary_path
-            or os.environ.get("RAG_EMBEDDING_BINARY", _DEFAULT_EMBEDDING_BINARY)
+        self._base_url = (
+            base_url or os.environ.get("LLAMA_SWAP_URL", _DEFAULT_LLAMA_SWAP_URL)
+        ).rstrip("/")
+        self._model_key = model_key or os.environ.get(
+            "RAG_EMBEDDING_MODEL_KEY", _DEFAULT_EMBEDDING_MODEL_KEY
         )
-        self._model_path = Path(
-            model_path
-            or os.environ.get("RAG_EMBEDDING_MODEL", str(_DEFAULT_EMBEDDING_MODEL))
-        )
-        self._host = host
-        self._port = port
-        self._threads = threads
-        self._startup_timeout_seconds = startup_timeout_seconds
-        self._process: subprocess.Popen[bytes] | None = None
+        self._request_timeout_seconds = request_timeout_seconds
         self._chunks: list[Chunk] = []
         self._chunk_vectors: list[list[float]] = []
 
@@ -432,77 +406,31 @@ class GgufEmbeddingRetriever:
     def __exit__(self, *_exc_info: object) -> None:
         self.close()
 
-    def _base_url(self) -> str:
-        return f"http://{self._host}:{self._port}"
-
-    def _ensure_server(self) -> None:
-        if self._process is not None:
-            return
-        if self._port is None:
-            self._port = _find_free_port()
-        self._process = subprocess.Popen(
-            [
-                str(self._binary_path),
-                "-m",
-                str(self._model_path),
-                "--host",
-                self._host,
-                "--port",
-                str(self._port),
-                "-c",
-                str(_EMBEDDING_CONTEXT_SIZE),
-                # An embedding sequence must fit in ONE physical batch (pooling needs all its
-                # tokens together), so -ub must be >= the largest input. Match -b/-ub to the
-                # context so a whole-article chunk (up to -c tokens) is embedded in one go.
-                "-b",
-                str(_EMBEDDING_CONTEXT_SIZE),
-                "-ub",
-                str(_EMBEDDING_CONTEXT_SIZE),
-                "-t",
-                str(self._threads),
-                "-ngl",
-                "0",
-                "--mmap",
-                "--embedding",
-            ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        deadline = time.monotonic() + self._startup_timeout_seconds
-        while time.monotonic() < deadline:
-            if self._process.poll() is not None:
-                raise RuntimeError("llama-server exited before becoming ready")
-            try:
-                with urllib.request.urlopen(
-                    f"{self._base_url()}/health", timeout=2
-                ) as response:
-                    if response.status == 200:
-                        return
-            except (urllib.error.URLError, ConnectionError, OSError):
-                pass  # not up yet
-            time.sleep(0.5)
-        self.close()
-        raise RuntimeError("llama-server did not become ready in time")
-
     def _embed(self, texts: list[str]) -> list[list[float]]:
-        self._ensure_server()
         capped = [text[:_EMBEDDING_CHARACTER_BUDGET] for text in texts]
-        payload = json.dumps({"model": "granite-embed", "input": capped}).encode(
+        payload = json.dumps({"model": self._model_key, "input": capped}).encode(
             "utf-8"
         )
         request = urllib.request.Request(
-            f"{self._base_url()}/v1/embeddings",
+            f"{self._base_url}/v1/embeddings",
             data=payload,
             headers={"Content-Type": "application/json"},
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=180) as response:
+            with urllib.request.urlopen(
+                request, timeout=self._request_timeout_seconds
+            ) as response:
                 data = json.loads(response.read())["data"]
         except urllib.error.HTTPError as error:
             detail = error.read().decode("utf-8", "replace")[:300]
             raise RuntimeError(
                 f"embedding server HTTP {error.code}: {detail}"
+            ) from error
+        except urllib.error.URLError as error:
+            raise RuntimeError(
+                f"shared llama-swap unreachable at {self._base_url} "
+                f"(is it running?): {error.reason}"
             ) from error
         # llama-server returns one item per input; order by "index" to be safe.
         data.sort(key=lambda item: item.get("index", 0))
@@ -545,11 +473,4 @@ class GgufEmbeddingRetriever:
         return scored[:top_k]
 
     def close(self) -> None:
-        if self._process is None:
-            return
-        self._process.terminate()
-        try:
-            self._process.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            self._process.kill()
-        self._process = None
+        """No-op: llama-swap owns the model lifecycle (TTL-unload); nothing to stop here."""
