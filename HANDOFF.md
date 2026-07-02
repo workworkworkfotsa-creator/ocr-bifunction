@@ -29,9 +29,10 @@ discipline smoke-first.
 > 1. ✅ **FAIT (2026-07-02) — `_jobs` dict de l'API migré sur `repository`.** D1 unifié : API + batch écrivent
 >    la MÊME table `ocr_jobs` (prouvé : 3 lignes, 2 producteurs coexistent, file ⑤ = 1 requête SQL). Détail
 >    → Fait (2026-07-02) ci-dessous.
-> 2. **D3 — revue + suggestion-template** (`ocr_reviews`, FK `job_id`). **Store FAIT (2026-07-02)** : loop
->    status-driven `pending`→`validated` prouvé (stub, sans SLM). **EN COURS** : lane SLM (harnais GBNF
->    d'abord, cf. `BRIEF-suggestion-template.md`), puis seam promotion D3→D2. **← reprendre au GBNF.**
+> 2. ✅ **FAIT (2026-07-02) — D3 store + lane SLM de suggestion (GBNF prouvé actif, lane end-to-end).**
+>    Store `ocr_reviews` (loop `pending`→`validated`) + lane deterministic-first (GBNF liste-fermée,
+>    re-vérif anchors + fit test extract/validate, → stage D3). Détail → Fait (2026-07-02) ci-dessous.
+>    **Reste D3→D2** : seam de promotion (valider une suggestion écrit/active le template) = **étape 3**.
 > 3. **D2 — templates → table** (`ocr_templates_*`) : **ÉMERGE de la promotion D3→D2** (valider une suggestion
 >    écrit/active le template). PAS avant — les `templates/*.json` marchent en lecture (anti-cimetière/YAGNI).
 > 4. **#3 — placement RAG contrat** (flux batch vs lane « store de contrats ») : indépendant, ne bloque rien.
@@ -128,6 +129,26 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   chemin absolu (`MSYS_NO_PATHCONV=1`) ; PowerShell bloqué par règle `deny` (pas dans `settings.json` global).
 
 ## Fait (2026-07-02)
+- **Étape 2 (D3) — lane SLM de suggestion LIVRÉE + prouvée end-to-end (GBNF actif, deterministic-first).**
+  Suite du store D3 (ci-dessous), la lane qui écrit les suggestions `pending`. **D'abord le harnais diagnostic
+  GBNF** (`gbnf_diag.py`, brief délivrable 1) : test « banane » (grammaire `root ::= "BANANE"` + prompt qui
+  réclame du code) → **GBNF ACTIVE sur chat ET /completion** (contrôle sans grammaire = granite écrit du
+  FastAPI ; avec = `BANANE`). Le filet mécanique tient ; la docilité ne joue plus que sur le *fond*. **Puis la
+  lane** (`ocr_bifunction/suggestion.py` + runner `suggestion_check.py`, brief délivrable 2), **deterministic-
+  first** : `match_template` gratuit d'abord (majorité → SLM PAS réveillé) ; sur un miss → SLM propose un
+  `template_id` de la **liste fermée dérivée des `templates/*.json`** (enum via `json_schema`→GBNF, `/completion`
+  granite) + les anchors vus → **2 gates déterministes** : (1) anti-hallucination = les anchors proposés sont
+  réellement dans l'OCR ; (2) **fit** = TENTER le template (`extract_fields`+`validate_fields`). `verified` SEULEMENT
+  si id connu ∧ anchor confirmé ∧ validation OK, sinon → humain. Le SLM **propose**, le déterministe **dispose** ;
+  le SLM ne crée jamais un template (curation = humain). **Prouvé (runs réels, llama-swap)** : (case 1) facture →
+  match déterministe, SLM endormi ; (case 2) facture `--force-slm` → SLM propose une facture, 1 anchor halluciné
+  **rejeté par gate 1**, mais sous-template faux → **gate 2 FAIL** (`total_ht` non lu) → humain ; (case 3) courrier
+  (mise-en-demeure, non-structuré) → gate 2 FAIL → humain (pas faussement classé facture) ; (case 4) HP image,
+  catégorie `preuve_test` (template unique) `--force-slm` → `hp_preuve_test_01`, **gate 2 PASS** → `verified` →
+  **suggestion `pending` stagée en D3** (boucle lane→store fermée). **Découverte smoke-first** : ma 1re barre
+  « ≥1 anchor confirmé » laissait passer le courrier (un anchor copié verbatim se re-vérifie trivialement) → **corrigé
+  en ajoutant le gate 2 fit** (le brief l'exigeait : « anchors confirmés → TENTER extract+validate »). Machine
+  partagée rendue propre (llama-swap arrêté, 0 orphelin). Oracle = runs réels, pas de pytest.
 - **Étape 2 (D3) — store `ocr_reviews` bâti + boucle de croissance organique prouvée (stub, sans SLM).**
   Domaine 3 (revue/curation) rendu réel, **séparé de D1** (autre propriétaire : l'UI de revue écrit D3, le
   worker écrit D1 ; D3 **référence** le job par `job_id`, **ne duplique pas** le record — source unique en D1).
