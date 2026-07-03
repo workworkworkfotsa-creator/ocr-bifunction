@@ -63,6 +63,11 @@ class Suggestion:
         default_factory=list
     )  # re-verifiable structural anchors (no PII)
     status: str = SUGGESTION_PENDING
+    # The FULL draft template (drafting lane): the curated-content candidate travels
+    # WITH the suggestion so the reviewer sees — and promotion activates — exactly what
+    # the deterministic draft proved on its cluster. None for closed-list suggestions
+    # (the SLM lane proposes a KNOWN template_id; the content lives in D2/files).
+    template: dict | None = None
 
 
 @dataclass
@@ -129,25 +134,35 @@ class ReviewRepository(ABC):
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS ocr_reviews (
-    review_id             INTEGER PRIMARY KEY AUTOINCREMENT,
-    job_id                INTEGER NOT NULL,
-    projection            TEXT,
-    comment               TEXT,
-    decision              TEXT,
-    suggested_template_id TEXT,
-    suggested_category    TEXT,
-    suggested_anchors     TEXT,
-    suggestion_status     TEXT,
-    created_at            TEXT NOT NULL,
-    updated_at            TEXT NOT NULL
+    review_id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id                  INTEGER NOT NULL,
+    projection              TEXT,
+    comment                 TEXT,
+    decision                TEXT,
+    suggested_template_id   TEXT,
+    suggested_category      TEXT,
+    suggested_anchors       TEXT,
+    suggested_template_json TEXT,
+    suggestion_status       TEXT,
+    created_at              TEXT NOT NULL,
+    updated_at              TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_ocr_reviews_suggestion ON ocr_reviews (suggestion_status);
 CREATE INDEX IF NOT EXISTS idx_ocr_reviews_job ON ocr_reviews (job_id);
 """
 
+# Columns added after the first proxy shipped; existing local .sqlite files gain them on
+# open. (The MariaDB DDL at handoff bakes them in — this is proxy-only migration.)
+_MIGRATION_COLUMNS = {
+    "suggested_template_json": (
+        "ALTER TABLE ocr_reviews ADD COLUMN suggested_template_json TEXT"
+    ),
+}
+
 _COLUMNS = (
     "review_id, job_id, projection, comment, decision, suggested_template_id, "
-    "suggested_category, suggested_anchors, suggestion_status, created_at, updated_at"
+    "suggested_category, suggested_anchors, suggested_template_json, "
+    "suggestion_status, created_at, updated_at"
 )
 
 
@@ -171,6 +186,13 @@ class SqliteReviewRepository(ReviewRepository):
         )
         self._connection.row_factory = sqlite3.Row
         self._connection.executescript(_SCHEMA)
+        existing_columns = {
+            row["name"]
+            for row in self._connection.execute("PRAGMA table_info(ocr_reviews)")
+        }
+        for column_name, alter_statement in _MIGRATION_COLUMNS.items():
+            if column_name not in existing_columns:
+                self._connection.execute(alter_statement)
         self._connection.commit()
 
     def open_review(self, review: Review) -> int:
@@ -179,7 +201,8 @@ class SqliteReviewRepository(ReviewRepository):
         cursor = self._connection.execute(
             "INSERT INTO ocr_reviews (job_id, projection, comment, decision, "
             "suggested_template_id, suggested_category, suggested_anchors, "
-            "suggestion_status, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            "suggested_template_json, suggestion_status, created_at, updated_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (
                 review.job_id,
                 json.dumps(review.projection, ensure_ascii=False),
@@ -189,6 +212,9 @@ class SqliteReviewRepository(ReviewRepository):
                 suggestion.category if suggestion else None,
                 json.dumps(suggestion.anchors, ensure_ascii=False)
                 if suggestion
+                else None,
+                json.dumps(suggestion.template, ensure_ascii=False)
+                if suggestion and suggestion.template is not None
                 else None,
                 suggestion.status if suggestion else None,
                 now,
@@ -207,6 +233,9 @@ class SqliteReviewRepository(ReviewRepository):
                 category=row["suggested_category"],
                 anchors=json.loads(row["suggested_anchors"] or "[]"),
                 status=row["suggestion_status"],
+                template=json.loads(row["suggested_template_json"])
+                if row["suggested_template_json"]
+                else None,
             )
         return Review(
             review_id=row["review_id"],
@@ -268,12 +297,15 @@ class SqliteReviewRepository(ReviewRepository):
     def stage_suggestion(self, review_id: int, suggestion: Suggestion) -> None:
         self._connection.execute(
             "UPDATE ocr_reviews SET suggested_template_id = ?, suggested_category = ?, "
-            "suggested_anchors = ?, suggestion_status = ?, updated_at = ? "
-            "WHERE review_id = ?",
+            "suggested_anchors = ?, suggested_template_json = ?, "
+            "suggestion_status = ?, updated_at = ? WHERE review_id = ?",
             (
                 suggestion.template_id,
                 suggestion.category,
                 json.dumps(suggestion.anchors, ensure_ascii=False),
+                json.dumps(suggestion.template, ensure_ascii=False)
+                if suggestion.template is not None
+                else None,
                 suggestion.status,
                 self._clock(),
                 review_id,

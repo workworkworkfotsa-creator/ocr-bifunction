@@ -28,6 +28,12 @@ from ocr_bifunction.drafting import (
     pairwise_similarity,
 )
 from ocr_bifunction.reader import read_document
+from ocr_bifunction.repository import STATUS_NEEDS_REVIEW, SqliteRepository
+from ocr_bifunction.review_repository import (
+    Review,
+    SqliteReviewRepository,
+    Suggestion,
+)
 
 
 def _read_drafting_documents(
@@ -120,6 +126,61 @@ def _print_draft_report(template_id: str, report: DraftReport) -> None:
         )
 
 
+def _stage_draft(
+    store_path: Path, cluster: list[DraftingDocument], report: DraftReport
+) -> None:
+    """Stage an accepted draft as a D3 pending suggestion, anchored on the first cluster
+    member's D1 needs_review job (sources match by file name — D1 keeps only the name).
+    The FULL draft travels in `suggested_template_json`; the review page shows its
+    candidate checks for the human to tick before promotion."""
+    assert report.template is not None
+    repository = SqliteRepository(store_path)
+    review_repository = SqliteReviewRepository(store_path)
+    try:
+        cluster_sources = {document.source for document in cluster}
+        matching_jobs = [
+            job
+            for job in repository.pending(STATUS_NEEDS_REVIEW)
+            if job.source in cluster_sources
+        ]
+        if not matching_jobs:
+            print(
+                "  staging: no needs_review D1 job matches the cluster sources "
+                "— nothing staged"
+            )
+            return
+        anchor_job = matching_jobs[0]
+        suggestion = Suggestion(
+            template_id=report.template["template_id"],
+            category=report.template.get("category"),
+            anchors=report.template["match"]["all_anchors"],
+            template=report.template,
+        )
+        review = review_repository.by_job(anchor_job.job_id)
+        if review is None:
+            review_id = review_repository.open_review(
+                Review(
+                    job_id=anchor_job.job_id,
+                    projection={
+                        "source": anchor_job.source,
+                        "lane": anchor_job.category_lane,
+                        "cluster_size": str(len(cluster)),
+                    },
+                    suggestion=suggestion,
+                )
+            )
+        else:
+            review_id = review.review_id
+            review_repository.stage_suggestion(review_id, suggestion)
+        print(
+            f"  staged: D3 review #{review_id} (job #{anchor_job.job_id}) — "
+            "suggestion pending, full draft aboard"
+        )
+    finally:
+        repository.close()
+        review_repository.close()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Cluster unknown documents and draft templates from invariance."
@@ -135,6 +196,13 @@ def main() -> None:
     )
     parser.add_argument(
         "--json-out", type=Path, default=None, help="directory for the draft JSONs"
+    )
+    parser.add_argument(
+        "--store",
+        type=Path,
+        default=None,
+        help="stage accepted drafts as D3 pending suggestions in this store "
+        "(anchored on the matching D1 needs_review jobs)",
     )
     arguments = parser.parse_args()
 
@@ -155,6 +223,8 @@ def main() -> None:
         template_id = f"draft_{arguments.category}_{draft_index:02d}"
         report = draft_from_cluster(cluster, arguments.category, template_id)
         _print_draft_report(template_id, report)
+        if report.template is not None and arguments.store is not None:
+            _stage_draft(arguments.store, cluster, report)
         if report.template is not None and arguments.json_out is not None:
             arguments.json_out.mkdir(parents=True, exist_ok=True)
             output_path = arguments.json_out / f"{template_id}.json"

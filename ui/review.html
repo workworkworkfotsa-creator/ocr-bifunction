@@ -1,8 +1,10 @@
 <!doctype html>
 <!-- Review page — disposable local-test adapter of destination domain 3 (the human surface).
      It only READS D1 (the needs_review queue) and WRITES D3 (decision / suggestion validation)
-     through the review endpoints; the watchdog closes D1 on its next sweep. Validation criteria
-     are displayed READ-ONLY (v1 scope). No PII in this file. -->
+     through the review endpoints; the watchdog closes D1 on its next sweep. Known-template
+     suggestions show their criteria READ-ONLY; a DRAFT suggestion (drafting lane) shows its
+     candidate checks as checkboxes — the ticking writes the required block at promotion
+     (compute-all/config-requires). No PII in this file. -->
 <html lang="fr">
 <head>
   <meta charset="utf-8" />
@@ -70,6 +72,31 @@
       loadQueue();
     }
 
+    // Draft suggestions: candidate checks by review_id — the ticking selects among
+    // them (the human never authors rules here), the subset becomes `required`.
+    const draftCandidatesByReview = {};
+
+    function draftBlock(suggestion) {
+      const draft = suggestion.draft_template;
+      draftCandidatesByReview[suggestion.review_id] = suggestion.validation.required || [];
+      return `
+          <p class="muted">DRAFT complet (lane drafting) — champs extraits sur tout le cluster :</p>
+          <ul>${draft.fields.map(field =>
+            `<li><b>${escapeHtml(field.name)}</b> <span class="muted">[${escapeHtml(field.direction || "pattern")} de « ${escapeHtml(field.anchor || field.pattern)} »]</span></li>`).join("")}</ul>
+          <div class="criteria"><b>Checks candidats — cochez ceux qui deviennent REQUIS</b>
+            (tout est calculé ; le template dit ce qui est exigé) :<br/>
+            ${(suggestion.validation.required || []).map((rule, index) =>
+              `<label><input type="checkbox" class="check_${suggestion.review_id}" data-index="${index}" checked />
+                 ${escapeHtml(rule.check)} — ${escapeHtml(rule.field)}</label><br/>`).join("")}
+          </div>`;
+    }
+
+    function readOnlyBlock(suggestion) {
+      return `
+          <div class="criteria"><b>Critères d'auto-validation du template</b> (lecture seule — v1) :
+            <pre>${escapeHtml(JSON.stringify(suggestion.validation, null, 2))}</pre></div>`;
+    }
+
     async function loadSuggestions() {
       const body = await (await fetch("/v1/suggestions/pending")).json();
       const container = document.getElementById("suggestions");
@@ -80,8 +107,7 @@
               <b>${escapeHtml(suggestion.template_id)}</b></h3>
           <p class="muted">Anchors confirmés sur l'OCR :</p>
           <ul>${suggestion.anchors.map(anchor => `<li>${escapeHtml(anchor)}</li>`).join("")}</ul>
-          <div class="criteria"><b>Critères d'auto-validation du template</b> (lecture seule — v1) :
-            <pre>${escapeHtml(JSON.stringify(suggestion.validation, null, 2))}</pre></div>
+          ${suggestion.draft_template ? draftBlock(suggestion) : readOnlyBlock(suggestion)}
           <div style="margin-top:0.5rem">
             <button class="accept" onclick="actOnSuggestion(${suggestion.review_id}, 'validate')">Valider → activer en D2</button>
             <button class="reject" onclick="actOnSuggestion(${suggestion.review_id}, 'reject')">Rejeter</button>
@@ -90,7 +116,16 @@
     }
 
     async function actOnSuggestion(reviewId, action) {
-      await fetch(`/v1/suggestions/${reviewId}/${action}`, { method: "POST" });
+      const options = { method: "POST" };
+      const candidates = draftCandidatesByReview[reviewId];
+      if (action === "validate" && candidates && candidates.length) {
+        const ticked = [...document.querySelectorAll(`.check_${reviewId}`)]
+          .filter(box => box.checked)
+          .map(box => candidates[Number(box.dataset.index)]);
+        options.headers = { "Content-Type": "application/json" };
+        options.body = JSON.stringify({ required: ticked });
+      }
+      await fetch(`/v1/suggestions/${reviewId}/${action}`, options);
       loadSuggestions();
     }
 

@@ -9,9 +9,16 @@ Proves, on a scratch store, the whole local-mix loop the pages skin (steps B+C o
   4. the human accepts it -> D3 decision; the REAL watchdog process sweeps -> the D1 job
      closes `done` and leaves the queue (the UI never wrote D1.status);
   5. a pending template suggestion (seeded as the live lane stages them) shows with its
-     validation criteria (read-only v1) -> validate -> PROMOTED: active in D2, D3 validated.
+     validation criteria (read-only v1) -> validate -> PROMOTED: active in D2, D3 validated;
+  6. D-d, the drafting lane through the surfaces: two unknown same-layout synthetic
+     attestations -> needs_review; the REAL `draft_check.py --store` clusters them and
+     stages the FULL draft in D3; the reviewer TICKS a subset of the candidate checks and
+     validates -> promoted to D2 with exactly the ticked `required` block; the THIRD
+     attestation then re-matches on upload (the API routes from D2) -> validated/auto,
+     and "attestation" appears in the select box (organic category).
 
-No PII in this file: document paths come from the CLI; store/spool live in scratch.
+No PII in this file: document paths come from the CLI; the synthetic attestations carry
+obviously fictional names (draft_smoke corpus); store/spool live in scratch.
 """
 
 from __future__ import annotations
@@ -33,6 +40,8 @@ os.environ["OCR_SPOOL_PATH"] = str(_SCRATCH / "spool")
 from fastapi.testclient import TestClient  # noqa: E402  (env must precede the import)
 
 import api_maquette  # noqa: E402
+from draft_smoke import _build_corpus  # noqa: E402  (synthetic PII-free corpus)
+from ocr_bifunction.repository import SqliteRepository  # noqa: E402
 from ocr_bifunction.review_repository import (  # noqa: E402
     Review,
     SqliteReviewRepository,
@@ -176,6 +185,116 @@ def run(facture_path: Path, courrier_path: Path) -> int:
         replay = client.post(f"/v1/suggestions/{seeded_review_id}/validate")
         checks.append(
             ("re-validate refused (409, already validated)", replay.status_code == 409)
+        )
+
+        # 6. D-d — drafting lane through the surfaces: unknowns -> draft staged by the
+        # REAL CLI -> ticked checks -> promotion -> the 3rd doc re-matches via the API.
+        attestation_directory = _SCRATCH / "attestations"
+        attestation_directory.mkdir()
+        attestation_paths = [
+            path
+            for path in _build_corpus(attestation_directory)
+            if path.name.startswith("attestation")
+        ]
+        first_unknown = client.post(
+            "/v1/documents:validate", json=_payload_for([attestation_paths[0]])
+        ).json()
+        second_unknown = client.post(
+            "/v1/documents:validate", json=_payload_for([attestation_paths[1]])
+        ).json()
+        checks.append(
+            (
+                "two unknown attestations -> needs_review",
+                first_unknown["status"] == "needs_review"
+                and second_unknown["status"] == "needs_review",
+            )
+        )
+
+        draft_output = subprocess.run(
+            [
+                sys.executable,
+                str(PROJECT_ROOT / "draft_check.py"),
+                str(attestation_paths[0]),
+                str(attestation_paths[1]),
+                "--category",
+                "attestation",
+                "--store",
+                os.environ["OCR_STORE_PATH"],
+            ],
+            capture_output=True,
+            text=True,
+            cwd=PROJECT_ROOT,
+            timeout=600,
+        ).stdout
+        checks.append(
+            (
+                "draft_check --store drafted the cluster + staged it in D3",
+                "DRAFT OK" in draft_output and "staged: D3 review" in draft_output,
+            )
+        )
+
+        suggestions = client.get("/v1/suggestions/pending").json()["suggestions"]
+        draft_suggestion = next(
+            (
+                suggestion
+                for suggestion in suggestions
+                if suggestion["template_id"] == "draft_attestation_01"
+            ),
+            None,
+        )
+        candidate_checks = (
+            (draft_suggestion or {}).get("validation", {}).get("required", [])
+        )
+        checks.append(
+            (
+                "pending draft carries the full template + 4 candidate checks",
+                draft_suggestion is not None
+                and draft_suggestion["draft_template"] is not None
+                and len(candidate_checks) == 4,
+            )
+        )
+
+        ticked_checks = [
+            rule for rule in candidate_checks if rule["field"] != "codes_obtenus"
+        ]
+        promoted_draft = client.post(
+            f"/v1/suggestions/{draft_suggestion['review_id']}/validate",
+            json={"required": ticked_checks},
+        ).json()
+        template_repository = SqliteTemplateRepository(os.environ["OCR_STORE_PATH"])
+        promoted_row = template_repository.get("draft_attestation_01")
+        template_repository.close()
+        checks.append(
+            (
+                "ticked subset promoted: D2 active, required = the 3 ticked checks",
+                promoted_draft.get("promoted_template_id") == "draft_attestation_01"
+                and promoted_row is not None
+                and promoted_row["validation"]["required"] == ticked_checks,
+            )
+        )
+
+        third_upload = client.post(
+            "/v1/documents:validate", json=_payload_for([attestation_paths[2]])
+        ).json()
+        repository = SqliteRepository(os.environ["OCR_STORE_PATH"])
+        third_job = repository.get(third_upload["job_id"])
+        repository.close()
+        checks.append(
+            (
+                "third attestation re-matches the promoted draft -> validated/auto",
+                third_upload["status"] == "validated"
+                and third_job is not None
+                and third_job.template_id == "draft_attestation_01",
+            )
+        )
+        types_after_promotion = client.get("/v1/document-types").json()[
+            "document_types"
+        ]
+        checks.append(
+            (
+                "'attestation' joined the select box (organic category)",
+                "attestation" in types_after_promotion,
+            )
         )
 
     print()

@@ -24,11 +24,11 @@ discipline smoke-first.
 > 2-3 docs même layout (TF-IDF, déterministe) → DRAFT (invariance cross-docs = anchors, PII-safe par
 > construction ; SLM contraint nomme les champs + propose les checks) → re-test sur tout le cluster →
 > **l'humain valide ET COCHE les champs/checks requis** (compute-all/config-requires) → promotion D2.
-> **Avancement 2026-07-03 : moitié déterministe D-a+D-b LIVRÉE + prouvée sur corpus synthétique**
-> (cf. Fait 2026-07-03 ; `drafting.py` + `draft_check.py` + `draft_smoke.py` 11/11 PASS). Restent : run
-> corpus réel attestations (RapidOCR CPU → **attend le GO**, gate encodé dans `draft_check.py` exit 2),
-> D-c (SLM nommage/checks → machine libre), D-d (schéma D3 `suggested_template_json` + revue v2 cochage),
-> D-e (oracle : les 2 fraudes tirées).
+> **Avancement 2026-07-03 : D-a+D-b (moitié déterministe) ET D-d (schéma D3 + revue v2 cochage +
+> promotion) LIVRÉS + prouvés** (cf. Fait 2026-07-03 ; `draft_smoke` 11/11, `ui_smoke` 15/15, navigateur
+> réel Playwright vert). Restent : run corpus réel attestations (RapidOCR CPU → **attend le GO**, gate
+> encodé dans `draft_check.py` exit 2), D-c (SLM nommage/checks → machine libre), D-e (oracle : les 2
+> fraudes tirées — demander à l'utilisateur QUELS docs seulement à ce moment).
 > **Valeur = lane ANTI-FRAUDE certifications** (2 fraudes vues à l'œil sur les attestations d'`inputs/`) :
 > checks `date_order`/`date_span`/`vocabulary`/`reconcile_ci` (strict, Ahmed≠Hamed). Ancres = MOTS structurels
 > (vocabulaire/labels/organisme lu en texte), logo-image rejeté. Oracle final (D-e) = les 2 fraudes tirées
@@ -148,6 +148,33 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   chemin absolu (`MSYS_NO_PATHCONV=1`) ; PowerShell bloqué par règle `deny` (pas dans `settings.json` global).
 
 ## Fait (2026-07-03)
+- **D-d — le draft VOYAGE jusqu'à D2 par le geste humain : schéma D3 + revue v2 (COCHAGE des checks) +
+  promotion + re-match, prouvé en NAVIGATEUR RÉEL (zéro llama, zéro OCR — corpus synthétique).**
+  (1) **D3** : colonne **`suggested_template_json`** (+ migration auto des .sqlite existants, même patron
+  que D1) — le DRAFT COMPLET voyage avec la suggestion (`Suggestion.template`) ; les suggestions
+  liste-fermée (lane SLM) gardent `template=None`, zéro régression. (2) **API** : `/v1/suggestions/pending`
+  expose `draft_template` + ses checks candidats ; `POST …/validate` accepte le **cochage** (subset des
+  candidats — l'humain choisit, n'écrit pas de règles ; 400 si règle hors-candidats ; sans body = tout
+  reste requis, rétrocompatible) → `validation.required` promu = EXACTEMENT les checks cochés
+  (compute-all/config-requires). (3) **Trou d'intégration soudé** : le routage single-doc de l'API lisait
+  les templates DEPUIS LES FICHIERS → un draft promu ne re-matchait jamais via la porte. `_run_route_document`
+  lit désormais **D2 `active_templates()`** (seedée des `templates/*.json` au premier usage — les fichiers
+  restent le SEED anonymisé) ; `/v1/document-types` dérive de D2 → **une catégorie organique apparaît
+  toute seule dans la select box**. Flux CI inchangé (hors boucle, documenté). (4) **Revue v2**
+  (`ui/review.html`) : carte draft = anchors + champs + checkboxes cochées par défaut ; Valider envoie le
+  subset. (5) **`draft_check.py --store`** : stage le draft accepté en D3 `pending` sur le job
+  `needs_review` du cluster (match par `source` = nom de fichier ; review ouverte si absente).
+  **Prouvé** : `ui_smoke.py` étendu (scénario 6) **15/15 PASS** — 2 inconnus → needs_review → le VRAI CLI
+  stage → pending porte le draft + 4 candidats → cochage 3/4 → D2 `required` = les 3 cochés → la 3e
+  attestation **re-matche à l'upload** (`done/auto`, template `draft_attestation_01`) → « attestation »
+  dans la select ; **navigateur réel** (uvicorn :8123 + Playwright) : upload ×2 → « needs_review » → CLI
+  → /review affiche le draft + 4 checkboxes → décoche `codes_obtenus` → Valider → « Aucune suggestion en
+  attente » → re-upload → **« Résultat : validated »** ; état en table vérifié (D2 active
+  required=3 sans codes_obtenus, job 3 done/auto, D3 validated + draft à bord). Régressions re-passées
+  vertes : `review_check`, `promotion_check`, `draft_smoke` 11/11. **Comportement noté (à trancher plus
+  tard)** : après promotion, les jobs D1 du cluster restent `needs_review` (clôture = re-run batch/worker
+  ou acceptation humaine — le re-match ferme les SUIVANTS, pas rétroactivement les membres du cluster).
+  `.gitignore` : + `.playwright-mcp/` (artefacts navigateur).
 - **Lane DRAFTING, moitié déterministe (D-a + D-b) LIVRÉE + prouvée (synthétique born-digital, zéro OCR,
   zéro SLM — contrainte VRP respectée).** `ocr_bifunction/drafting.py` : **D-a `cluster_unknown_documents`**
   (cosine TF-IDF plein-doc — RÉUTILISE `TfidfRetriever` tel quel, 1 doc = 1 chunk ; single-link glouton

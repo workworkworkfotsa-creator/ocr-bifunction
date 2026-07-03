@@ -34,3 +34,6 @@ docs/briefs/
 # TRACKED (it is the portable deployment contract: project-relative paths, no PII).
 tools/llama-swap/*.exe
 tools/llamacpp/
+
+# Playwright MCP browser artifacts (snapshots, scratch uploads)
+.playwright-mcp/

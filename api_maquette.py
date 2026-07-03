@@ -343,15 +343,26 @@ def _run_fast_submission(
 def _run_route_document(
     files: list[tuple[str, bytes]], category: str | None
 ) -> RoutedDocument:
-    """Route the first uploaded file through the 2-lane router (non-CI document types)."""
+    """Route the first uploaded file through the 2-lane router (non-CI document types).
+
+    Templates are read from D2 (`ocr_templates`, seeded from the committed JSON files),
+    NOT from the files directly — so a template promoted through the review page matches
+    on the very next upload (the growth loop closes through the API too). The CI flow
+    keeps the directory (its templates are outside the suggestion loop, documented)."""
     filename, data = files[0]
     suffix = Path(filename).suffix or DEFAULT_SUFFIX
+    with _repository_lock:
+        active_templates = _ensure_template_repository().active_templates()
     with tempfile.TemporaryDirectory(prefix="ocr_bifunction_doc_") as temp_directory:
         file_path = Path(temp_directory) / f"file{suffix}"
         file_path.write_bytes(data)
         try:
             return route_document(
-                file_path, TEMPLATES_DIRECTORY, _get_engine(), category=category
+                file_path,
+                TEMPLATES_DIRECTORY,
+                _get_engine(),
+                category=category,
+                templates=active_templates,
             )
         except Exception as error:  # surface a pipeline/engine crash as 5xx, don't hide
             raise HTTPException(
@@ -538,12 +549,16 @@ def _ensure_review_repository() -> ReviewRepository:
 
 
 def _ensure_template_repository() -> TemplateRepository:
-    """Build the shared D2 store once (lazy). Caller MUST hold `_repository_lock`."""
+    """Build the shared D2 store once (lazy). Caller MUST hold `_repository_lock`.
+
+    The committed `templates/*.json` are re-seeded on first use (idempotent upsert):
+    the files stay the anonymized SEED, D2 is the runtime source the router reads."""
     global _template_repository
     if _template_repository is None:
         _template_repository = SqliteTemplateRepository(
             STORE_PATH, check_same_thread=False
         )
+        _template_repository.seed_from_directory(TEMPLATES_DIRECTORY)
     return _template_repository
 
 
@@ -559,11 +574,14 @@ def review_page() -> str:
 
 @app.get("/v1/document-types")
 def document_types() -> dict:
-    """The upload select box options — DERIVED from the template categories, never hardcoded."""
+    """The upload select box options — DERIVED from the ACTIVE D2 templates, never
+    hardcoded (an organically promoted category appears here on its own)."""
+    with _repository_lock:
+        active_templates = _ensure_template_repository().active_templates()
     categories = sorted(
         {
             template.get("category")
-            for template in load_templates(TEMPLATES_DIRECTORY)
+            for template in active_templates
             if template.get("category")
         }
     )
@@ -636,34 +654,57 @@ def record_review_decision(job_id: int, request: DecisionRequest) -> dict:
 
 @app.get("/v1/suggestions/pending")
 def pending_suggestions() -> dict:
-    """The D3 pending template suggestions + the target template's validation criteria
-    (READ-ONLY v1 — editing the criteria is a separate Backoffice surface)."""
+    """The D3 pending template suggestions. Closed-list suggestions (SLM lane) show the
+    known template's validation criteria READ-ONLY; a DRAFT suggestion (drafting lane)
+    carries its FULL template, whose candidate checks the reviewer TICKS at validation
+    (compute-all/config-requires: the ticking writes the required block)."""
     with _repository_lock:
         pending = _ensure_review_repository().pending_suggestions()
     templates_by_id = {
         template["template_id"]: template
         for template in load_templates(TEMPLATES_DIRECTORY)
     }
-    return {
-        "suggestions": [
+    payload = []
+    for review in pending:
+        suggestion = review.suggestion
+        draft_template = suggestion.template
+        if draft_template is not None:
+            validation = draft_template.get("validation", {})
+        else:
+            validation = templates_by_id.get(suggestion.template_id or "", {}).get(
+                "validation", {}
+            )
+        payload.append(
             {
                 "review_id": review.review_id,
                 "job_id": review.job_id,
-                "template_id": review.suggestion.template_id,
-                "anchors": review.suggestion.anchors,
-                "validation": templates_by_id.get(
-                    review.suggestion.template_id or "", {}
-                ).get("validation", {}),
+                "template_id": suggestion.template_id,
+                "anchors": suggestion.anchors,
+                "validation": validation,
+                "draft_template": draft_template,
             }
-            for review in pending
-        ]
-    }
+        )
+    return {"suggestions": payload}
+
+
+class ValidateSuggestionRequest(BaseModel):
+    """The reviewer's ticking on a DRAFT suggestion: the subset of the draft's candidate
+    checks that become REQUIRED. The human selects among candidates, never authors rules
+    here (curation surface). Absent body = every candidate stays required."""
+
+    required: list[dict] | None = None
 
 
 @app.post("/v1/suggestions/{review_id}/validate")
-def validate_suggestion(review_id: int) -> dict:
+def validate_suggestion(
+    review_id: int, request: ValidateSuggestionRequest | None = None
+) -> dict:
     """Promote a pending suggestion: the curated template becomes ACTIVE in D2 and the D3
-    suggestion flips validated (promotion.py, the third writer of the column contract)."""
+    suggestion flips validated (promotion.py, the third writer of the column contract).
+
+    A DRAFT suggestion is promoted with the reviewer's TICKED checks as its `required`
+    block (each must be one of the draft's candidates); a closed-list suggestion keeps
+    the known template's content unchanged."""
     with _repository_lock:
         review = _ensure_review_repository().get(review_id)
         if review is None or review.suggestion is None:
@@ -675,16 +716,40 @@ def validate_suggestion(review_id: int) -> dict:
                 status_code=409,
                 detail=f"suggestion already {review.suggestion.status}",
             )
-        templates_by_id = {
-            template["template_id"]: template
-            for template in load_templates(TEMPLATES_DIRECTORY)
-        }
-        curated_template = templates_by_id.get(review.suggestion.template_id or "")
-        if curated_template is None:
-            raise HTTPException(
-                status_code=409,
-                detail="curated template not found — v1 promotes known template ids only",
-            )
+        draft_template = review.suggestion.template
+        if draft_template is not None:
+            curated_template = draft_template
+            if request is not None and request.required is not None:
+                candidates = draft_template.get("validation", {}).get("required", [])
+                rejected_rules = [
+                    rule for rule in request.required if rule not in candidates
+                ]
+                if rejected_rules:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"not draft candidates: {rejected_rules}",
+                    )
+                curated_template = {
+                    **draft_template,
+                    "validation": {
+                        "comment": (
+                            "human-curated at review: required checks ticked "
+                            "among the draft's candidates"
+                        ),
+                        "required": request.required,
+                    },
+                }
+        else:
+            templates_by_id = {
+                template["template_id"]: template
+                for template in load_templates(TEMPLATES_DIRECTORY)
+            }
+            curated_template = templates_by_id.get(review.suggestion.template_id or "")
+            if curated_template is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail="curated template not found — v1 promotes known template ids only",
+                )
         promoted_template_id = promote_suggestion(
             review_id,
             curated_template,
