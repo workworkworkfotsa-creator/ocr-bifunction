@@ -29,6 +29,11 @@ discipline smoke-first.
 > réel Playwright vert). Restent : run corpus réel attestations (RapidOCR CPU → **attend le GO**, gate
 > encodé dans `draft_check.py` exit 2), D-c (SLM nommage/checks → machine libre), D-e (oracle : les 2
 > fraudes tirées — demander à l'utilisateur QUELS docs seulement à ce moment).
+> **Décision métier (2026-07-03) — DEUX régimes d'émetteur** : `attestation_formation` (organisme tiers,
+> SIRET en texte → check `issuer_registry` contre un registre curé) ≠ `titre_habilitation` (émis par
+> l'EMPLOYEUR = auto-déclaré → **jamais auto seul**, check `corroborated_by` : adossé à une attestation
+> d'organisme validée du même titulaire, reconcile strict). Détail → brief drafting § régimes d'émetteur ;
+> concepts → `docs/dictionnaire-metier.md` (**créé**, curé+confirmé, sans noms de parties).
 > **Valeur = lane ANTI-FRAUDE certifications** (2 fraudes vues à l'œil sur les attestations d'`inputs/`) :
 > checks `date_order`/`date_span`/`vocabulary`/`reconcile_ci` (strict, Ahmed≠Hamed). Ancres = MOTS structurels
 > (vocabulaire/labels/organisme lu en texte), logo-image rejeté. Oracle final (D-e) = les 2 fraudes tirées
