@@ -32,9 +32,12 @@ discipline smoke-first.
 > **Valeur = lane ANTI-FRAUDE certifications** (2 fraudes vues à l'œil sur les attestations d'`inputs/`) :
 > checks `date_order`/`date_span`/`vocabulary`/`reconcile_ci` (strict, Ahmed≠Hamed). Ancres = MOTS structurels
 > (vocabulaire/labels/organisme lu en texte), logo-image rejeté. Oracle final (D-e) = les 2 fraudes tirées
-> mécaniquement. **Pièges de reprise** : (1) ⚠️ machine partagée sous stress test VRP (cycles ~2 h) — les
-> attestations sont des PDF probablement SCANNÉS → même D-a/D-b (sans llama) coûtent du RapidOCR CPU :
-> **ne toucher au corpus qu'après le GO explicite de l'utilisateur** ; (2) D1 ne retient NI chemin NI texte
+> mécaniquement. **Pièges de reprise** : (1) ⚠️ machine partagée sous stress test VRP (cycles ~2 h) —
+> **sondé 2026-07-03 (PyMuPDF, sans OCR)** : 4 des 5 certificats d'`inputs/` ont une COUCHE TEXTE native
+> (dont la paire FICTIS = même layout, émetteur SIRET/RCS en texte → cluster D-a/D-b runnable SANS OCR) ;
+> seul le scan H0B0 (0 char, image pleine page) exige RapidOCR → **le GO n'est requis que pour lui** ;
+> nuance émetteur : titres d'habilitation = émis par l'EMPLOYEUR (variable → champ, pas ancre), et
+> l'employeur de MW OPTIC n'existe QUE dans l'image d'en-tête (invisible sans OCR) ; (2) D1 ne retient NI chemin NI texte
 > des unknowns (`source` = nom de fichier seul) → D-a prend les docs en CLI (`draft_check.py <docs…>`), le
 > câblage « re-lire depuis D1 » (colonne path/texte vs re-scan) = décision séparée à trancher ; (3) SEUL
 > l'utilisateur sait QUELS 2 docs sont frauduleux — le demander au moment de l'oracle D-e, pas avant (ne pas
