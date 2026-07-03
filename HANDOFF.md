@@ -26,9 +26,14 @@ discipline smoke-first.
 > **l'humain valide ET COCHE les champs/checks requis** (compute-all/config-requires) → promotion D2.
 > **Valeur = lane ANTI-FRAUDE certifications** (2 fraudes vues à l'œil sur les attestations d'`inputs/`) :
 > checks `date_order`/`date_span`/`vocabulary`/`reconcile_ci` (strict, Ahmed≠Hamed). Ancres = MOTS structurels
-> (vocabulaire/labels/organisme lu en texte), logo-image rejeté. Étapes D-a (clustering) et D-b (invariance)
-> = **sans llama, démarrables pendant le VRP** ; D-c (SLM) attend la machine libre. Oracle final = les 2
-> fraudes tirées mécaniquement. Reste aussi : #4 placement RAG contrat (indépendant).
+> (vocabulaire/labels/organisme lu en texte), logo-image rejeté. Oracle final (D-e) = les 2 fraudes tirées
+> mécaniquement. **Pièges de reprise** : (1) ⚠️ machine partagée sous stress test VRP (cycles ~2 h) — les
+> attestations sont des PDF probablement SCANNÉS → même D-a/D-b (sans llama) coûtent du RapidOCR CPU :
+> **ne toucher au corpus qu'après le GO explicite de l'utilisateur** ; (2) D1 ne retient NI chemin NI texte
+> des unknowns (`source` = nom de fichier seul) → D-a prend les docs en CLI (`draft_check.py <docs…>`), le
+> câblage « re-lire depuis D1 » (colonne path/texte vs re-scan) = décision séparée à trancher ; (3) SEUL
+> l'utilisateur sait QUELS 2 docs sont frauduleux — le demander au moment de l'oracle D-e, pas avant (ne pas
+> biaiser le drafting). Reste aussi : #4 placement RAG contrat (indépendant).
 >
 > Le mix local (uvicorn + watchdog + navigateur) est LIVRÉ + prouvé (2026-07-02) ; les 3 domaines D1/D2/D3
 > sont proxifiés + consolidés end-to-end ; la lane SLM de suggestion (liste fermée) est live dans le batch.
