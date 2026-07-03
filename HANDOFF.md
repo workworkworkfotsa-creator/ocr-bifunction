@@ -10,7 +10,7 @@
 > repo ni l'historique (audité 2026-06-26). **Ce repo part sur GitHub** → ne jamais `git add -f` un doc,
 > ne jamais coller de valeur réelle (nom, n°doc, adresse) dans le code, les docs ou un message de commit.
 
-## État au 2026-06-30
+## État au 2026-07-03
 
 **Porte d'entrée CI prouvée bout-en-bout + pipeline câblé + extraction factures multi-layout + lecture
 couverte (RapidOCR + Docling fallback) ; LightOnOCR-2 validé en moteur d'escalade ; maquette API avec
@@ -24,6 +24,11 @@ discipline smoke-first.
 > 2-3 docs même layout (TF-IDF, déterministe) → DRAFT (invariance cross-docs = anchors, PII-safe par
 > construction ; SLM contraint nomme les champs + propose les checks) → re-test sur tout le cluster →
 > **l'humain valide ET COCHE les champs/checks requis** (compute-all/config-requires) → promotion D2.
+> **Avancement 2026-07-03 : moitié déterministe D-a+D-b LIVRÉE + prouvée sur corpus synthétique**
+> (cf. Fait 2026-07-03 ; `drafting.py` + `draft_check.py` + `draft_smoke.py` 11/11 PASS). Restent : run
+> corpus réel attestations (RapidOCR CPU → **attend le GO**, gate encodé dans `draft_check.py` exit 2),
+> D-c (SLM nommage/checks → machine libre), D-d (schéma D3 `suggested_template_json` + revue v2 cochage),
+> D-e (oracle : les 2 fraudes tirées).
 > **Valeur = lane ANTI-FRAUDE certifications** (2 fraudes vues à l'œil sur les attestations d'`inputs/`) :
 > checks `date_order`/`date_span`/`vocabulary`/`reconcile_ci` (strict, Ahmed≠Hamed). Ancres = MOTS structurels
 > (vocabulaire/labels/organisme lu en texte), logo-image rejeté. Oracle final (D-e) = les 2 fraudes tirées
@@ -141,6 +146,31 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   (202/job/404/400/idempotence via `TestClient`). **Smoke vraies images (validated/needs_review) PAS encore
   fait** → DoD non clos (cf. NEXT). Friction shell notée : `uv`/`git` hors PATH Git Bash → route `cmd.exe`
   chemin absolu (`MSYS_NO_PATHCONV=1`) ; PowerShell bloqué par règle `deny` (pas dans `settings.json` global).
+
+## Fait (2026-07-03)
+- **Lane DRAFTING, moitié déterministe (D-a + D-b) LIVRÉE + prouvée (synthétique born-digital, zéro OCR,
+  zéro SLM — contrainte VRP respectée).** `ocr_bifunction/drafting.py` : **D-a `cluster_unknown_documents`**
+  (cosine TF-IDF plein-doc — RÉUTILISE `TfidfRetriever` tel quel, 1 doc = 1 chunk ; single-link glouton
+  déterministe, seuil défaut 0.5) + **D-b `draft_from_cluster`** = invariance cross-docs (lignes du 1er doc
+  retrouvées dans TOUS les autres via le MÊME prédicat fuzzy que le match — imports assumés des privates de
+  `template.py`, dérive de sémantique interdite par construction) → anchors structurels (filtre PII mécanique
+  + garde anti-ancre-numérique : une date partagée n'est pas de la PII mais une ancre fragile) ; zones
+  variables sous/à-droite d'un label invariant → champs candidats (noms = placeholders déterministes
+  slugifiés, le SLM nommera en D-c) ; **gate de re-test généralisé** : match sur CHAQUE doc du cluster +
+  extraction non-vide PARTOUT + valeurs NON constantes (une constante = structure, pas un champ) sinon champ
+  droppé / draft rejeté ; validation du draft = presence par champ (candidats à COCHER, doctrine
+  compute-all/config-requires). Runner CLI **`draft_check.py <docs…>`** (docs en CLI = le piège « D1 ne
+  retient ni chemin ni texte » contourné) avec **gate OCR opt-in** : une image sans `--ocr` → refus fort
+  exit 2 (« re-run --ocr APRÈS GO explicite ») — le frein VRP encodé mécaniquement. **Prouvé** :
+  `draft_smoke.py` versionné (corpus synthétique PyMuPDF PII-free en tempdir : 3 attestations même layout +
+  2 certificats + 1 courrier) → **11/11 PASS** : clustering exact (intra-layout 0.69-0.80, cross ≤0.07 →
+  seuil 0.5 large), anchors = vocabulaire structurel seul (aucun nom/date dedans), 4 champs extraits à
+  valeurs variantes, contrôle négatif (draft attestation ≠ doc certificat), granularité blocks vérifiée
+  (label/valeur séparés de 28 pt, 11 lignes/doc) ; CLI vert sur le même corpus ; gate OCR prouvé (PNG sans
+  `--ocr` → exit 2, zéro OCR lancé). **Limite v1 notée** (docstring `drafting.py`) : invariance à granularité
+  TextLine — un label collé à sa valeur dans UNE ligne (« Delivree le : 12/03/2024 ») ne donne ni anchor ni
+  champ ; famille prefix-pattern à ajouter SI un cluster réel l'exige. Aucun module existant touché (zéro
+  risque de régression). Oracle = runs réels, pas de pytest.
 
 ## Fait (2026-07-02)
 - **MIX local, étapes B+C — les 2 pages HTML (upload + revue) livrées + prouvées dans un VRAI navigateur
