@@ -189,6 +189,22 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   chemin absolu (`MSYS_NO_PATHCONV=1`) ; PowerShell bloqué par règle `deny` (pas dans `settings.json` global).
 
 ## Fait (2026-07-03)
+- **Verdict `reject` CÂBLÉ à travers le flux (lane structurée) — prouvé bout-en-bout. `ab397d6`.**
+  Suite du classifieur : `reject` voyage maintenant de bout en bout. **`STATUS_REJECTED`** rejoint D1
+  comme état TERMINAL (distinct de `failed` = crash de traitement, pas un verdict de validité). Mapping
+  par couche : (1) `router._structured_result` appelle `evaluate_validation` → `RoutedDocument.verdict` ∈
+  {auto,human,reject} ; `route_document` gagne `context`/`today` (nourrissent les checks anti-fraude ;
+  contexte absent → review, jamais un faux reject). (2) `orchestrator` : `DocumentRecord.outcome` ∈
+  {auto,review,reject} + `BatchResult.rejected` + threading `context`/`today`. (3) sink `batch_check` :
+  reject → `STATUS_REJECTED`/verdict `reject`. (4) API : `ValidateResponse`/`JobResponse` + `rejected`,
+  single-doc structuré mappe via `_{D1,WIRE}_STATUS_FOR_VERDICT`, `GET /v1/jobs` traite rejected comme
+  terminal. **Prouvé** : `verdict_flow_check.py` **7/7** (clean→auto/done ; validité rallongée + code
+  inventé → reject via `route_document` ET `process_batch` → `BatchResult.rejected` → bridge sink
+  `STATUS_REJECTED`) ; `review_check` vert. **RESTE (à trancher)** : **CI/MRZ → reject** (recto≠verso).
+  `reconcile.py` renvoie encore auto/human ; un mismatch de clef doit → reject MAIS le MRZ vient d'OCR
+  (un caractère mal lu = faux mismatch → risque de rejeter une vraie carte). Règle proposée : reject
+  SEULEMENT si les checksums MRZ PASSENT (read fiable) ET une clef recto/mrz diverge ; checksum KO →
+  review (read non fiable). À confirmer.
 - **Verdict à 3 ÉTATS (`auto`/`review`/`reject`) — le classifieur posé + PROUVÉ ; concept métier
   confirmé + persisté. `b50ae05`.** Affinage utilisateur : un document PROUVÉ invalide n'est pas « à
   revoir », il est **REJETÉ** (rejet AUTO terminal, pas d'humain — décision Q1). La nuance = **« je ne
