@@ -14,10 +14,17 @@ from __future__ import annotations
 import difflib
 import json
 import re
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
 from ocr_bifunction.reader import TextLine
+
+# The ONE strict identity key (fold accents + uppercase + drop non-alphanumeric). Reused
+# on purpose so the anti-fraud name match stays IDENTICAL to the CI reconcile: strict, no
+# fuzzy tolerance — "Ahmed" and "Hamed" must not collide (the sibling-fraud core), accent
+# folding is the only allowance (cf. memory reconcile-name-match-strict).
+from ocr_bifunction.reconcile import _normalize as _strict_identity_key
 
 # Horizontal tolerance (pixels) for "same column": a value counts as below a label
 # when their left edges line up within this band. Tuned on ~1100px-wide CI scans.
@@ -323,11 +330,113 @@ def _check_vocabulary(fields: dict[str, str | None], rule: dict) -> list[str]:
     return []
 
 
+@dataclass
+class AttestationReference:
+    """A validated `attestation_formation` on file (D1), as `corroborated_by` needs to see
+    it: the holder's name and the training's validity window (ISO dates)."""
+
+    holder_name: str
+    issue_date: str
+    expiry_date: str
+
+
+@dataclass
+class ValidationContext:
+    """External state the context-dependent anti-fraud checks read. Every field is optional;
+    a contextual check declared WITHOUT the state it needs FAILS LOUD (-> needs_review),
+    never a silent pass — an absent registry cannot prove an issuer legitimate.
+
+    - `ci_reference_name`: the holder name on the technician's CI record (reconcile_ci).
+    - `issuer_registry`: the recognized organisms' identifiers, SIRET preferred over a
+      copyable name (issuer_registry); compared after strict normalization.
+    - `validated_attestations`: the validated attestations on file (corroborated_by)."""
+
+    ci_reference_name: str | None = None
+    issuer_registry: frozenset[str] | None = None
+    validated_attestations: list[AttestationReference] | None = None
+
+
+def _check_reconcile_ci(
+    fields: dict[str, str | None], rule: dict, context: ValidationContext | None
+) -> list[str]:
+    """Context check: the holder name must STRICTLY match the CI record on file (accent
+    folding only — Ahmed != Hamed). Catches the sibling fraud: a close but different name."""
+    field_name: str = rule["field"]
+    if context is None or context.ci_reference_name is None:
+        return [
+            f"reconcile_ci ({field_name}): no CI reference on file to compare against"
+        ]
+    value = fields.get(field_name)
+    if not value:
+        return [f"reconcile_ci ({field_name}): holder name missing/unreadable"]
+    if _strict_identity_key(value) != _strict_identity_key(context.ci_reference_name):
+        return [
+            f"reconcile_ci check failed ({field_name}): holder {value!r} does not "
+            f"match the CI record {context.ci_reference_name!r} (strict)"
+        ]
+    return []
+
+
+def _check_issuer_registry(
+    fields: dict[str, str | None], rule: dict, context: ValidationContext | None
+) -> list[str]:
+    """Context check: the issuer identifier read must belong to the curated registry of
+    recognized organisms (strict normalization). A home-made certificate has no valid
+    registered issuer — this is the `attestation_formation` regime's strong proof."""
+    field_name: str = rule["field"]
+    if context is None or context.issuer_registry is None:
+        return [f"issuer_registry ({field_name}): no organism registry available"]
+    value = fields.get(field_name)
+    if not value:
+        return [f"issuer_registry ({field_name}): issuer missing/unreadable"]
+    recognized = {_strict_identity_key(entry) for entry in context.issuer_registry}
+    if _strict_identity_key(value) not in recognized:
+        return [
+            f"issuer_registry check failed ({field_name}): issuer {value!r} is not in "
+            "the recognized-organism registry"
+        ]
+    return []
+
+
+def _check_corroborated_by(
+    fields: dict[str, str | None], rule: dict, context: ValidationContext | None
+) -> list[str]:
+    """Context check: a self-declared `titre_habilitation` is AUTO only if a validated
+    `attestation_formation` on file corroborates it — same holder (strict) and coherent
+    dates (the titre issued WITHIN the training's validity window). This is "ma mère peut
+    me faire une certif" encoded: the employer's word alone never suffices."""
+    holder_field: str = rule["holder_field"]
+    issue_field: str = rule["issue_field"]
+    if context is None or context.validated_attestations is None:
+        return [f"corroborated_by ({holder_field}): no validated attestations on file"]
+    holder = fields.get(holder_field)
+    titre_issue = _parse_iso_date(fields.get(issue_field))
+    if not holder:
+        return [f"corroborated_by ({holder_field}): holder name missing/unreadable"]
+    if titre_issue is None:
+        return [f"corroborated_by ({issue_field}): titre issue date missing/unreadable"]
+    holder_key = _strict_identity_key(holder)
+    for attestation in context.validated_attestations:
+        if _strict_identity_key(attestation.holder_name) != holder_key:
+            continue
+        attestation_issue = _parse_iso_date(attestation.issue_date)
+        attestation_expiry = _parse_iso_date(attestation.expiry_date)
+        if attestation_issue is None or attestation_expiry is None:
+            continue
+        if attestation_issue <= titre_issue <= attestation_expiry:
+            return []  # a coherent, validated attestation corroborates the titre
+    return [
+        f"corroborated_by check failed ({holder_field}): no validated attestation "
+        f"corroborates the self-declared titre for {holder!r} at {titre_issue.isoformat()}"
+    ]
+
+
 def validate_fields(
     fields: dict[str, str | None],
     validation: dict,
     *,
     today: date | None = None,
+    context: ValidationContext | None = None,
 ) -> list[str]:
     """Evaluate a template's `validation` block against extracted fields -> failure reasons.
 
@@ -335,19 +444,19 @@ def validate_fields(
     WITH the template (the Backoffice curates them), so the SAME evaluator serves every
     document type. All checks are COMPUTED; the template's `required` block says which are
     REQUIRED (compute-all/config-requires). Check kinds, all declared per template:
-      - present:    the named field must be non-empty (presence, value-agnostic).
-      - sum:        `terms` must sum to `equals` within `tolerance`.
-      - date_order: `earlier` before `later` (+ opt-in `require_future` not-expired).
-      - date_span:  `end` == `start` + `years` calendar years, within `tolerance_days`.
-      - vocabulary: every token of `field` belongs to the closed `allowed` list.
+      - present:        the named field must be non-empty (presence, value-agnostic).
+      - sum:            `terms` must sum to `equals` within `tolerance`.
+      - date_order:     `earlier` before `later` (+ opt-in `require_future` not-expired).
+      - date_span:      `end` == `start` + `years` calendar years, within `tolerance_days`.
+      - vocabulary:     every token of `field` belongs to the closed `allowed` list.
+      - reconcile_ci:   holder `field` strictly matches the CI record (context).
+      - issuer_registry:issuer `field` is in the recognized-organism registry (context).
+      - corroborated_by:a self-declared titre is backed by a validated attestation (context).
     A layout with no cross-check to make simply declares fewer rules — the absence of a
     check is the template's honest statement, not a gap. `today` overrides the clock the
-    freshness side of date_order compares against (injected for reproducible tests).
-
-    The anti-fraud checks needing EXTERNAL context (reconcile_ci vs the CI record,
-    issuer_registry vs the curated organism registry, corroborated_by vs D1's validated
-    attestations) are NOT here: they cannot be pure functions of (fields, rule) and get a
-    context-carrying evaluator of their own.
+    freshness side of date_order compares against; `context` carries the external state the
+    last three checks read (both injected for reproducible tests). A context check declared
+    without its context FAILS LOUD (-> needs_review), never a silent pass.
     """
     reasons: list[str] = []
     for rule in validation.get("required", []):
@@ -364,6 +473,12 @@ def validate_fields(
             reasons.extend(_check_date_span(fields, rule))
         elif check == "vocabulary":
             reasons.extend(_check_vocabulary(fields, rule))
+        elif check == "reconcile_ci":
+            reasons.extend(_check_reconcile_ci(fields, rule, context))
+        elif check == "issuer_registry":
+            reasons.extend(_check_issuer_registry(fields, rule, context))
+        elif check == "corroborated_by":
+            reasons.extend(_check_corroborated_by(fields, rule, context))
         else:
             reasons.append(f"unknown validation check: {check!r}")
     return reasons
