@@ -19,12 +19,19 @@ config-driven (value-check HT+TVA=TTC).** POC solo sur `master`, pas de remote. 
 — oracle = runs réels sur vrais docs + smokes structurels/logiques + KAT (composite MRZ), conforme à la
 discipline smoke-first.
 
-> ▶ **NEXT (reprise) — les 3 domaines D1/D2/D3 sont proxifiés + CONSOLIDÉS end-to-end (2026-07-02).** La chaîne
-> complète (intake batch → D1 → revue D3 → suggestion → promotion D2 → re-match déterministe → job D1 fermé)
-> tourne en UNE démo (`consolidation_check.py`), templates lus depuis D2 ; **la lane SLM est câblée EN LIVE
-> dans le batch** (`batch_check --suggest` : no-match → SLM → suggestion vérifiée stagée D3 par le flux).
-> Reste du plan : **#4 placement RAG contrat** (seul item ouvert) ; + suite optionnelle : fermer la boucle
-> côté API (revue/promotion exposées).
+> ▶ **NEXT (reprise) — lane de DRAFTING de templates = le chaînon manquant (acté 2026-07-03).** Spec complète
+> → `docs/briefs/BRIEF-template-drafting.md` (gitignoré). En bref : les UNKNOWN s'accumulent → cluster de
+> 2-3 docs même layout (TF-IDF, déterministe) → DRAFT (invariance cross-docs = anchors, PII-safe par
+> construction ; SLM contraint nomme les champs + propose les checks) → re-test sur tout le cluster →
+> **l'humain valide ET COCHE les champs/checks requis** (compute-all/config-requires) → promotion D2.
+> **Valeur = lane ANTI-FRAUDE certifications** (2 fraudes vues à l'œil sur les attestations d'`inputs/`) :
+> checks `date_order`/`date_span`/`vocabulary`/`reconcile_ci` (strict, Ahmed≠Hamed). Ancres = MOTS structurels
+> (vocabulaire/labels/organisme lu en texte), logo-image rejeté. Étapes D-a (clustering) et D-b (invariance)
+> = **sans llama, démarrables pendant le VRP** ; D-c (SLM) attend la machine libre. Oracle final = les 2
+> fraudes tirées mécaniquement. Reste aussi : #4 placement RAG contrat (indépendant).
+>
+> Le mix local (uvicorn + watchdog + navigateur) est LIVRÉ + prouvé (2026-07-02) ; les 3 domaines D1/D2/D3
+> sont proxifiés + consolidés end-to-end ; la lane SLM de suggestion (liste fermée) est live dans le batch.
 >
 > **PLAN ACTÉ (ordre convenu, même lecture — reprendre ICI en session fraîche) :**
 > 1. ✅ **FAIT (2026-07-02) — `_jobs` dict de l'API migré sur `repository`.** D1 unifié : API + batch écrivent
