@@ -146,7 +146,9 @@ def _record_from_ci(result: CiSubmissionResult, item: BatchItem) -> DocumentReco
         return DocumentRecord(
             source=source,
             lane="ci",
-            outcome="auto" if record.verdict == "auto" else "review",
+            # A recto/verso identity mismatch is a reject (proven invalid); auto passes; an
+            # unreliable read (failed checksums, nothing to compare) is human review.
+            outcome=_OUTCOME_FROM_VERDICT.get(record.verdict or "", "review"),
             detail="complete",
             category=item.document_type,
             template_id=record.template_id,

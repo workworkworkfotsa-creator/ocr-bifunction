@@ -399,6 +399,30 @@ def _handle_ci_submission(
         wire = _map_complete_auto(result)
         wire.job_id = job_id
         return wire
+    if result.status == "complete" and result.record.verdict == "reject":
+        # A recto/verso identity mismatch: proven invalid, auto-terminal. No escalation —
+        # a heavier OCR pass cannot rescue two sides that name different people.
+        record = result.record
+        job_id = _save_job(
+            Job(
+                source=source,
+                category_lane="ci",
+                status=STATUS_REJECTED,
+                execution_lane="fast",
+                verdict="reject",
+                category=document_type,
+                template_id=record.template_id,
+                record_fields=record.fields,
+                reasons=record.reasons,
+                request_id=request_id,
+            )
+        )
+        return ValidateResponse(
+            status="rejected",
+            verdict="reject",
+            reasons=record.reasons,
+            job_id=job_id,
+        )
     if result.status == "complete":  # doubtful -> spool, the watchdog escalates
         job_id = _spool_and_enqueue(
             files, document_type, result.record.reasons, request_id

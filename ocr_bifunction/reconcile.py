@@ -28,7 +28,7 @@ KEY_MAP = {
 
 @dataclass
 class ReconcileResult:
-    verdict: str  # "auto" | "human"
+    verdict: str  # "auto" | "human" | "reject"
     key_matches: dict[str, bool]  # recto field -> recto value == mrz value
     failed_checks: list[str]  # MRZ check digits that did not pass
     reasons: list[str] = field(default_factory=list)
@@ -69,11 +69,23 @@ def reconcile(recto_fields: dict[str, str | None], mrz: MrzFields) -> ReconcileR
     if failed_checks:
         reasons.append(f"MRZ check digits failed: {failed_checks}")
 
-    all_keys_agree = bool(key_matches) and all(key_matches.values())
+    has_mismatch = any(not matched for matched in key_matches.values())
     if not key_matches:
         reasons.append("no shared key could be compared")
 
-    verdict = "auto" if (all_keys_agree and not failed_checks) else "human"
+    # Three-state verdict (2026-07-03):
+    #   reject — a shared key DIVERGES: recto and MRZ (two independent reads) name different
+    #     identities. That is proven invalid ("recto of A + verso of B"), auto-terminal.
+    #   human — the MRZ integrity is off (failed check digits) or nothing could be compared:
+    #     an UNRELIABLE read, not a proven fraud (a single OCR-misread digit fails a checksum)
+    #     -> a person looks, it is never auto-rejected on OCR noise alone.
+    #   auto  — comparable keys, all agree, and every check digit passes.
+    if has_mismatch:
+        verdict = "reject"
+    elif failed_checks or not key_matches:
+        verdict = "human"
+    else:
+        verdict = "auto"
     return ReconcileResult(
         verdict=verdict,
         key_matches=key_matches,
