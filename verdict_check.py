@@ -113,6 +113,21 @@ def main() -> None:
         == "review",
     )
 
+    print("\n=== missing/undetermined input -> REVIEW, never REJECT ===")
+    _check(
+        "date_span with an unreadable date -> review (can't tell, not a forgery)",
+        _verdict({"date_of_issue": "2024-03-12"}, [span_rule]) == "review",
+    )
+    _check(
+        "reconcile_ci with NO CI context -> review (an unwired context must not reject)",
+        _verdict({"name_of_holder": "FICTIF Ahmed"}, [reconcile_rule], None)
+        == "review",
+    )
+    _check(
+        "vocabulary with a missing field -> review (unread, not an invented code)",
+        _verdict({}, [vocabulary_rule]) == "review",
+    )
+
     print("\n=== reject BEATS review when both fire ===")
     both_context = ValidationContext(
         issuer_registry=frozenset({"12345678900012"}),

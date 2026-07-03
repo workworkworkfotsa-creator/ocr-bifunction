@@ -200,11 +200,29 @@ def _parse_amount(value: str | None) -> float | None:
         return None
 
 
-def _check_sum(fields: dict[str, str | None], rule: dict) -> list[str]:
+# A single validation failure, tagged by what it means for ROUTING. The kind depends on
+# WHY the check failed, not on the check type: REJECT = positive proof the document is
+# invalid (an incoherent value) -> auto-reject; REVIEW = the check could not conclude (a
+# missing/unreadable input, an absent context) or is a soft signal (an unknown issuer, a
+# pending corroboration) -> a human. "Input missing -> review, value proven wrong ->
+# reject" is the guard that keeps an unread date or an unwired context from rejecting a
+# legitimate document.
+REVIEW = "review"
+REJECT = "reject"
+
+
+@dataclass(frozen=True)
+class CheckFailure:
+    reason: str
+    kind: str  # REVIEW | REJECT
+
+
+def _check_sum(fields: dict[str, str | None], rule: dict) -> list[CheckFailure]:
     """Value check: the `terms` amounts must sum to the `equals` amount within tolerance.
 
-    e.g. montant_ht + montant_tva == montant_ttc. A missing/unparseable input fails loud
-    (the check cannot be proven, so it is NOT a silent pass).
+    e.g. montant_ht + montant_tva == montant_ttc. Always REVIEW on failure: an invoice with
+    an off sum is more often an OCR misread of a digit than fraud, so a human looks — it is
+    not auto-rejected like a tampered certificate.
     """
     terms: list[str] = rule["terms"]
     equals_field: str = rule["equals"]
@@ -216,7 +234,12 @@ def _check_sum(fields: dict[str, str | None], rule: dict) -> list[str]:
     if total is None:
         missing.append(equals_field)
     if missing:
-        return [f"sum check ({equals_field}): missing/unreadable {', '.join(missing)}"]
+        return [
+            CheckFailure(
+                f"sum check ({equals_field}): missing/unreadable {', '.join(missing)}",
+                REVIEW,
+            )
+        ]
 
     # Compare in integer cents: amounts are 2-decimal currency, and float subtraction
     # leaves noise (100.00 + 33.33 - 133.34 != exactly -0.01) that would tip a knife-edge
@@ -225,8 +248,11 @@ def _check_sum(fields: dict[str, str | None], rule: dict) -> list[str]:
     difference_cents = abs(round(summed * 100) - round(total * 100))
     if difference_cents > round(tolerance * 100):
         return [
-            f"sum check failed: {' + '.join(terms)} = {summed:.2f} "
-            f"!= {equals_field} = {total:.2f} (tolerance {tolerance})"
+            CheckFailure(
+                f"sum check failed: {' + '.join(terms)} = {summed:.2f} "
+                f"!= {equals_field} = {total:.2f} (tolerance {tolerance})",
+                REVIEW,
+            )
         ]
     return []
 
@@ -257,38 +283,49 @@ def _missing_dates(named_dates: dict[str, date | None]) -> list[str]:
 
 def _check_date_order(
     fields: dict[str, str | None], rule: dict, today: date | None
-) -> list[str]:
+) -> list[CheckFailure]:
     """Value check: `earlier` must fall strictly before `later`, and (opt-in
-    `require_future`) `later` must not already be in the past. Catches a swapped or
-    incoherent validity window, and an expired certificate presented as current."""
+    `require_future`) `later` must not already be in the past. A swapped/incoherent window
+    or an expired certificate is proven-invalid (REJECT); an unreadable date is REVIEW."""
     earlier_name: str = rule["earlier"]
     later_name: str = rule["later"]
     earlier = _parse_iso_date(fields.get(earlier_name))
     later = _parse_iso_date(fields.get(later_name))
     missing = _missing_dates({earlier_name: earlier, later_name: later})
     if missing:
-        return [f"date_order check: missing/unreadable {', '.join(missing)}"]
+        return [
+            CheckFailure(
+                f"date_order check: missing/unreadable {', '.join(missing)}", REVIEW
+            )
+        ]
     assert earlier is not None and later is not None
-    reasons: list[str] = []
+    failures: list[CheckFailure] = []
     if not earlier < later:
-        reasons.append(
-            f"date_order check failed: {earlier_name} {earlier.isoformat()} is not "
-            f"before {later_name} {later.isoformat()}"
+        failures.append(
+            CheckFailure(
+                f"date_order check failed: {earlier_name} {earlier.isoformat()} is not "
+                f"before {later_name} {later.isoformat()}",
+                REJECT,
+            )
         )
     if rule.get("require_future"):
         reference_date = today or date.today()
         if later < reference_date:
-            reasons.append(
-                f"date_order check failed: {later_name} {later.isoformat()} is in the "
-                f"past (expired as of {reference_date.isoformat()})"
+            failures.append(
+                CheckFailure(
+                    f"date_order check failed: {later_name} {later.isoformat()} is in "
+                    f"the past (expired as of {reference_date.isoformat()})",
+                    REJECT,
+                )
             )
-    return reasons
+    return failures
 
 
-def _check_date_span(fields: dict[str, str | None], rule: dict) -> list[str]:
+def _check_date_span(fields: dict[str, str | None], rule: dict) -> list[CheckFailure]:
     """Value check: `end` must equal `start` plus `years` calendar years, within
     `tolerance_days`. A regulatory validity has a fixed duration (electrical habilitation
-    ~3 years), so a date lengthened by pen breaks the equation."""
+    ~3 years), so a date lengthened by pen breaks the equation (REJECT); an unreadable date
+    is REVIEW."""
     start_name: str = rule["start"]
     end_name: str = rule["end"]
     years: int = rule["years"]
@@ -297,35 +334,47 @@ def _check_date_span(fields: dict[str, str | None], rule: dict) -> list[str]:
     end = _parse_iso_date(fields.get(end_name))
     missing = _missing_dates({start_name: start, end_name: end})
     if missing:
-        return [f"date_span check: missing/unreadable {', '.join(missing)}"]
+        return [
+            CheckFailure(
+                f"date_span check: missing/unreadable {', '.join(missing)}", REVIEW
+            )
+        ]
     assert start is not None and end is not None
     expected_end = _add_years(start, years)
     difference_days = abs((end - expected_end).days)
     if difference_days > tolerance_days:
         return [
-            f"date_span check failed: {end_name} {end.isoformat()} != {start_name} + "
-            f"{years}y ({expected_end.isoformat()}), off by {difference_days} days "
-            f"(tolerance {tolerance_days})"
+            CheckFailure(
+                f"date_span check failed: {end_name} {end.isoformat()} != {start_name} "
+                f"+ {years}y ({expected_end.isoformat()}), off by {difference_days} days "
+                f"(tolerance {tolerance_days})",
+                REJECT,
+            )
         ]
     return []
 
 
-def _check_vocabulary(fields: dict[str, str | None], rule: dict) -> list[str]:
+def _check_vocabulary(fields: dict[str, str | None], rule: dict) -> list[CheckFailure]:
     """Value check: every token of `field` must belong to the closed `allowed` list
-    (case-insensitive). Codes cluster several per field ("H0B0 B1V"), so the value is
-    split on whitespace/separators and each token checked — an invented code fails."""
+    (case-insensitive). An invented code is proven-invalid (REJECT); a missing/unreadable
+    field is REVIEW."""
     field_name: str = rule["field"]
     allowed: list[str] = rule["allowed"]
     value = fields.get(field_name)
     if not value:
-        return [f"vocabulary check ({field_name}): missing/unreadable"]
+        return [
+            CheckFailure(f"vocabulary check ({field_name}): missing/unreadable", REVIEW)
+        ]
     allowed_folded = {entry.strip().casefold() for entry in allowed}
     tokens = [token for token in re.split(r"[\s,;/]+", value) if token]
     unknown = [token for token in tokens if token.casefold() not in allowed_folded]
     if unknown:
         return [
-            f"vocabulary check failed ({field_name}): "
-            f"{', '.join(unknown)} not in the allowed list"
+            CheckFailure(
+                f"vocabulary check failed ({field_name}): "
+                f"{', '.join(unknown)} not in the allowed list",
+                REJECT,
+            )
         ]
     return []
 
@@ -358,63 +407,105 @@ class ValidationContext:
 
 def _check_reconcile_ci(
     fields: dict[str, str | None], rule: dict, context: ValidationContext | None
-) -> list[str]:
+) -> list[CheckFailure]:
     """Context check: the holder name must STRICTLY match the CI record on file (accent
-    folding only — Ahmed != Hamed). Catches the sibling fraud: a close but different name."""
+    folding only — Ahmed != Hamed). A genuine mismatch is the sibling fraud -> REJECT; an
+    absent CI reference or unreadable holder is "can't tell" -> REVIEW (a proven mismatch
+    rejects, but a missing reference must never reject a legitimate document)."""
     field_name: str = rule["field"]
     if context is None or context.ci_reference_name is None:
         return [
-            f"reconcile_ci ({field_name}): no CI reference on file to compare against"
+            CheckFailure(
+                f"reconcile_ci ({field_name}): no CI reference on file to compare "
+                "against",
+                REVIEW,
+            )
         ]
     value = fields.get(field_name)
     if not value:
-        return [f"reconcile_ci ({field_name}): holder name missing/unreadable"]
+        return [
+            CheckFailure(
+                f"reconcile_ci ({field_name}): holder name missing/unreadable", REVIEW
+            )
+        ]
     if _strict_identity_key(value) != _strict_identity_key(context.ci_reference_name):
         return [
-            f"reconcile_ci check failed ({field_name}): holder {value!r} does not "
-            f"match the CI record {context.ci_reference_name!r} (strict)"
+            CheckFailure(
+                f"reconcile_ci check failed ({field_name}): holder {value!r} does not "
+                f"match the CI record {context.ci_reference_name!r} (strict)",
+                REJECT,
+            )
         ]
     return []
 
 
 def _check_issuer_registry(
     fields: dict[str, str | None], rule: dict, context: ValidationContext | None
-) -> list[str]:
+) -> list[CheckFailure]:
     """Context check: the issuer identifier read must belong to the curated registry of
-    recognized organisms (strict normalization). A home-made certificate has no valid
-    registered issuer — this is the `attestation_formation` regime's strong proof."""
+    recognized organisms (strict normalization). Always REVIEW on failure: an unknown
+    issuer may be a NEW legitimate organism a human adds to the registry, not a proven
+    forgery — so it routes to a human, it is not auto-rejected."""
     field_name: str = rule["field"]
     if context is None or context.issuer_registry is None:
-        return [f"issuer_registry ({field_name}): no organism registry available"]
+        return [
+            CheckFailure(
+                f"issuer_registry ({field_name}): no organism registry available",
+                REVIEW,
+            )
+        ]
     value = fields.get(field_name)
     if not value:
-        return [f"issuer_registry ({field_name}): issuer missing/unreadable"]
+        return [
+            CheckFailure(
+                f"issuer_registry ({field_name}): issuer missing/unreadable", REVIEW
+            )
+        ]
     recognized = {_strict_identity_key(entry) for entry in context.issuer_registry}
     if _strict_identity_key(value) not in recognized:
         return [
-            f"issuer_registry check failed ({field_name}): issuer {value!r} is not in "
-            "the recognized-organism registry"
+            CheckFailure(
+                f"issuer_registry check failed ({field_name}): issuer {value!r} is not "
+                "in the recognized-organism registry",
+                REVIEW,
+            )
         ]
     return []
 
 
 def _check_corroborated_by(
     fields: dict[str, str | None], rule: dict, context: ValidationContext | None
-) -> list[str]:
+) -> list[CheckFailure]:
     """Context check: a self-declared `titre_habilitation` is AUTO only if a validated
     `attestation_formation` on file corroborates it — same holder (strict) and coherent
-    dates (the titre issued WITHIN the training's validity window). This is "ma mère peut
-    me faire une certif" encoded: the employer's word alone never suffices."""
+    dates (the titre issued WITHIN the training's validity window). Always REVIEW on
+    failure: an uncorroborated titre is PENDING an attestation, not proven false — "ma mère
+    peut me faire une certif" means it never auto-validates, but a human decides."""
     holder_field: str = rule["holder_field"]
     issue_field: str = rule["issue_field"]
     if context is None or context.validated_attestations is None:
-        return [f"corroborated_by ({holder_field}): no validated attestations on file"]
+        return [
+            CheckFailure(
+                f"corroborated_by ({holder_field}): no validated attestations on file",
+                REVIEW,
+            )
+        ]
     holder = fields.get(holder_field)
     titre_issue = _parse_iso_date(fields.get(issue_field))
     if not holder:
-        return [f"corroborated_by ({holder_field}): holder name missing/unreadable"]
+        return [
+            CheckFailure(
+                f"corroborated_by ({holder_field}): holder name missing/unreadable",
+                REVIEW,
+            )
+        ]
     if titre_issue is None:
-        return [f"corroborated_by ({issue_field}): titre issue date missing/unreadable"]
+        return [
+            CheckFailure(
+                f"corroborated_by ({issue_field}): titre issue date missing/unreadable",
+                REVIEW,
+            )
+        ]
     holder_key = _strict_identity_key(holder)
     for attestation in context.validated_attestations:
         if _strict_identity_key(attestation.holder_name) != holder_key:
@@ -426,31 +517,24 @@ def _check_corroborated_by(
         if attestation_issue <= titre_issue <= attestation_expiry:
             return []  # a coherent, validated attestation corroborates the titre
     return [
-        f"corroborated_by check failed ({holder_field}): no validated attestation "
-        f"corroborates the self-declared titre for {holder!r} at {titre_issue.isoformat()}"
+        CheckFailure(
+            f"corroborated_by check failed ({holder_field}): no validated attestation "
+            f"corroborates the self-declared titre for {holder!r} at "
+            f"{titre_issue.isoformat()}",
+            REVIEW,
+        )
     ]
-
-
-# Checks whose failure is POSITIVE proof the document is invalid -> auto-reject (terminal,
-# no human), NOT human review. Confirmed with the user (2026-07-03): "je sais que c'est
-# faux" — broken date maths, a recto/verso MRZ that names two people, an invented code —
-# rejects; "je ne connais pas / en attente" (an unknown template, an unregistered issuer,
-# an uncorroborated self-declared titre) routes to a human who curates or waits. So the
-# verdict is three-state: auto (valid) / review (unknown, human) / reject (proven invalid).
-REJECTING_CHECKS: frozenset[str] = frozenset(
-    {"date_order", "date_span", "vocabulary", "reconcile_ci"}
-)
 
 
 @dataclass
 class ValidationOutcome:
     """A template's validation, CLASSIFIED by what each failure means for routing.
 
-    `reject_reasons` come from a REJECTING_CHECK — positive proof of invalidity, so the
-    document is auto-rejected (terminal, no human). `review_reasons` come from any other
-    failing check — an unknown/pending signal a human handles. `verdict` picks the
-    strongest present: reject beats review beats auto (a proven-invalid document is not
-    softened to "please review" just because it also has a pending check)."""
+    `reject_reasons` = positive proof of invalidity -> the document is auto-rejected
+    (terminal, no human). `review_reasons` = an unknown/pending/undetermined signal a human
+    handles. `verdict` picks the strongest present: reject beats review beats auto (a
+    proven-invalid document is not softened to "please review" just because it also carries
+    a pending or undetermined check)."""
 
     reject_reasons: list[str]
     review_reasons: list[str]
@@ -469,13 +553,16 @@ def _evaluate_rule(
     rule: dict,
     today: date | None,
     context: ValidationContext | None,
-) -> list[str]:
-    """Run one validation rule -> its failure reasons ([] when it passes)."""
+) -> list[CheckFailure]:
+    """Run one validation rule -> its classified failures ([] when it passes)."""
     check = rule.get("check")
     if check == "present":
         field_name = rule["field"]
         if not fields.get(field_name):
-            return [f"{field_name}: required (presence) but not read"]
+            # A required field not read is a coverage problem, not proof of a forgery.
+            return [
+                CheckFailure(f"{field_name}: required (presence) but not read", REVIEW)
+            ]
         return []
     if check == "sum":
         return _check_sum(fields, rule)
@@ -491,7 +578,7 @@ def _evaluate_rule(
         return _check_issuer_registry(fields, rule, context)
     if check == "corroborated_by":
         return _check_corroborated_by(fields, rule, context)
-    return [f"unknown validation check: {check!r}"]
+    return [CheckFailure(f"unknown validation check: {check!r}", REVIEW)]
 
 
 def evaluate_validation(
@@ -505,9 +592,10 @@ def evaluate_validation(
 
     Config-driven: the checks travel WITH the template (the Backoffice curates them), so the
     SAME evaluator serves every document type. All checks are COMPUTED; the template's
-    `required` block says which are REQUIRED (compute-all/config-requires). A failing check
-    in REJECTING_CHECKS proves invalidity (-> reject); any other failure is a human signal
-    (-> review). Check kinds, all declared per template:
+    `required` block says which are REQUIRED (compute-all/config-requires). Each failing
+    check tags its failures REJECT (positive proof of invalidity) or REVIEW (undetermined /
+    pending / soft signal) — the tag depends on the failure BRANCH, not the check type: a
+    proven-wrong date rejects, an unreadable one is only REVIEW. Check kinds, per template:
       - present:        the named field must be non-empty (presence, value-agnostic).
       - sum:            `terms` must sum to `equals` within `tolerance`.
       - date_order:     `earlier` before `later` (+ opt-in `require_future` not-expired).
@@ -518,18 +606,17 @@ def evaluate_validation(
       - corroborated_by:a self-declared titre is backed by a validated attestation (context).
     `today` overrides the clock date_order's freshness side compares against; `context`
     carries the external state the last three checks read (both injected for reproducible
-    tests). A context check declared without its context FAILS LOUD, never a silent pass.
+    tests). A context check declared without its context resolves to REVIEW (undetermined),
+    never a silent pass and never a reject.
     """
     reject_reasons: list[str] = []
     review_reasons: list[str] = []
     for rule in validation.get("required", []):
-        reasons = _evaluate_rule(fields, rule, today, context)
-        if not reasons:
-            continue
-        if rule.get("check") in REJECTING_CHECKS:
-            reject_reasons.extend(reasons)
-        else:
-            review_reasons.extend(reasons)
+        for failure in _evaluate_rule(fields, rule, today, context):
+            if failure.kind == REJECT:
+                reject_reasons.append(failure.reason)
+            else:
+                review_reasons.append(failure.reason)
     return ValidationOutcome(reject_reasons, review_reasons)
 
 
