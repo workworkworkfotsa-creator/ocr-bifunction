@@ -14,6 +14,7 @@ from __future__ import annotations
 import difflib
 import json
 import re
+from datetime import date
 from pathlib import Path
 
 from ocr_bifunction.reader import TextLine
@@ -223,16 +224,130 @@ def _check_sum(fields: dict[str, str | None], rule: dict) -> list[str]:
     return []
 
 
-def validate_fields(fields: dict[str, str | None], validation: dict) -> list[str]:
+def _parse_iso_date(value: str | None) -> date | None:
+    """Parse an ISO `YYYY-MM-DD` value (what `normalize: date_ddmmyyyy` produces) to a
+    date, or None when empty/unreadable so the caller fails loud with a reason."""
+    if not value:
+        return None
+    try:
+        return date.fromisoformat(value.strip())
+    except ValueError:
+        return None
+
+
+def _add_years(start: date, years: int) -> date:
+    """`start` plus a whole number of calendar years, folding Feb 29 to Feb 28 when the
+    target year is not a leap year (the only day that has no exact anniversary)."""
+    try:
+        return start.replace(year=start.year + years)
+    except ValueError:
+        return start.replace(year=start.year + years, day=28)
+
+
+def _missing_dates(named_dates: dict[str, date | None]) -> list[str]:
+    return [name for name, value in named_dates.items() if value is None]
+
+
+def _check_date_order(
+    fields: dict[str, str | None], rule: dict, today: date | None
+) -> list[str]:
+    """Value check: `earlier` must fall strictly before `later`, and (opt-in
+    `require_future`) `later` must not already be in the past. Catches a swapped or
+    incoherent validity window, and an expired certificate presented as current."""
+    earlier_name: str = rule["earlier"]
+    later_name: str = rule["later"]
+    earlier = _parse_iso_date(fields.get(earlier_name))
+    later = _parse_iso_date(fields.get(later_name))
+    missing = _missing_dates({earlier_name: earlier, later_name: later})
+    if missing:
+        return [f"date_order check: missing/unreadable {', '.join(missing)}"]
+    assert earlier is not None and later is not None
+    reasons: list[str] = []
+    if not earlier < later:
+        reasons.append(
+            f"date_order check failed: {earlier_name} {earlier.isoformat()} is not "
+            f"before {later_name} {later.isoformat()}"
+        )
+    if rule.get("require_future"):
+        reference_date = today or date.today()
+        if later < reference_date:
+            reasons.append(
+                f"date_order check failed: {later_name} {later.isoformat()} is in the "
+                f"past (expired as of {reference_date.isoformat()})"
+            )
+    return reasons
+
+
+def _check_date_span(fields: dict[str, str | None], rule: dict) -> list[str]:
+    """Value check: `end` must equal `start` plus `years` calendar years, within
+    `tolerance_days`. A regulatory validity has a fixed duration (electrical habilitation
+    ~3 years), so a date lengthened by pen breaks the equation."""
+    start_name: str = rule["start"]
+    end_name: str = rule["end"]
+    years: int = rule["years"]
+    tolerance_days: int = rule.get("tolerance_days", 2)
+    start = _parse_iso_date(fields.get(start_name))
+    end = _parse_iso_date(fields.get(end_name))
+    missing = _missing_dates({start_name: start, end_name: end})
+    if missing:
+        return [f"date_span check: missing/unreadable {', '.join(missing)}"]
+    assert start is not None and end is not None
+    expected_end = _add_years(start, years)
+    difference_days = abs((end - expected_end).days)
+    if difference_days > tolerance_days:
+        return [
+            f"date_span check failed: {end_name} {end.isoformat()} != {start_name} + "
+            f"{years}y ({expected_end.isoformat()}), off by {difference_days} days "
+            f"(tolerance {tolerance_days})"
+        ]
+    return []
+
+
+def _check_vocabulary(fields: dict[str, str | None], rule: dict) -> list[str]:
+    """Value check: every token of `field` must belong to the closed `allowed` list
+    (case-insensitive). Codes cluster several per field ("H0B0 B1V"), so the value is
+    split on whitespace/separators and each token checked — an invented code fails."""
+    field_name: str = rule["field"]
+    allowed: list[str] = rule["allowed"]
+    value = fields.get(field_name)
+    if not value:
+        return [f"vocabulary check ({field_name}): missing/unreadable"]
+    allowed_folded = {entry.strip().casefold() for entry in allowed}
+    tokens = [token for token in re.split(r"[\s,;/]+", value) if token]
+    unknown = [token for token in tokens if token.casefold() not in allowed_folded]
+    if unknown:
+        return [
+            f"vocabulary check failed ({field_name}): "
+            f"{', '.join(unknown)} not in the allowed list"
+        ]
+    return []
+
+
+def validate_fields(
+    fields: dict[str, str | None],
+    validation: dict,
+    *,
+    today: date | None = None,
+) -> list[str]:
     """Evaluate a template's `validation` block against extracted fields -> failure reasons.
 
     Empty list = every required check passed (-> auto). Config-driven: the checks travel
     WITH the template (the Backoffice curates them), so the SAME evaluator serves every
-    document type. Two check kinds, both declared per template:
-      - present: the named field must be non-empty (presence, value-agnostic).
-      - sum:     `terms` must sum to `equals` within `tolerance` (a value check).
-    A layout with no cross-check to make (e.g. TVA autoliquidation) simply declares fewer
-    rules — the absence of a sum check is the template's honest statement, not a gap.
+    document type. All checks are COMPUTED; the template's `required` block says which are
+    REQUIRED (compute-all/config-requires). Check kinds, all declared per template:
+      - present:    the named field must be non-empty (presence, value-agnostic).
+      - sum:        `terms` must sum to `equals` within `tolerance`.
+      - date_order: `earlier` before `later` (+ opt-in `require_future` not-expired).
+      - date_span:  `end` == `start` + `years` calendar years, within `tolerance_days`.
+      - vocabulary: every token of `field` belongs to the closed `allowed` list.
+    A layout with no cross-check to make simply declares fewer rules — the absence of a
+    check is the template's honest statement, not a gap. `today` overrides the clock the
+    freshness side of date_order compares against (injected for reproducible tests).
+
+    The anti-fraud checks needing EXTERNAL context (reconcile_ci vs the CI record,
+    issuer_registry vs the curated organism registry, corroborated_by vs D1's validated
+    attestations) are NOT here: they cannot be pure functions of (fields, rule) and get a
+    context-carrying evaluator of their own.
     """
     reasons: list[str] = []
     for rule in validation.get("required", []):
@@ -243,6 +358,12 @@ def validate_fields(fields: dict[str, str | None], validation: dict) -> list[str
                 reasons.append(f"{field_name}: required (presence) but not read")
         elif check == "sum":
             reasons.extend(_check_sum(fields, rule))
+        elif check == "date_order":
+            reasons.extend(_check_date_order(fields, rule, today))
+        elif check == "date_span":
+            reasons.extend(_check_date_span(fields, rule))
+        elif check == "vocabulary":
+            reasons.extend(_check_vocabulary(fields, rule))
         else:
             reasons.append(f"unknown validation check: {check!r}")
     return reasons
