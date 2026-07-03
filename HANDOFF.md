@@ -29,6 +29,12 @@ discipline smoke-first.
 > réel Playwright vert). Restent : run corpus réel attestations (RapidOCR CPU → **attend le GO**, gate
 > encodé dans `draft_check.py` exit 2), D-c (SLM nommage/checks → machine libre), D-e (oracle : les 2
 > fraudes tirées — demander à l'utilisateur QUELS docs seulement à ce moment).
+> **RUN RÉEL D-a/D-b (2026-07-03, 4 certificats couche-texte, zéro OCR)** : D-a PROUVÉ (paire FICTIS
+> clusterisée 0.59, titres singletons, seuil 0.5 tient) ; anchors PROUVÉS PII-safe (vocabulaire pur,
+> SIRET constant droppé) ; champs = LIMITE v1 DÉMONTRÉE : blocks PyMuPDF collés → valeurs-tables
+> poubelle ET le nom du titulaire capturé sous un label erroné (below/right ignorent `page_index`).
+> → le cluster réel COMMANDE la famille **prefix-pattern** (préfixe invariant dans les blocks :
+> « Nom : », « Prénom : », dates → champ `pattern`, comme les factures) + filtre page dans below/right.
 > **Décision métier (2026-07-03) — DEUX régimes d'émetteur** : `attestation_formation` (organisme tiers,
 > SIRET en texte → check `issuer_registry` contre un registre curé) ≠ `titre_habilitation` (émis par
 > l'EMPLOYEUR = auto-déclaré → **jamais auto seul**, check `corroborated_by` : adossé à une attestation
