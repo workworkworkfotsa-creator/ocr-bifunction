@@ -46,17 +46,21 @@ discipline smoke-first.
 >    non-colon, tables) + propose les CHECKS candidats du kit anti-fraude — **bloquée sur le kit de checks
 >    (item 3)** : sans checks codés, la proposition n'a rien à re-tester. Le SLM **propose**, le
 >    déterministe **dispose**. Patron = `suggestion.py`.
-> 2. **D-e — l'oracle en or** : les checks draftés (`date_order`/`date_span`/`vocabulary`/`reconcile_ci`
->    strict + `issuer_registry`/`corroborated_by`) doivent TIRER les 2 fraudes vues à l'œil → `needs_review`.
+> 2. **D-e — l'oracle en or** : les 6 checks EXISTENT (kit complet, item 3) ; reste à les CÂBLER sur de
+>    vrais docs et prouver qu'ils TIRENT les 2 fraudes vues à l'œil → `needs_review`. Le câblage = (a)
+>    peupler un `ValidationContext` réel (record CI du technicien, registre organismes curé, D1 des
+>    attestations validées) ; (b) faire passer `context`/`today` jusqu'à l'appel `validate_fields` du flux
+>    (aujourd'hui les appelants ne les passent pas → défaut = fail-loud sur les checks contextuels).
 >    ⚠️ **SEUL l'utilisateur sait QUELS 2 docs** — le demander AU MOMENT de D-e, pas avant (ne pas biaiser).
-> 3. **Kit de checks anti-fraude — 3 PURS FAITS + PROUVÉS (2026-07-03, `7a67297`)** : `date_order`,
->    `date_span`, `vocabulary` codés dans `template.py:validate_fields` (cousins du `sum`, config-driven,
->    voyagent avec le template ; `today` keyword-only injectable pour la fraîcheur) ; `checks_check.py`
->    **12/12** (chaque check passe le propre ET tire sa fraude : fenêtre inversée/expirée, validité
->    rallongée 3→5 ans, code inventé). **RESTENT les 3 CONTEXTUELS** (`reconcile_ci` vs record CI,
->    `issuer_registry` vs registre organismes, `corroborated_by` vs D1 attestations validées) : PAS des
->    fonctions pures de `(fields, rule)` → exigent un **évaluateur porteur de contexte** (nouvelle
->    signature, tranche suivante). C'est ce qui débloque les 2 régimes d'émetteur + complète D-e.
+> 3. **Kit de checks anti-fraude — COMPLET (6 checks) + PROUVÉ (2026-07-03).** PURS (`7a67297`) :
+>    `date_order`/`date_span`/`vocabulary` (`checks_check.py` **12/12**). CONTEXTUELS (`97075e2`) :
+>    `reconcile_ci`/`issuer_registry`/`corroborated_by` via `ValidationContext` (dataclass, keyword-only
+>    sur `validate_fields`, rétrocompatible ; un check contextuel SANS son contexte **fail-loud** →
+>    `needs_review`, jamais un pass silencieux) ; `reconcile_ci` réutilise le `_normalize` strict de
+>    `reconcile.py` (Ahmed≠Hamed) ; `context_checks_check.py` **14/14** (2 régimes d'émetteur bout-en-bout :
+>    `attestation_formation` s'auto-prouve par le registre, `titre_habilitation` jamais auto sans
+>    corroboration). **Tout config-driven, voyage avec le template (compute-all/config-requires).** Reste :
+>    câbler le contexte réel (→ item 2 D-e) + proposer ces checks en candidats au drafting (→ D-c partie 2).
 > 4. **#4 — placement RAG contrat** (flux batch vs lane « store de contrats ») : indépendant, ne bloque rien.
 >
 > **EN ATTENTE D'UN GO** : le scan H0B0 (seul certificat image-only, 0 char) exige RapidOCR CPU → run
@@ -183,6 +187,22 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   chemin absolu (`MSYS_NO_PATHCONV=1`) ; PowerShell bloqué par règle `deny` (pas dans `settings.json` global).
 
 ## Fait (2026-07-03)
+- **Kit de checks anti-fraude — 3 checks CONTEXTUELS (`reconcile_ci`/`issuer_registry`/`corroborated_by`)
+  codés + PROUVÉS ; les 2 régimes d'émetteur tiennent bout-en-bout. `97075e2`.** Complète le kit (6 checks
+  au total) avec ceux qui exigent un état EXTERNE, via un `ValidationContext` (dataclass, param keyword-only
+  sur `validate_fields`, rétrocompatible). **Garde-fou fail-loud** : un check contextuel déclaré SANS son
+  état → échec explicite (`needs_review`), jamais un pass silencieux (un registre absent ne peut PAS prouver
+  un émetteur légitime). (1) `reconcile_ci` : le champ titulaire concorde STRICTEMENT avec le record CI —
+  **réutilise `reconcile._normalize`** (fold accents seul, Ahmed≠Hamed, mémoire reconcile-name-match-strict).
+  (2) `issuer_registry` : l'émetteur lu (SIRET préféré) ∈ registre curé d'organismes — la preuve forte du
+  régime `attestation_formation` ; un émetteur maison échoue. (3) `corroborated_by` : un `titre_habilitation`
+  auto-déclaré n'est AUTO que si une `attestation_formation` validée en D1 couvre le MÊME titulaire (strict)
+  avec le titre émis DANS la fenêtre de validité de la formation — « ma mère peut me faire une certif »
+  encodé. `AttestationReference` porte une attestation validée (titulaire + fenêtre). **Prouvé** :
+  `context_checks_check.py` **14/14** (chaque check passe le propre, tire sa fraude — nom du frère, émetteur
+  maison, titre non corroboré — et fail-loud sans contexte ; 2 régimes bout-en-bout). Régressions vertes :
+  `checks_check` 12/12, `draft_smoke` 12/12. **Reste** : câbler le contexte réel dans le flux (D-e) +
+  proposer ces checks en candidats au drafting (D-c partie 2). Oracle = run réel, pas de pytest.
 - **Kit de checks anti-fraude — 3 checks PURS (`date_order`/`date_span`/`vocabulary`) codés + PROUVÉS
   (déterministe, sans machine). `7a67297`.** Cousins du `sum` dans `template.py:validate_fields`,
   config-driven, voyageant avec le template (compute-all/config-requires) : `date_order` (délivrance <
