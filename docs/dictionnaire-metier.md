@@ -42,3 +42,27 @@ pas encore implémenté (2026-07-03).
 Codes normalisés NF C 18-510 portés par les titres/attestations (H0B0, B0, H0, H0V, B1V, B2V, BR, BC…).
 Liste fermée → check `vocabulary` : un code inventé ne passe pas.
 Source : `docs/briefs/BRIEF-template-drafting.md` § kit de checks anti-fraude.
+
+## verdict de routing (auto / humain / invalide)
+
+L'issue d'un document a **TROIS états**, pas deux (affinage confirmé utilisateur 2026-07-03). C'est le
+principe de routing par confiance précisé — la nuance clé étant **« je ne sais pas » ≠ « je sais que
+c'est faux »** :
+
+- **auto** — tout concorde, valide → auto-validé.
+- **review (humain)** — « je ne CONNAIS pas / en attente » : template/layout non reconnu (comme une
+  certification jamais vue → curation, peut naître un template), émetteur hors registre (peut être un
+  nouvel [[organisme-de-formation]] légitime → l'humain l'ajoute), [[titre-d-habilitation]] non encore
+  adossé (en attente d'une [[attestation de formation (organisme)]]). Checks concernés : `present`,
+  `issuer_registry`, `corroborated_by`, plus le no-match de template.
+- **reject (invalide)** — « je SAIS que c'est faux » : preuve POSITIVE de falsification → **rejet AUTO
+  terminal, PAS de revue humaine**. Checks concernés (`REJECTING_CHECKS`) : `date_order`, `date_span`
+  (dates incohérentes/rallongées au stylo), `vocabulary` (code inventé), `reconcile_ci` (MRZ recto≠verso,
+  ou nom titulaire ≠ record CI — la fraude fratrie Ahmed≠Hamed).
+
+Priorité : **reject > review > auto** (un doc prouvé invalide n'est pas adouci en « à revoir » parce
+qu'il porte aussi un check en attente).
+Source de vérité : `ocr_bifunction/template.py` (`REJECTING_CHECKS`, `class ValidationOutcome`,
+`evaluate_validation`) ; confirmation utilisateur 2026-07-03. Prouvé : `verdict_check.py` (8/8).
+**Reste à câbler** dans le flux/pipeline (statut terminal `rejected` en D1, mapping API/batch) — le
+classifieur existe, le routage aval pas encore.

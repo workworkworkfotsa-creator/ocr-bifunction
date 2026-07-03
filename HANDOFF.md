@@ -46,11 +46,13 @@ discipline smoke-first.
 >    non-colon, tables) + propose les CHECKS candidats du kit anti-fraude — **bloquée sur le kit de checks
 >    (item 3)** : sans checks codés, la proposition n'a rien à re-tester. Le SLM **propose**, le
 >    déterministe **dispose**. Patron = `suggestion.py`.
-> 2. **D-e — l'oracle en or** : les 6 checks EXISTENT (kit complet, item 3) ; reste à les CÂBLER sur de
->    vrais docs et prouver qu'ils TIRENT les 2 fraudes vues à l'œil → `needs_review`. Le câblage = (a)
->    peupler un `ValidationContext` réel (record CI du technicien, registre organismes curé, D1 des
->    attestations validées) ; (b) faire passer `context`/`today` jusqu'à l'appel `validate_fields` du flux
->    (aujourd'hui les appelants ne les passent pas → défaut = fail-loud sur les checks contextuels).
+> 2. **D-e — l'oracle en or** : les 6 checks + le verdict 3-états EXISTENT ; reste à CÂBLER l'aval sur de
+>    vrais docs et prouver qu'ils tirent les 2 fraudes vues à l'œil (dates/MRZ → **reject** ; template
+>    bizarre → **review**). Câblage = (a) peupler un `ValidationContext` réel (record CI du technicien,
+>    registre organismes curé, D1 des attestations validées) ; (b) faire passer `context`/`today` jusqu'à
+>    l'appel du flux (les appelants ne les passent pas → défaut = fail-loud sur les checks contextuels) ;
+>    (c) **statut terminal `rejected` en D1** (`repository.py`) + le pipeline/API/batch appellent
+>    `evaluate_validation` (pas `validate_fields`) et mappent `verdict` → auto/needs_review/**rejected**.
 >    ⚠️ **SEUL l'utilisateur sait QUELS 2 docs** — le demander AU MOMENT de D-e, pas avant (ne pas biaiser).
 > 3. **Kit de checks anti-fraude — COMPLET (6 checks) + PROUVÉ (2026-07-03).** PURS (`7a67297`) :
 >    `date_order`/`date_span`/`vocabulary` (`checks_check.py` **12/12**). CONTEXTUELS (`97075e2`) :
@@ -187,6 +189,19 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   chemin absolu (`MSYS_NO_PATHCONV=1`) ; PowerShell bloqué par règle `deny` (pas dans `settings.json` global).
 
 ## Fait (2026-07-03)
+- **Verdict à 3 ÉTATS (`auto`/`review`/`reject`) — le classifieur posé + PROUVÉ ; concept métier
+  confirmé + persisté. `b50ae05`.** Affinage utilisateur : un document PROUVÉ invalide n'est pas « à
+  revoir », il est **REJETÉ** (rejet AUTO terminal, pas d'humain — décision Q1). La nuance = **« je ne
+  connais pas » (→ humain) ≠ « je sais que c'est faux » (→ rejet)**. `template.py:evaluate_validation`
+  classe chaque échec : `REJECTING_CHECKS` = {`date_order`,`date_span`,`vocabulary`,`reconcile_ci`} →
+  **reject** ; tout le reste (`present`, `issuer_registry`, `corroborated_by`, no-match template) →
+  **review** (décision Q2 : émetteur inconnu = peut-être légitime, titre non adossé = en attente).
+  Priorité **reject > review > auto**. `ValidationOutcome` (reject_reasons/review_reasons/`verdict`) ;
+  `validate_fields` devient un **wrapper rétrocompatible** (les gates de re-test drafting/naming/suggestion
+  intacts — ils ne veulent que « vert/pas vert »). Prouvé : `verdict_check.py` **8/8** ; régressions
+  12/12 + 14/14 + 12/12. Concept persisté → `docs/dictionnaire-metier.md` (`## verdict de routing`).
+  **Reste à câbler aval** : statut terminal `rejected` en D1 (`repository.py`), mapping API/batch, et
+  passer `context`/`today` réels jusqu'à l'appel — le classifieur existe, le routage pipeline pas encore.
 - **Kit de checks anti-fraude — 3 checks CONTEXTUELS (`reconcile_ci`/`issuer_registry`/`corroborated_by`)
   codés + PROUVÉS ; les 2 régimes d'émetteur tiennent bout-en-bout. `97075e2`.** Complète le kit (6 checks
   au total) avec ceux qui exigent un état EXTERNE, via un `ValidationContext` (dataclass, param keyword-only
