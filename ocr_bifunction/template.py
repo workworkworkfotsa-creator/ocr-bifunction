@@ -431,19 +431,83 @@ def _check_corroborated_by(
     ]
 
 
-def validate_fields(
+# Checks whose failure is POSITIVE proof the document is invalid -> auto-reject (terminal,
+# no human), NOT human review. Confirmed with the user (2026-07-03): "je sais que c'est
+# faux" — broken date maths, a recto/verso MRZ that names two people, an invented code —
+# rejects; "je ne connais pas / en attente" (an unknown template, an unregistered issuer,
+# an uncorroborated self-declared titre) routes to a human who curates or waits. So the
+# verdict is three-state: auto (valid) / review (unknown, human) / reject (proven invalid).
+REJECTING_CHECKS: frozenset[str] = frozenset(
+    {"date_order", "date_span", "vocabulary", "reconcile_ci"}
+)
+
+
+@dataclass
+class ValidationOutcome:
+    """A template's validation, CLASSIFIED by what each failure means for routing.
+
+    `reject_reasons` come from a REJECTING_CHECK — positive proof of invalidity, so the
+    document is auto-rejected (terminal, no human). `review_reasons` come from any other
+    failing check — an unknown/pending signal a human handles. `verdict` picks the
+    strongest present: reject beats review beats auto (a proven-invalid document is not
+    softened to "please review" just because it also has a pending check)."""
+
+    reject_reasons: list[str]
+    review_reasons: list[str]
+
+    @property
+    def verdict(self) -> str:
+        if self.reject_reasons:
+            return "reject"
+        if self.review_reasons:
+            return "review"
+        return "auto"
+
+
+def _evaluate_rule(
+    fields: dict[str, str | None],
+    rule: dict,
+    today: date | None,
+    context: ValidationContext | None,
+) -> list[str]:
+    """Run one validation rule -> its failure reasons ([] when it passes)."""
+    check = rule.get("check")
+    if check == "present":
+        field_name = rule["field"]
+        if not fields.get(field_name):
+            return [f"{field_name}: required (presence) but not read"]
+        return []
+    if check == "sum":
+        return _check_sum(fields, rule)
+    if check == "date_order":
+        return _check_date_order(fields, rule, today)
+    if check == "date_span":
+        return _check_date_span(fields, rule)
+    if check == "vocabulary":
+        return _check_vocabulary(fields, rule)
+    if check == "reconcile_ci":
+        return _check_reconcile_ci(fields, rule, context)
+    if check == "issuer_registry":
+        return _check_issuer_registry(fields, rule, context)
+    if check == "corroborated_by":
+        return _check_corroborated_by(fields, rule, context)
+    return [f"unknown validation check: {check!r}"]
+
+
+def evaluate_validation(
     fields: dict[str, str | None],
     validation: dict,
     *,
     today: date | None = None,
     context: ValidationContext | None = None,
-) -> list[str]:
-    """Evaluate a template's `validation` block against extracted fields -> failure reasons.
+) -> ValidationOutcome:
+    """Evaluate a template's `validation` block and CLASSIFY the failures for routing.
 
-    Empty list = every required check passed (-> auto). Config-driven: the checks travel
-    WITH the template (the Backoffice curates them), so the SAME evaluator serves every
-    document type. All checks are COMPUTED; the template's `required` block says which are
-    REQUIRED (compute-all/config-requires). Check kinds, all declared per template:
+    Config-driven: the checks travel WITH the template (the Backoffice curates them), so the
+    SAME evaluator serves every document type. All checks are COMPUTED; the template's
+    `required` block says which are REQUIRED (compute-all/config-requires). A failing check
+    in REJECTING_CHECKS proves invalidity (-> reject); any other failure is a human signal
+    (-> review). Check kinds, all declared per template:
       - present:        the named field must be non-empty (presence, value-agnostic).
       - sum:            `terms` must sum to `equals` within `tolerance`.
       - date_order:     `earlier` before `later` (+ opt-in `require_future` not-expired).
@@ -452,33 +516,35 @@ def validate_fields(
       - reconcile_ci:   holder `field` strictly matches the CI record (context).
       - issuer_registry:issuer `field` is in the recognized-organism registry (context).
       - corroborated_by:a self-declared titre is backed by a validated attestation (context).
-    A layout with no cross-check to make simply declares fewer rules — the absence of a
-    check is the template's honest statement, not a gap. `today` overrides the clock the
-    freshness side of date_order compares against; `context` carries the external state the
-    last three checks read (both injected for reproducible tests). A context check declared
-    without its context FAILS LOUD (-> needs_review), never a silent pass.
+    `today` overrides the clock date_order's freshness side compares against; `context`
+    carries the external state the last three checks read (both injected for reproducible
+    tests). A context check declared without its context FAILS LOUD, never a silent pass.
     """
-    reasons: list[str] = []
+    reject_reasons: list[str] = []
+    review_reasons: list[str] = []
     for rule in validation.get("required", []):
-        check = rule.get("check")
-        if check == "present":
-            field_name = rule["field"]
-            if not fields.get(field_name):
-                reasons.append(f"{field_name}: required (presence) but not read")
-        elif check == "sum":
-            reasons.extend(_check_sum(fields, rule))
-        elif check == "date_order":
-            reasons.extend(_check_date_order(fields, rule, today))
-        elif check == "date_span":
-            reasons.extend(_check_date_span(fields, rule))
-        elif check == "vocabulary":
-            reasons.extend(_check_vocabulary(fields, rule))
-        elif check == "reconcile_ci":
-            reasons.extend(_check_reconcile_ci(fields, rule, context))
-        elif check == "issuer_registry":
-            reasons.extend(_check_issuer_registry(fields, rule, context))
-        elif check == "corroborated_by":
-            reasons.extend(_check_corroborated_by(fields, rule, context))
+        reasons = _evaluate_rule(fields, rule, today, context)
+        if not reasons:
+            continue
+        if rule.get("check") in REJECTING_CHECKS:
+            reject_reasons.extend(reasons)
         else:
-            reasons.append(f"unknown validation check: {check!r}")
-    return reasons
+            review_reasons.extend(reasons)
+    return ValidationOutcome(reject_reasons, review_reasons)
+
+
+def validate_fields(
+    fields: dict[str, str | None],
+    validation: dict,
+    *,
+    today: date | None = None,
+    context: ValidationContext | None = None,
+) -> list[str]:
+    """Flat failure reasons for a template's `validation` block ([] = green -> auto).
+
+    Backward-compatible thin wrapper over `evaluate_validation` for callers that only care
+    whether validation passed (the drafting / naming re-test gates, the suggestion fit
+    gate). The routing layer calls `evaluate_validation` instead, to tell a proven-invalid
+    document (reject) apart from an unknown one (review)."""
+    outcome = evaluate_validation(fields, validation, today=today, context=context)
+    return outcome.reject_reasons + outcome.review_reasons
