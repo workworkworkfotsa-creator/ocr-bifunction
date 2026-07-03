@@ -49,9 +49,14 @@ discipline smoke-first.
 > 2. **D-e — l'oracle en or** : les checks draftés (`date_order`/`date_span`/`vocabulary`/`reconcile_ci`
 >    strict + `issuer_registry`/`corroborated_by`) doivent TIRER les 2 fraudes vues à l'œil → `needs_review`.
 >    ⚠️ **SEUL l'utilisateur sait QUELS 2 docs** — le demander AU MOMENT de D-e, pas avant (ne pas biaiser).
-> 3. **Le kit de checks anti-fraude n'est PAS encore codé** (seuls `present`/`sum` existent dans
->    `template.py:validate_fields`) : `date_order`/`date_span`/`vocabulary`/`reconcile_ci` + les 2 régimes
->    d'émetteur = à écrire (nouveaux `check` config-driven, cousins du `sum`).
+> 3. **Kit de checks anti-fraude — 3 PURS FAITS + PROUVÉS (2026-07-03, `7a67297`)** : `date_order`,
+>    `date_span`, `vocabulary` codés dans `template.py:validate_fields` (cousins du `sum`, config-driven,
+>    voyagent avec le template ; `today` keyword-only injectable pour la fraîcheur) ; `checks_check.py`
+>    **12/12** (chaque check passe le propre ET tire sa fraude : fenêtre inversée/expirée, validité
+>    rallongée 3→5 ans, code inventé). **RESTENT les 3 CONTEXTUELS** (`reconcile_ci` vs record CI,
+>    `issuer_registry` vs registre organismes, `corroborated_by` vs D1 attestations validées) : PAS des
+>    fonctions pures de `(fields, rule)` → exigent un **évaluateur porteur de contexte** (nouvelle
+>    signature, tranche suivante). C'est ce qui débloque les 2 régimes d'émetteur + complète D-e.
 > 4. **#4 — placement RAG contrat** (flux batch vs lane « store de contrats ») : indépendant, ne bloque rien.
 >
 > **EN ATTENTE D'UN GO** : le scan H0B0 (seul certificat image-only, 0 char) exige RapidOCR CPU → run
@@ -178,6 +183,19 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   chemin absolu (`MSYS_NO_PATHCONV=1`) ; PowerShell bloqué par règle `deny` (pas dans `settings.json` global).
 
 ## Fait (2026-07-03)
+- **Kit de checks anti-fraude — 3 checks PURS (`date_order`/`date_span`/`vocabulary`) codés + PROUVÉS
+  (déterministe, sans machine). `7a67297`.** Cousins du `sum` dans `template.py:validate_fields`,
+  config-driven, voyageant avec le template (compute-all/config-requires) : `date_order` (délivrance <
+  expiration + `require_future` opt-in = pas expiré), `date_span` (expiration == délivrance + N années
+  calendaires, tolérance jours — une validité rallongée au stylo casse l'équation ; Feb 29 → Feb 28 géré),
+  `vocabulary` (chaque token d'un champ ∈ liste fermée `allowed`, case-insensitive — un code inventé
+  échoue). `validate_fields` gagne un `today` **keyword-only** (fraîcheur reproductible en test ;
+  rétrocompatible — appelants positionnels intacts). **Prouvé** : `checks_check.py` **12/12** (chaque check
+  passe le propre ET tire sa fraude : fenêtre inversée/expirée, 3→5 ans, code B9Z ; leap-day) ;
+  `draft_smoke` **12/12** (chemin `present` intact). **RESTENT les 3 CONTEXTUELS** (`reconcile_ci`,
+  `issuer_registry`, `corroborated_by`) : pas des fonctions pures de `(fields, rule)` → évaluateur porteur
+  de contexte (record CI / registre organismes / D1 attestations validées), tranche suivante = les 2
+  régimes d'émetteur + l'oracle D-e. Oracle = run réel, pas de pytest.
 - **D-c PARTIE 1 — le SLM contraint NOMME les champs placeholder du draft ; PROUVÉ LIVE (granite via
   llama-swap, corpus synthétique PII-free, zéro OCR). `f578445`.** Suite déterministe de D-b : le draft
   sort avec des noms placeholder (slugs de label) ; `ocr_bifunction/field_naming.py` réveille granite
