@@ -46,14 +46,13 @@ discipline smoke-first.
 >    non-colon, tables) + propose les CHECKS candidats du kit anti-fraude — **bloquée sur le kit de checks
 >    (item 3)** : sans checks codés, la proposition n'a rien à re-tester. Le SLM **propose**, le
 >    déterministe **dispose**. Patron = `suggestion.py`.
-> 2. **D-e — l'oracle en or** : les 6 checks + le verdict 3-états EXISTENT ; reste à CÂBLER l'aval sur de
->    vrais docs et prouver qu'ils tirent les 2 fraudes vues à l'œil (dates/MRZ → **reject** ; template
->    bizarre → **review**). Câblage = (a) peupler un `ValidationContext` réel (record CI du technicien,
->    registre organismes curé, D1 des attestations validées) ; (b) faire passer `context`/`today` jusqu'à
->    l'appel du flux (les appelants ne les passent pas → défaut = fail-loud sur les checks contextuels) ;
->    (c) **statut terminal `rejected` en D1** (`repository.py`) + le pipeline/API/batch appellent
->    `evaluate_validation` (pas `validate_fields`) et mappent `verdict` → auto/needs_review/**rejected**.
->    ⚠️ **SEUL l'utilisateur sait QUELS 2 docs** — le demander AU MOMENT de D-e, pas avant (ne pas biaiser).
+> 2. **D-e — l'oracle en or** : les 6 checks + le verdict 3-états sont codés ET **câblés de bout en bout**
+>    (structuré + CI/MRZ → `rejected` ; template bizarre → `needs_review`) — cf. Fait `ab397d6`/`bab3ab7`.
+>    Reste UNIQUEMENT le côté DONNÉES : (a) peupler un `ValidationContext` RÉEL (record CI du technicien,
+>    registre organismes curé, D1 des attestations validées) — le threading `context`/`today` est déjà en
+>    place jusqu'à `route_document`/`process_batch`, il suffit de le remplir ; (b) prouver sur les 2 vraies
+>    fraudes qu'elles sortent `rejected`. ⚠️ **SEUL l'utilisateur sait QUELS 2 docs** — le demander AU
+>    MOMENT de D-e, pas avant (ne pas biaiser). Les checks purs (dates/vocabulary) tirent déjà sans contexte.
 > 3. **Kit de checks anti-fraude — COMPLET (6 checks) + PROUVÉ (2026-07-03).** PURS (`7a67297`) :
 >    `date_order`/`date_span`/`vocabulary` (`checks_check.py` **12/12**). CONTEXTUELS (`97075e2`) :
 >    `reconcile_ci`/`issuer_registry`/`corroborated_by` via `ValidationContext` (dataclass, keyword-only
@@ -189,6 +188,17 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   chemin absolu (`MSYS_NO_PATHCONV=1`) ; PowerShell bloqué par règle `deny` (pas dans `settings.json` global).
 
 ## Fait (2026-07-03)
+- **CI/MRZ recto≠verso → `reject` — dernière pièce du câblage verdict. Décision utilisateur : « tout
+  mismatch → reject ». `bab3ab7`.** `reconcile()` renvoie désormais un verdict 3-états : une clef PARTAGÉE
+  qui DIVERGE entre recto et MRZ (2 reads indépendants nommant 2 identités — « recto de A + verso de B »)
+  → **reject** (prouvé invalide, terminal). Un **checksum MRZ KO** ou rien à comparer → **human** (read
+  NON FIABLE, pas une fraude prouvée : un seul digit mal lu par l'OCR casse un checksum → jamais un
+  auto-reject sur bruit OCR). Toutes clefs concordent + checks OK → auto. Câblé aval : `CiRecord.verdict`
+  le porte ; `orchestrator._record_from_ci` mappe via `_OUTCOME_FROM_VERDICT` → `STATUS_REJECTED` ; l'API
+  CI gagne une branche complete+reject → status `rejected` **sans escalade** (un OCR plus lourd ne sauve
+  pas 2 faces nommant 2 personnes). Prouvé : `reconcile_verdict_check.py` **5/5** (match→auto ; divergence
+  nom→reject ; checksum KO→human ; recto vide→human) ; `verdict_flow_check` 7/7 intact. **→ Le verdict
+  `reject` est maintenant CÂBLÉ DE BOUT EN BOUT (structuré + CI/MRZ).** Concept persisté → dictionnaire.
 - **Verdict `reject` CÂBLÉ à travers le flux (lane structurée) — prouvé bout-en-bout. `ab397d6`.**
   Suite du classifieur : `reject` voyage maintenant de bout en bout. **`STATUS_REJECTED`** rejoint D1
   comme état TERMINAL (distinct de `failed` = crash de traitement, pas un verdict de validité). Mapping

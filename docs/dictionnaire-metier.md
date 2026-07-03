@@ -56,13 +56,21 @@ c'est faux »** :
   adossé (en attente d'une [[attestation de formation (organisme)]]). Checks concernés : `present`,
   `issuer_registry`, `corroborated_by`, plus le no-match de template.
 - **reject (invalide)** — « je SAIS que c'est faux » : preuve POSITIVE de falsification → **rejet AUTO
-  terminal, PAS de revue humaine**. Checks concernés (`REJECTING_CHECKS`) : `date_order`, `date_span`
-  (dates incohérentes/rallongées au stylo), `vocabulary` (code inventé), `reconcile_ci` (MRZ recto≠verso,
-  ou nom titulaire ≠ record CI — la fraude fratrie Ahmed≠Hamed).
+  terminal, PAS de revue humaine**. Déclencheurs : `date_order`, `date_span` (dates incohérentes/rallongées
+  au stylo), `vocabulary` (code inventé), `reconcile_ci` (nom titulaire ≠ record CI — fraude fratrie
+  Ahmed≠Hamed), et **CI recto/verso** : une clef partagée qui DIVERGE entre recto et MRZ (« recto de A +
+  verso de B »).
+
+Nuance **input vs preuve** (fix 2026-07-03) : la classe dépend du POURQUOI de l'échec, pas du type de
+check. Un input **manquant/illisible** (date non lue, contexte non câblé) ou un **read non fiable**
+(checksum MRZ KO — un digit mal lu par l'OCR) → **review**, JAMAIS reject : on ne rejette une vraie carte
+sur du bruit OCR. Seule une valeur **prouvée fausse** (2 sources qui se contredisent, maths cassées, code
+hors liste) → reject.
 
 Priorité : **reject > review > auto** (un doc prouvé invalide n'est pas adouci en « à revoir » parce
 qu'il porte aussi un check en attente).
-Source de vérité : `ocr_bifunction/template.py` (`REJECTING_CHECKS`, `class ValidationOutcome`,
-`evaluate_validation`) ; confirmation utilisateur 2026-07-03. Prouvé : `verdict_check.py` (8/8).
-**Reste à câbler** dans le flux/pipeline (statut terminal `rejected` en D1, mapping API/batch) — le
-classifieur existe, le routage aval pas encore.
+Source de vérité : `ocr_bifunction/template.py` (`class CheckFailure`, `class ValidationOutcome`,
+`evaluate_validation`) pour la lane structurée ; `ocr_bifunction/reconcile.py` (verdict 3-états) pour
+CI/MRZ ; `STATUS_REJECTED` (`repository.py`), mapping `router`/`orchestrator`/`api_maquette`/`batch_check`.
+Confirmation utilisateur 2026-07-03. Prouvé : `verdict_check.py` (11/11), `verdict_flow_check.py` (7/7,
+bout-en-bout), `reconcile_verdict_check.py` (5/5). **Câblé de bout en bout** (structuré + CI/MRZ).
