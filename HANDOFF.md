@@ -19,44 +19,53 @@ config-driven (value-check HT+TVA=TTC).** POC solo sur `master`, pas de remote. 
 — oracle = runs réels sur vrais docs + smokes structurels/logiques + KAT (composite MRZ), conforme à la
 discipline smoke-first.
 
-> ▶ **NEXT (reprise) — lane de DRAFTING de templates = le chaînon manquant (acté 2026-07-03).** Spec complète
-> → `docs/briefs/BRIEF-template-drafting.md` (gitignoré). En bref : les UNKNOWN s'accumulent → cluster de
-> 2-3 docs même layout (TF-IDF, déterministe) → DRAFT (invariance cross-docs = anchors, PII-safe par
-> construction ; SLM contraint nomme les champs + propose les checks) → re-test sur tout le cluster →
-> **l'humain valide ET COCHE les champs/checks requis** (compute-all/config-requires) → promotion D2.
-> **Avancement 2026-07-03 : D-a+D-b (moitié déterministe) ET D-d (schéma D3 + revue v2 cochage +
-> promotion) LIVRÉS + prouvés** (cf. Fait 2026-07-03 ; `draft_smoke` 11/11, `ui_smoke` 15/15, navigateur
-> réel Playwright vert). Restent : run corpus réel attestations (RapidOCR CPU → **attend le GO**, gate
-> encodé dans `draft_check.py` exit 2), D-c (SLM nommage/checks → machine libre), D-e (oracle : les 2
-> fraudes tirées — demander à l'utilisateur QUELS docs seulement à ce moment).
-> **RUN RÉEL D-a/D-b (2026-07-03, 4 certificats couche-texte, zéro OCR) — VERT après 2 itérations**
-> (détail → Fait 2026-07-03, bullet « D-b v2 ») : clustering exact (paire d'attestations 0.59, titres
-> singletons), anchors PII-safe (vocabulaire pur), champs **nom + prénom extraits au pattern** (la
-> matière du reconcile_ci de D-e) ; les dumps de tables et constantes droppés avec raisons. Restent
-> hors famille déterministe : les DATES de formation (« Le 12 janvier 2024 », non-colon, dans les
-> tables) → D-c (le SLM propose ces patterns, l'humain les possède).
-> **Décision métier (2026-07-03) — DEUX régimes d'émetteur** : `attestation_formation` (organisme tiers,
-> SIRET en texte → check `issuer_registry` contre un registre curé) ≠ `titre_habilitation` (émis par
-> l'EMPLOYEUR = auto-déclaré → **jamais auto seul**, check `corroborated_by` : adossé à une attestation
-> d'organisme validée du même titulaire, reconcile strict). Détail → brief drafting § régimes d'émetteur ;
-> concepts → `docs/dictionnaire-metier.md` (**créé**, curé+confirmé, sans noms de parties).
-> **Valeur = lane ANTI-FRAUDE certifications** (2 fraudes vues à l'œil sur les attestations d'`inputs/`) :
-> checks `date_order`/`date_span`/`vocabulary`/`reconcile_ci` (strict, Ahmed≠Hamed). Ancres = MOTS structurels
-> (vocabulaire/labels/organisme lu en texte), logo-image rejeté. Oracle final (D-e) = les 2 fraudes tirées
-> mécaniquement. **Pièges de reprise** : (1) ⚠️ machine partagée sous stress test VRP (cycles ~2 h) —
-> **sondé 2026-07-03 (PyMuPDF, sans OCR)** : 4 des 5 certificats d'`inputs/` ont une COUCHE TEXTE native
-> (dont une paire d'attestations du MÊME organisme = même layout, émetteur SIRET/RCS en texte → cluster
-> D-a/D-b runnable SANS OCR) ; seul le scan H0B0 (0 char, image pleine page) exige RapidOCR → **le GO
-> n'est requis que pour lui** ; nuance émetteur : titres d'habilitation = émis par l'EMPLOYEUR (variable
-> → champ, pas ancre), et pour l'un des deux titres l'employeur n'existe QUE dans l'image d'en-tête
-> (invisible sans OCR) — pas de noms de parties ici (repo public), détail → brief drafting ; (2) D1 ne retient NI chemin NI texte
-> des unknowns (`source` = nom de fichier seul) → D-a prend les docs en CLI (`draft_check.py <docs…>`), le
-> câblage « re-lire depuis D1 » (colonne path/texte vs re-scan) = décision séparée à trancher ; (3) SEUL
-> l'utilisateur sait QUELS 2 docs sont frauduleux — le demander au moment de l'oracle D-e, pas avant (ne pas
-> biaiser le drafting). Reste aussi : #4 placement RAG contrat (indépendant).
+> ▶ **NEXT (reprise) — lane de DRAFTING de templates.** Spec → `docs/briefs/BRIEF-template-drafting.md`
+> (gitignoré). Boucle : UNKNOWN s'accumulent → cluster même-layout (TF-IDF, déterministe) → DRAFT
+> (invariance cross-docs = anchors PII-safe + champs) → SLM contraint nomme les champs / propose les
+> checks → re-test → **l'humain valide ET COCHE les checks requis** (compute-all/config-requires) →
+> promotion D2 → re-match déterministe.
 >
-> Le mix local (uvicorn + watchdog + navigateur) est LIVRÉ + prouvé (2026-07-02) ; les 3 domaines D1/D2/D3
-> sont proxifiés + consolidés end-to-end ; la lane SLM de suggestion (liste fermée) est live dans le batch.
+> **DÉJÀ FAIT + PROUVÉ (session 2026-07-03, détail → « Fait 2026-07-03 » ci-dessous) :**
+> - **D-a + D-b v2** (moitié déterministe) : clustering + draft par invariance ; 2 familles de champs
+>   (géométrie below/right ET colon-prefix `pattern`) ; gates : match cluster complet, valeur variante,
+>   anti-dump. `drafting.py` + `draft_check.py` (CLI, gate OCR opt-in exit 2) + `draft_smoke.py` **12/12**.
+>   **Run réel** sur 4 certificats couche-texte (zéro OCR) : clustering exact, anchors PII-safe, **nom +
+>   prénom extraits** (matière du `reconcile_ci`).
+> - **D-d** : schéma D3 `suggested_template_json` (le draft complet voyage) + revue v2 (COCHAGE des checks
+>   candidats) + promotion + re-match, prouvé en **navigateur réel** (Playwright) ; `ui_smoke.py` **15/15**.
+>   L'API route depuis D2 → une catégorie promue apparaît seule dans la select box.
+>
+> **NEXT CONCRET (dans l'ordre) :**
+> 1. **D-c — le SLM contraint** (GBNF/json_schema, machine libre requise) : nomme les champs placeholder,
+>    propose `normalize`/`pattern` pour les zones hors-famille-déterministe (ex. dates de formation
+>    « Le 12 janvier 2024 », non-colon, dans les tables), propose les CHECKS candidats du kit anti-fraude.
+>    Le SLM **propose**, le déterministe **dispose** (gate de re-test inchangé). Patron = `suggestion.py`.
+> 2. **D-e — l'oracle en or** : les checks draftés (`date_order`/`date_span`/`vocabulary`/`reconcile_ci`
+>    strict + `issuer_registry`/`corroborated_by`) doivent TIRER les 2 fraudes vues à l'œil → `needs_review`.
+>    ⚠️ **SEUL l'utilisateur sait QUELS 2 docs** — le demander AU MOMENT de D-e, pas avant (ne pas biaiser).
+> 3. **Le kit de checks anti-fraude n'est PAS encore codé** (seuls `present`/`sum` existent dans
+>    `template.py:validate_fields`) : `date_order`/`date_span`/`vocabulary`/`reconcile_ci` + les 2 régimes
+>    d'émetteur = à écrire (nouveaux `check` config-driven, cousins du `sum`).
+> 4. **#4 — placement RAG contrat** (flux batch vs lane « store de contrats ») : indépendant, ne bloque rien.
+>
+> **EN ATTENTE D'UN GO** : le scan H0B0 (seul certificat image-only, 0 char) exige RapidOCR CPU → run
+> `draft_check … --ocr` **après GO explicite** (machine partagée VRP). Les 4 autres certificats sont
+> born-digital → aucun OCR requis (déjà runnés).
+>
+> **DÉCISION MÉTIER ACTÉE (2026-07-03) — 2 régimes d'émetteur** (le cœur anti-fraude, « ma mère peut me
+> faire une certif ») : `attestation_formation` = émise par un ORGANISME tiers (SIRET en texte →
+> `issuer_registry` contre registre curé, PAS encore implémenté) ≠ `titre_habilitation` = émis par
+> l'EMPLOYEUR, **auto-déclaré → jamais auto seul** (`corroborated_by` : adossé à une attestation
+> d'organisme validée du même titulaire, reconcile STRICT Ahmed≠Hamed). Concepts → `docs/dictionnaire-
+> metier.md` (créé, curé+confirmé). Détail → brief drafting § régimes d'émetteur.
+>
+> **PIÈGE PERSISTANT** : D1 ne retient NI chemin NI texte des unknowns (`source` = nom de fichier seul)
+> → D-a prend les docs en CLI ; le câblage « re-lire depuis D1 » (colonne path/texte vs re-scan) reste une
+> décision à trancher. **Finding D-a** : la similarité TF-IDF dépend du POOL (IDF) — une paire seule peut
+> scorer <0.5 et ≥0.5 dans un pool plus large ; `--threshold` = le bouton.
+>
+> Contexte stable : mix local (uvicorn + watchdog + navigateur) LIVRÉ + prouvé (2026-07-02) ; D1/D2/D3
+> proxifiés + consolidés end-to-end ; lane SLM de suggestion (liste fermée) live dans le batch.
 >
 > **PLAN ACTÉ (ordre convenu, même lecture — reprendre ICI en session fraîche) :**
 > 1. ✅ **FAIT (2026-07-02) — `_jobs` dict de l'API migré sur `repository`.** D1 unifié : API + batch écrivent
