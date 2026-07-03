@@ -31,6 +31,7 @@ from ocr_bifunction.reader import TextLine
 from ocr_bifunction.repository import (
     STATUS_DONE,
     STATUS_NEEDS_REVIEW,
+    STATUS_REJECTED,
     Job,
     SqliteRepository,
 )
@@ -92,19 +93,27 @@ def _print_split(result: BatchResult) -> None:
     print(f"BATCH: {len(result.records)} document(s)")
     print(f"  AUTO   (stage 4, centralise-ready): {len(result.auto)}")
     print(f"  REVIEW (stage 5, human queue):      {len(result.review)}")
+    print(f"  REJECT (proven invalid, terminal):  {len(result.rejected)}")
     if result.review:
         print("\n-- review queue --")
         for record in result.review:
+            reason = record.reasons[0] if record.reasons else record.detail
+            print(f"  · {record.source}  [{record.lane}/{record.detail}]  <- {reason}")
+    if result.rejected:
+        print("\n-- rejected (invalid) --")
+        for record in result.rejected:
             reason = record.reasons[0] if record.reasons else record.detail
             print(f"  · {record.source}  [{record.lane}/{record.detail}]  <- {reason}")
 
 
 def _job_from_record(record: DocumentRecord) -> Job:
     """Bridge a batch record to a D1 job row. The RUNNER owns this mapping so orchestrator and
-    repository stay independent (neither imports the other). auto -> done/auto; anything
-    doubtful -> needs_review (the human queue)."""
+    repository stay independent (neither imports the other). auto -> done/auto; reject ->
+    rejected/reject (proven invalid, terminal); anything else doubtful -> needs_review."""
     if record.outcome == "auto":
         status, verdict = STATUS_DONE, "auto"
+    elif record.outcome == "reject":
+        status, verdict = STATUS_REJECTED, "reject"
     else:
         status = STATUS_NEEDS_REVIEW
         verdict = "human" if record.detail in ("human", "complete") else None

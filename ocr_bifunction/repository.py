@@ -33,11 +33,19 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 # The async-coordination states. A doc "waiting for async" = received/escalation; the worker
-# drives received -> processing -> done|needs_review|failed.
+# drives received -> processing -> a TERMINAL state:
+#   done         — validated (auto) or a human accepted it.
+#   needs_review — doubtful/unknown -> the human queue (the ⑤ pile).
+#   rejected     — PROVEN invalid (bad date maths, MRZ recto/verso mismatch, invented code):
+#                  the anti-fraud verdict is `reject`, auto-terminal, NO human review. Distinct
+#                  from `failed`, which is a PROCESSING failure (crash/poison-pill), not a
+#                  verdict on the document's validity.
+#   failed       — processing gave up (lease/attempts cap).
 STATUS_RECEIVED = "received"
 STATUS_PROCESSING = "processing"
 STATUS_NEEDS_REVIEW = "needs_review"
 STATUS_DONE = "done"
+STATUS_REJECTED = "rejected"
 STATUS_FAILED = "failed"
 
 

@@ -21,6 +21,7 @@ the ④/⑤ contract to co-freeze with IT; this module stays storage-agnostic on
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path
 
 from ocr_bifunction.pipeline import CiSubmissionResult, process_ci_submission
@@ -28,6 +29,7 @@ from ocr_bifunction.rag import Summary
 from ocr_bifunction.reader import OcrEngine
 from ocr_bifunction.router import RoutedDocument, SuggesterHook, route_document
 from ocr_bifunction.suggestion import SuggestionOutcome
+from ocr_bifunction.template import ValidationContext
 
 # The document type that means "this upload is a CI" — dispatches to the recto+verso
 # submission flow instead of single-document routing (mirrors the API's document_type key).
@@ -51,13 +53,14 @@ class BatchItem:
 class DocumentRecord:
     """The uniform per-document product of the batch, whatever lane produced it.
 
-    `outcome` is the ④/⑤ decision — `auto` (centralise) or `review` (send to the human queue).
-    `detail` keeps the lane-native status for the human (structured verdict, CI
+    `outcome` is the routing decision: `auto` (centralise ④), `review` (human queue ⑤), or
+    `reject` (PROVEN invalid — the anti-fraud verdict, auto-terminal, no human). `detail`
+    keeps the lane-native status for the human (structured verdict, CI
     complete/incomplete/unrecognised, or "rag")."""
 
     source: str
     lane: str  # "ci" | "structured" | "rag"
-    outcome: str  # "auto" | "review"
+    outcome: str  # "auto" | "review" | "reject"
     detail: str | None = None
     category: str | None = None
     template_id: str | None = None
@@ -87,6 +90,11 @@ class BatchResult:
         """The doubtful queue a human must look at (⑤ remonter)."""
         return [record for record in self.records if record.outcome == "review"]
 
+    @property
+    def rejected(self) -> list[DocumentRecord]:
+        """Records PROVEN invalid (anti-fraud verdict) — auto-terminal, no human review."""
+        return [record for record in self.records if record.outcome == "reject"]
+
 
 def _suggestion_reason(suggestion: SuggestionOutcome) -> str:
     """One human-readable line for the review queue, whatever the suggestion's fate."""
@@ -103,17 +111,23 @@ def _suggestion_reason(suggestion: SuggestionOutcome) -> str:
     )
 
 
+# Structured verdict -> record outcome. A RAG-lane doc is unidentified by construction, so
+# it never maps here — it is always "review".
+_OUTCOME_FROM_VERDICT = {"auto": "auto", "human": "review", "reject": "reject"}
+
+
 def _record_from_routed(routed: RoutedDocument) -> DocumentRecord:
-    # Only a structured doc that passed its single-doc validation is auto; a RAG-lane doc is
-    # by construction unidentified -> always the human queue.
-    is_auto = routed.lane == "structured" and routed.verdict == "auto"
+    if routed.lane == "structured":
+        outcome = _OUTCOME_FROM_VERDICT.get(routed.verdict or "", "review")
+    else:
+        outcome = "review"  # RAG lane: unidentified -> always the human queue
     reasons = list(routed.reasons)
     if routed.suggestion is not None:
         reasons.append(_suggestion_reason(routed.suggestion))
     return DocumentRecord(
         source=routed.source,
         lane=routed.lane,
-        outcome="auto" if is_auto else "review",
+        outcome=outcome,
         detail=routed.verdict if routed.lane == "structured" else "rag",
         category=routed.category,
         template_id=routed.template_id,
@@ -157,13 +171,16 @@ def process_document(
     escalation_engine: OcrEngine | None = None,
     templates: list[dict] | None = None,
     suggester: SuggesterHook | None = None,
+    context: ValidationContext | None = None,
+    today: date | None = None,
 ) -> DocumentRecord:
     """Dispatch one item to its core (CI submission or single-doc router) -> a record.
 
     `templates` injects the single-doc template list (the D2 store read path) instead of the
     JSON files; the CI submission flow still reads the directory (its templates are not in the
     suggestion/growth loop yet). `suggester` (opt-in, like escalation) wakes the SLM on a
-    single-doc no-match; the outcome rides on the record for the sink to stage into D3."""
+    single-doc no-match; the outcome rides on the record for the sink to stage into D3.
+    `context`/`today` feed the anti-fraud validation (the context checks + date freshness)."""
     if item.document_type == CI_CATEGORY:
         result = process_ci_submission(
             item.paths,
@@ -180,6 +197,8 @@ def process_document(
         category=item.document_type,
         templates=templates,
         suggester=suggester,
+        context=context,
+        today=today,
     )
     return _record_from_routed(routed)
 
@@ -191,13 +210,16 @@ def process_batch(
     escalation_engine: OcrEngine | None = None,
     templates: list[dict] | None = None,
     suggester: SuggesterHook | None = None,
+    context: ValidationContext | None = None,
+    today: date | None = None,
 ) -> BatchResult:
-    """Run every item through its core and collect the uniform records (④/⑤ split included).
+    """Run every item through its core and collect the uniform records (split included).
 
     Sequential on purpose: one SLM runs at a time on the 8 GB / no-GPU target, and escalation
     (LightOCR) is heavy — the batch regime tolerates the latency. Returns a `BatchResult`; the
     caller decides where the records are persisted (the sink seam). `templates` = the D2 read
-    path; `suggester` = the opt-in SLM suggestion hook (see process_document)."""
+    path; `suggester` = the opt-in SLM suggestion hook (see process_document); `context`/`today`
+    feed the anti-fraud validation."""
     return BatchResult(
         records=[
             process_document(
@@ -207,6 +229,8 @@ def process_batch(
                 escalation_engine,
                 templates,
                 suggester,
+                context,
+                today,
             )
             for item in items
         ]

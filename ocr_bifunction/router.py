@@ -27,15 +27,23 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from datetime import date
+
 from ocr_bifunction.rag import Summary, chunk_document, summarize_extractive
 from ocr_bifunction.reader import OcrEngine, TextLine, read_document
 from ocr_bifunction.suggestion import SuggestionOutcome
 from ocr_bifunction.template import (
+    ValidationContext,
+    evaluate_validation,
     extract_fields,
     load_templates,
     match_template,
-    validate_fields,
 )
+
+# RoutedDocument.verdict for the structured lane maps the 3-state validation verdict onto the
+# router's vocabulary: auto (valid) / human (review — unknown or pending) / reject (proven
+# invalid, auto-terminal). "review" keeps the historical name "human" the record layer reads.
+_VERDICT_FROM_VALIDATION = {"auto": "auto", "review": "human", "reject": "reject"}
 
 # The suggestion hook: called ONLY on a no-match (the brief's "downstream of pas de match"),
 # with the already-read text + lines so the doc is never read/OCR'd twice. (text, lines,
@@ -52,7 +60,7 @@ class RoutedDocument:
     lane: str  # "structured" | "rag"
     template_id: str | None = None
     category: str | None = None
-    verdict: str | None = None  # structured only: "auto" | "human"
+    verdict: str | None = None  # structured only: "auto" | "human" | "reject"
     reasons: list[str] = field(default_factory=list)
     fields: dict[str, str | None] = field(default_factory=dict)
     summary: Summary | None = None  # rag only
@@ -67,6 +75,8 @@ def route_document(
     category: str | None = None,
     templates: list[dict] | None = None,
     suggester: SuggesterHook | None = None,
+    context: ValidationContext | None = None,
+    today: date | None = None,
 ) -> RoutedDocument:
     """Read one document, decide its lane, and return that lane's first product.
 
@@ -82,6 +92,10 @@ def route_document(
     `suggester` (opt-in, batch regime) fires ONLY on a no-match with readable text: the SLM
     proposes a template from the closed list, deterministically re-verified downstream. The
     outcome rides on the RoutedDocument; staging it (D3) is the caller's sink concern.
+
+    `context`/`today` feed the anti-fraud validation: the context-dependent checks
+    (reconcile_ci / issuer_registry / corroborated_by) need `context`, and date_order's
+    freshness side reads `today`. Absent context resolves to REVIEW (never a false reject).
     """
     result = read_document(document_path, engine)
     if templates is None:
@@ -95,7 +109,9 @@ def route_document(
     template = match_template(result.lines, available_templates)
 
     if template is not None:
-        return _structured_result(document_path.name, result.lines, template)
+        return _structured_result(
+            document_path.name, result.lines, template, context, today
+        )
 
     routed = _rag_result(document_path.name, result.text)
     if suggester is not None and result.text.strip():
@@ -103,12 +119,19 @@ def route_document(
     return routed
 
 
-def _structured_result(source: str, lines, template: dict) -> RoutedDocument:
+def _structured_result(
+    source: str,
+    lines,
+    template: dict,
+    context: ValidationContext | None = None,
+    today: date | None = None,
+) -> RoutedDocument:
     fields = extract_fields(lines, template)
     validation = template.get("validation") or {}
     if validation.get("required"):
-        reasons = validate_fields(fields, validation)
-        verdict = "human" if reasons else "auto"
+        outcome = evaluate_validation(fields, validation, today=today, context=context)
+        verdict = _VERDICT_FROM_VALIDATION[outcome.verdict]
+        reasons = outcome.reject_reasons + outcome.review_reasons
     else:
         # Matched a structured layout with no single-doc rules (e.g. an ID card): its
         # real validation is the recto+verso reconcile, not a per-doc check. Never auto.

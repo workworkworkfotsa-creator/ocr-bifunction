@@ -54,6 +54,7 @@ from ocr_bifunction.repository import (
     STATUS_FAILED,
     STATUS_NEEDS_REVIEW,
     STATUS_RECEIVED,
+    STATUS_REJECTED,
     Job,
     Repository,
     SqliteRepository,
@@ -199,14 +200,16 @@ class ValidateResponse(BaseModel):
 
     `validated` (200): confident (auto). `pending` (202): a CI complete + doubtful, escalated
     async (poll job_id). `needs_review` (200): doubtful non-CI structured/non-structured doc,
-    decided synchronously (no VLM escalation). `incomplete` (200): a CI side is missing
-    (`missing` says which). `unrecognized` (200): not a recognizable document.
+    decided synchronously (no VLM escalation). `rejected` (200): PROVEN invalid (anti-fraud
+    verdict — bad dates, invented code, holder≠CI), auto-terminal, no human. `incomplete`
+    (200): a CI side is missing (`missing` says which). `unrecognized` (200): not a
+    recognizable document.
     """
 
     status: Literal[
-        "validated", "pending", "needs_review", "incomplete", "unrecognized"
+        "validated", "pending", "needs_review", "rejected", "incomplete", "unrecognized"
     ]
-    verdict: Literal["auto", "human"] | None
+    verdict: Literal["auto", "human", "reject"] | None
     reasons: list[str] = Field(default_factory=list)
     missing: list[str] = Field(default_factory=list)  # subset of ["recto", "verso"]
     # The D1 row id (ocr_jobs.job_id). EVERY submission now leaves a row (single source,
@@ -220,7 +223,7 @@ class JobResponse(BaseModel):
     a CI-only diagnostic with no D1 column — is folded into `reasons` ('verso read via: …')."""
 
     status: Literal["pending", "done"]
-    verdict: Literal["auto", "human"] | None = None
+    verdict: Literal["auto", "human", "reject"] | None = None
     reasons: list[str] = Field(default_factory=list)
 
 
@@ -424,24 +427,42 @@ def _handle_ci_submission(
     return wire
 
 
+# Structured router verdict -> D1 status and the upload-facing wire status. reject is the
+# anti-fraud verdict: proven invalid, auto-terminal, no human review.
+_D1_STATUS_FOR_VERDICT = {
+    "auto": STATUS_DONE,
+    "human": STATUS_NEEDS_REVIEW,
+    "reject": STATUS_REJECTED,
+}
+_WIRE_STATUS_FOR_VERDICT = {
+    "auto": "validated",
+    "human": "needs_review",
+    "reject": "rejected",
+}
+
+
 def _handle_single_document(
     files: list[tuple[str, bytes]], document_type: str | None, request_id: str | None
 ) -> ValidateResponse:
     """Non-CI document types: validate ONE doc via the 2-lane router (no VLM escalation).
 
-    Structured + auto -> validated; structured + human -> needs_review; non-structured
-    (RAG lane) -> needs_review (a human handles it). Multiple files: only the first is used.
-    EVERY outcome leaves a D1 row; the sync needs_review rows are what the review UI lists.
+    Structured verdict -> outcome: auto -> validated; human -> needs_review; reject ->
+    rejected (proven invalid, anti-fraud verdict, terminal). Non-structured (RAG lane) ->
+    needs_review (a human handles it). Multiple files: only the first is used. EVERY outcome
+    leaves a D1 row; the sync needs_review rows are what the review UI lists.
     """
     routed = _run_route_document(files, document_type)
     source = files[0][0]  # the original filename (routed.source is the temp name)
     if routed.lane == "structured":
-        is_auto = routed.verdict == "auto"
+        d1_status = _D1_STATUS_FOR_VERDICT.get(
+            routed.verdict or "", STATUS_NEEDS_REVIEW
+        )
+        wire_status = _WIRE_STATUS_FOR_VERDICT.get(routed.verdict or "", "needs_review")
         job_id = _save_job(
             Job(
                 source=source,
                 category_lane="structured",
-                status=STATUS_DONE if is_auto else STATUS_NEEDS_REVIEW,
+                status=d1_status,
                 execution_lane="fast",
                 verdict=routed.verdict,
                 category=routed.category,
@@ -452,7 +473,7 @@ def _handle_single_document(
             )
         )
         return ValidateResponse(
-            status="validated" if is_auto else "needs_review",
+            status=wire_status,  # type: ignore[arg-type]
             verdict=routed.verdict,  # type: ignore[arg-type]
             reasons=routed.reasons,
             job_id=job_id,
@@ -512,14 +533,16 @@ def validate_document(request: ValidateRequest, response: Response) -> ValidateR
 @app.get("/v1/jobs/{job_id}", response_model=JobResponse)
 def get_job(job_id: int) -> JobResponse:
     """Poll an escalation job by its D1 row id. 404 if unknown. Maps the D1 lifecycle
-    (received/processing/done/needs_review/failed) to the client's pending|done view — every
-    terminal state reads as `done` (the async work is finished; `verdict` says auto vs human)."""
+    (received/processing/done/needs_review/rejected/failed) to the client's pending|done view
+    — every terminal state reads as `done` (the async work is finished; `verdict` says auto vs
+    human vs reject)."""
     job = _get_job_row(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail=f"unknown job_id: {job_id}")
     client_status = (
         "done"
-        if job.status in (STATUS_DONE, STATUS_NEEDS_REVIEW, STATUS_FAILED)
+        if job.status
+        in (STATUS_DONE, STATUS_NEEDS_REVIEW, STATUS_REJECTED, STATUS_FAILED)
         else "pending"
     )
     return JobResponse(
