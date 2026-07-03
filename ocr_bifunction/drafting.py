@@ -20,10 +20,16 @@ The SLM half (naming fields, proposing normalize/pattern rules and validation ch
 only ever DECORATES a deterministic draft; it never creates one. And no draft is
 activated without a human decision (review page -> promotion D2).
 
-Known limit (v1): invariance works at TextLine granularity. A label glued to its
-value inside one line ("Delivree le : 12/03/2024") yields neither an invariant line
-nor a geometry field; a prefix-pattern field family can cover that shape when a real
-cluster demands it.
+Two field families feed the candidates (the re-test gate filters both):
+- GEOMETRY (label TextLine -> variable TextLine below/right) — scanned/OCR layouts,
+  where each region is its own line;
+- COLON-PREFIX PATTERN ("Nom : blondel" glued inside one line/block -> field
+  `pattern`, like the born-digital invoices) — demanded by the real attestation
+  cluster (2026-07-03), where PyMuPDF blocks glue label and value.
+
+Known limit (v2): non-colon glued labels ("Le 12 janvier 2024", exotic layouts)
+have no deterministic derivation; the SLM half proposes those patterns (D-c) and
+the human owns them.
 """
 
 from __future__ import annotations
@@ -41,7 +47,6 @@ from ocr_bifunction.reader import TextLine
 # convention but shared inside the package on purpose — duplicating them would let the
 # two semantics drift apart.
 from ocr_bifunction.template import (
-    _find_anchor_line,
     _normalize_for_match,
     _value_below,
     _value_right,
@@ -66,6 +71,15 @@ _PREFERRED_ANCHOR_MINIMUM_LENGTH = 8
 # happens to repeat across documents is not personal data (two people share it), but it
 # is a brittle anchor — the next legitimate document breaks it.
 _ALPHABETIC_RUN_PATTERN = re.compile(r"[a-zA-ZÀ-ÿ]{4,}")
+# One physical line "label : value" — the colon-prefix field family's raw material.
+_COLON_LINE_PATTERN = re.compile(r"^\s*(?P<label>[^:\n]{2,60}?)\s*:\s*(?P<value>\S.*)$")
+# A colon LABEL only needs a short real word ("Nom", "Tél") — unlike an anchor, it is
+# not brittle alone: its PII filter is exact cross-document invariance + the gate.
+_COLON_LABEL_WORD_PATTERN = re.compile(r"[a-zA-ZÀ-ÿ]{3,}")
+# A geometry "value" holding several physical lines (or very long text) is a table /
+# block dump, not a field value — mechanically stable garbage the gate must refuse.
+_MAXIMUM_FIELD_VALUE_NEWLINES = 1
+_MAXIMUM_FIELD_VALUE_LENGTH = 120
 
 
 @dataclass
@@ -152,14 +166,21 @@ def _sanitize_anchor_text(raw_text: str) -> str:
 
 
 def find_invariant_lines(cluster: list[DraftingDocument]) -> list[TextLine]:
-    """Lines of the FIRST document found (same fuzzy predicate as matching) in EVERY
+    """Lines of the FIRST document whose normalized text is EXACTLY present in every
     other document of the cluster. Cross-document invariance is the mechanical PII
     filter: text identical across documents belonging to different people cannot be
-    personal data. Deduplicated on normalized form; word-free lines (bare dates,
-    numbers) are excluded as brittle anchor material.
+    personal data — and "identical" must mean EXACT normalized equality, NOT the
+    match-time fuzzy predicate: fuzzy would accept two lines sharing a long label
+    prefix with a DIFFERENT per-document value tail, leaking that value into an
+    anchor. (Exact is a subset of fuzzy, so an invariant stays matchable later.)
+    Deduplicated on normalized form; word-free lines (bare dates, numbers) are
+    excluded as brittle anchor material.
     """
     base_document = cluster[0]
-    other_documents = cluster[1:]
+    other_documents_normalized = [
+        {_normalize_for_match(line.text) for line in other.lines}
+        for other in cluster[1:]
+    ]
     invariants: list[TextLine] = []
     seen_normalized: set[str] = set()
     for line in base_document.lines:
@@ -168,10 +189,7 @@ def find_invariant_lines(cluster: list[DraftingDocument]) -> list[TextLine]:
             continue
         if normalized in seen_normalized or not _is_structural_text(line.text):
             continue
-        if all(
-            _find_anchor_line(other.lines, line.text) is not None
-            for other in other_documents
-        ):
+        if all(normalized in other_lines for other_lines in other_documents_normalized):
             invariants.append(line)
             seen_normalized.add(normalized)
     return invariants
@@ -211,6 +229,49 @@ def _placeholder_field_name(label_text: str, taken_names: set[str]) -> str:
     return name
 
 
+def _colon_labels(document: DraftingDocument) -> dict[str, str]:
+    """The document's "label : value" physical lines, keyed by normalized label ->
+    raw label (first occurrence). Blocks are split into physical lines first: a
+    born-digital block glues several of them together."""
+    labels: dict[str, str] = {}
+    for line in document.lines:
+        for physical_line in line.text.splitlines():
+            colon_match = _COLON_LINE_PATTERN.match(physical_line)
+            if colon_match is None:
+                continue
+            raw_label = colon_match.group("label").strip()
+            normalized = _normalize_for_match(raw_label)
+            if len(normalized) < _MINIMUM_ANCHOR_CHARACTERS - 1:
+                continue
+            if not _COLON_LABEL_WORD_PATTERN.search(raw_label):
+                continue
+            labels.setdefault(normalized, raw_label)
+    return labels
+
+
+def _seed_pattern_field_candidates(
+    cluster: list[DraftingDocument], taken_names: set[str]
+) -> list[dict]:
+    """The colon-prefix family: a label glued to its value inside ONE physical line
+    ("Nom : blondel") in EVERY document becomes a `pattern` field (regex over the
+    document text, the same extraction path as born-digital invoices). The label must
+    be invariant across the cluster (the PII filter again); whether the VALUE varies
+    is the re-test gate's job."""
+    base_labels = _colon_labels(cluster[0])
+    other_label_sets = [set(_colon_labels(other)) for other in cluster[1:]]
+    candidates: list[dict] = []
+    for normalized, raw_label in base_labels.items():
+        if not all(normalized in labels for labels in other_label_sets):
+            continue
+        candidates.append(
+            {
+                "name": _placeholder_field_name(raw_label, taken_names),
+                "pattern": re.escape(raw_label) + r"\s*:\s*([^\n]+)",
+            }
+        )
+    return candidates
+
+
 def _seed_field_candidates(
     cluster: list[DraftingDocument], invariant_lines: list[TextLine]
 ) -> list[dict]:
@@ -222,6 +283,7 @@ def _seed_field_candidates(
     invariant_normalized = {_normalize_for_match(line.text) for line in invariant_lines}
     candidates: list[dict] = []
     taken_names: set[str] = set()
+    candidates.extend(_seed_pattern_field_candidates(cluster, taken_names))
     for label_line in invariant_lines:
         for direction, value_finder in (
             ("below", _value_below),
@@ -328,6 +390,15 @@ def draft_from_cluster(
             continue
         if len(set(values)) == 1:
             dropped_fields.append(f"{field_name} (constant across the cluster)")
+            continue
+        if any(
+            value.count("\n") > _MAXIMUM_FIELD_VALUE_NEWLINES
+            or len(value) > _MAXIMUM_FIELD_VALUE_LENGTH
+            for value in values
+        ):
+            dropped_fields.append(
+                f"{field_name} (value is a block/table dump, not a field)"
+            )
             continue
         kept_fields.append(field_entry)
     if not kept_fields:

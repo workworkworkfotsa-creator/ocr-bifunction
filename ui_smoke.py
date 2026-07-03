@@ -247,10 +247,10 @@ def run(facture_path: Path, courrier_path: Path) -> int:
         )
         checks.append(
             (
-                "pending draft carries the full template + 4 candidate checks",
+                "pending draft carries the full template + 5 candidate checks",
                 draft_suggestion is not None
                 and draft_suggestion["draft_template"] is not None
-                and len(candidate_checks) == 4,
+                and len(candidate_checks) == 5,
             )
         )
 
@@ -266,7 +266,7 @@ def run(facture_path: Path, courrier_path: Path) -> int:
         template_repository.close()
         checks.append(
             (
-                "ticked subset promoted: D2 active, required = the 3 ticked checks",
+                "ticked subset promoted: D2 active, required = exactly the ticked checks",
                 promoted_draft.get("promoted_template_id") == "draft_attestation_01"
                 and promoted_row is not None
                 and promoted_row["validation"]["required"] == ticked_checks,

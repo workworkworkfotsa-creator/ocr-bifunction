@@ -107,11 +107,11 @@ def _print_draft_report(template_id: str, report: DraftReport) -> None:
                 str(extraction.get(field_entry["name"]))
                 for extraction in report.extractions_by_source.values()
             )
-            print(
-                f"    - {field_entry['name']}  "
-                f'[{field_entry["direction"]} of "{field_entry["anchor"]}"]  '
-                f"values: {values}"
-            )
+            if "pattern" in field_entry:
+                how = f"pattern {field_entry['pattern']!r}"
+            else:
+                how = f'{field_entry["direction"]} of "{field_entry["anchor"]}"'
+            print(f"    - {field_entry['name']}  [{how}]  values: {values}")
     for dropped in report.dropped_fields:
         print(f"  dropped: {dropped}")
     if report.template is None:

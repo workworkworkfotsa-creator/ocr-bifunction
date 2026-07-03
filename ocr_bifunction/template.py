@@ -88,11 +88,14 @@ def match_template(lines: list[TextLine], templates: list[dict]) -> dict | None:
 
 
 def _value_below(lines: list[TextLine], anchor_line: TextLine) -> TextLine | None:
+    # Same page only: bbox coordinates are per-page, so a cross-page comparison is
+    # meaningless (seen on 2-page attestations: a p1 block "below" a p0 label).
     anchor_x0, anchor_y0 = anchor_line.bbox[0], anchor_line.bbox[1]
     candidates = [
         line
         for line in lines
         if line is not anchor_line
+        and line.page_index == anchor_line.page_index
         and line.bbox[1] > anchor_y0 + 5
         and abs(line.bbox[0] - anchor_x0) <= COLUMN_X_TOLERANCE
     ]
@@ -107,6 +110,7 @@ def _value_right(lines: list[TextLine], anchor_line: TextLine) -> TextLine | Non
         line
         for line in lines
         if line is not anchor_line
+        and line.page_index == anchor_line.page_index
         and line.bbox[0] >= anchor_x1 - 5
         and abs(line.bbox[1] - anchor_y0) <= ROW_Y_TOLERANCE
     ]

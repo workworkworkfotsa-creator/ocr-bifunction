@@ -38,6 +38,13 @@ _ATTESTATION_HOLDERS = ["FICTIF Alice", "EXEMPLE Bruno", "SPECIMEN Chloe"]
 _ATTESTATION_ISSUE_DATES = ["12/03/2024", "05/11/2023", "28/06/2024"]
 _ATTESTATION_EXPIRY_DATES = ["12/03/2027", "05/11/2026", "28/06/2027"]
 _ATTESTATION_CODES = ["H0B0 B1V", "H0B0 BR", "B2V BC"]
+# Glued "label : value" line — exercises the colon-prefix pattern family (the shape
+# born-digital blocks produce, cf. the real attestation cluster).
+_ATTESTATION_REFERENCES = [
+    "DOSSIER-2024-0117",
+    "DOSSIER-2023-0492",
+    "DOSSIER-2024-0663",
+]
 
 _CERTIFICATE_NAMES = ["DEMO Karim", "TEST Nadia"]
 _CERTIFICATE_VISIT_DATES = ["02/05/2026", "17/04/2026"]
@@ -59,7 +66,7 @@ def _write_pdf(path: Path, positioned_lines: list[tuple[float, float, str]]) -> 
 
 
 def _attestation_lines(
-    holder: str, issue_date: str, expiry_date: str, codes: str
+    holder: str, issue_date: str, expiry_date: str, codes: str, reference: str
 ) -> list[tuple[float, float, str]]:
     return [
         (72, 70, "CENTRE DE FORMATION SPECIMEN SAS"),
@@ -73,6 +80,7 @@ def _attestation_lines(
         (72, 388, expiry_date),
         (72, 445, "Codes obtenus"),
         (72, 473, codes),
+        (72, 530, f"Reference du dossier : {reference}"),
     ]
 
 
@@ -101,6 +109,7 @@ def _build_corpus(directory: Path) -> list[Path]:
                 _ATTESTATION_ISSUE_DATES[index],
                 _ATTESTATION_EXPIRY_DATES[index],
                 _ATTESTATION_CODES[index],
+                _ATTESTATION_REFERENCES[index],
             ),
         )
         paths.append(path)
@@ -157,8 +166,8 @@ def main() -> None:
         )
         _check(
             "born-digital blocks kept label and value on separate lines",
-            len(documents[0].lines) == 11,
-            f"(got {len(documents[0].lines)} lines, expected 11)",
+            len(documents[0].lines) == 12,
+            f"(got {len(documents[0].lines)} lines, expected 12)",
         )
 
         print("\n=== D-a clustering ===")
@@ -203,20 +212,47 @@ def main() -> None:
             print(f"  field: {field_entry}")
 
         anchor_material = " ".join(attestation_report.anchors).lower()
+        # Every per-document value is a leak candidate — including the references:
+        # a fuzzy invariance predicate once let "label : VALUE" through as an anchor.
         personal_values = (
-            _ATTESTATION_HOLDERS + _ATTESTATION_ISSUE_DATES + _ATTESTATION_EXPIRY_DATES
+            _ATTESTATION_HOLDERS
+            + _ATTESTATION_ISSUE_DATES
+            + _ATTESTATION_EXPIRY_DATES
+            + _ATTESTATION_CODES
+            + _ATTESTATION_REFERENCES
         )
         _check(
-            "no holder name / date leaked into the match anchors",
+            "no per-document value leaked into the match anchors",
             all(value.lower() not in anchor_material for value in personal_values),
             f"(anchors: {attestation_report.anchors})",
         )
         field_names = {field_entry["name"] for field_entry in draft["fields"]}
         _check(
-            "the 4 variable zones became fields",
+            "the 4 geometry zones + the glued colon line became fields",
             field_names
-            == {"nom_du_titulaire", "delivree_le", "valable_jusqu_au", "codes_obtenus"},
+            == {
+                "nom_du_titulaire",
+                "delivree_le",
+                "valable_jusqu_au",
+                "codes_obtenus",
+                "reference_du_dossier",
+            },
             f"(got {sorted(field_names)})",
+        )
+        reference_field = next(
+            field_entry
+            for field_entry in draft["fields"]
+            if field_entry["name"] == "reference_du_dossier"
+        )
+        reference_values = {
+            extraction["reference_du_dossier"]
+            for extraction in attestation_report.extractions_by_source.values()
+        }
+        _check(
+            "glued line -> PATTERN field, values extracted and varying",
+            "pattern" in reference_field
+            and reference_values == set(_ATTESTATION_REFERENCES),
+            f"(field={reference_field}, values={reference_values})",
         )
         holder_values = {
             extraction["nom_du_titulaire"]

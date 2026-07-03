@@ -29,12 +29,12 @@ discipline smoke-first.
 > réel Playwright vert). Restent : run corpus réel attestations (RapidOCR CPU → **attend le GO**, gate
 > encodé dans `draft_check.py` exit 2), D-c (SLM nommage/checks → machine libre), D-e (oracle : les 2
 > fraudes tirées — demander à l'utilisateur QUELS docs seulement à ce moment).
-> **RUN RÉEL D-a/D-b (2026-07-03, 4 certificats couche-texte, zéro OCR)** : D-a PROUVÉ (paire FICTIS
-> clusterisée 0.59, titres singletons, seuil 0.5 tient) ; anchors PROUVÉS PII-safe (vocabulaire pur,
-> SIRET constant droppé) ; champs = LIMITE v1 DÉMONTRÉE : blocks PyMuPDF collés → valeurs-tables
-> poubelle ET le nom du titulaire capturé sous un label erroné (below/right ignorent `page_index`).
-> → le cluster réel COMMANDE la famille **prefix-pattern** (préfixe invariant dans les blocks :
-> « Nom : », « Prénom : », dates → champ `pattern`, comme les factures) + filtre page dans below/right.
+> **RUN RÉEL D-a/D-b (2026-07-03, 4 certificats couche-texte, zéro OCR) — VERT après 2 itérations**
+> (détail → Fait 2026-07-03, bullet « D-b v2 ») : clustering exact (paire d'attestations 0.59, titres
+> singletons), anchors PII-safe (vocabulaire pur), champs **nom + prénom extraits au pattern** (la
+> matière du reconcile_ci de D-e) ; les dumps de tables et constantes droppés avec raisons. Restent
+> hors famille déterministe : les DATES de formation (« Le 12 janvier 2024 », non-colon, dans les
+> tables) → D-c (le SLM propose ces patterns, l'humain les possède).
 > **Décision métier (2026-07-03) — DEUX régimes d'émetteur** : `attestation_formation` (organisme tiers,
 > SIRET en texte → check `issuer_registry` contre un registre curé) ≠ `titre_habilitation` (émis par
 > l'EMPLOYEUR = auto-déclaré → **jamais auto seul**, check `corroborated_by` : adossé à une attestation
@@ -45,10 +45,11 @@ discipline smoke-first.
 > (vocabulaire/labels/organisme lu en texte), logo-image rejeté. Oracle final (D-e) = les 2 fraudes tirées
 > mécaniquement. **Pièges de reprise** : (1) ⚠️ machine partagée sous stress test VRP (cycles ~2 h) —
 > **sondé 2026-07-03 (PyMuPDF, sans OCR)** : 4 des 5 certificats d'`inputs/` ont une COUCHE TEXTE native
-> (dont la paire FICTIS = même layout, émetteur SIRET/RCS en texte → cluster D-a/D-b runnable SANS OCR) ;
-> seul le scan H0B0 (0 char, image pleine page) exige RapidOCR → **le GO n'est requis que pour lui** ;
-> nuance émetteur : titres d'habilitation = émis par l'EMPLOYEUR (variable → champ, pas ancre), et
-> l'employeur de MW OPTIC n'existe QUE dans l'image d'en-tête (invisible sans OCR) ; (2) D1 ne retient NI chemin NI texte
+> (dont une paire d'attestations du MÊME organisme = même layout, émetteur SIRET/RCS en texte → cluster
+> D-a/D-b runnable SANS OCR) ; seul le scan H0B0 (0 char, image pleine page) exige RapidOCR → **le GO
+> n'est requis que pour lui** ; nuance émetteur : titres d'habilitation = émis par l'EMPLOYEUR (variable
+> → champ, pas ancre), et pour l'un des deux titres l'employeur n'existe QUE dans l'image d'en-tête
+> (invisible sans OCR) — pas de noms de parties ici (repo public), détail → brief drafting ; (2) D1 ne retient NI chemin NI texte
 > des unknowns (`source` = nom de fichier seul) → D-a prend les docs en CLI (`draft_check.py <docs…>`), le
 > câblage « re-lire depuis D1 » (colonne path/texte vs re-scan) = décision séparée à trancher ; (3) SEUL
 > l'utilisateur sait QUELS 2 docs sont frauduleux — le demander au moment de l'oracle D-e, pas avant (ne pas
@@ -162,6 +163,25 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   chemin absolu (`MSYS_NO_PATHCONV=1`) ; PowerShell bloqué par règle `deny` (pas dans `settings.json` global).
 
 ## Fait (2026-07-03)
+- **D-b v2 — famille prefix-pattern + gates durcis ; RE-RUN RÉEL VERT (nom/prénom extraits). Une fuite
+  PII dans l'invariance trouvée par repro et SOLDÉE.** Corrections nées du 1er run réel : (1) **fuite
+  PII** : l'invariance réutilisait le prédicat FUZZY du match (fait pour les slips OCR) → une ligne
+  « label : VALEUR » quasi-identique cross-docs (long préfixe commun, ratio 0.88 > 0.75) passait en
+  ANCRE avec sa valeur (repro synthétique : la référence de dossier) → invariance = **égalité normalisée
+  EXACTE** (exact ⊂ fuzzy : l'ancre reste matchable) + `draft_smoke` durci (TOUTE valeur per-doc interdite
+  en ancre, plus seulement noms/dates). (2) **Famille colon-prefix** (`_seed_pattern_field_candidates`) :
+  « label : valeur » collés dans UN block PyMuPDF → champ **`pattern`** (même chemin d'extraction que les
+  factures) ; label invariant EXACT cross-docs (filtre PII), mot ≥3 lettres (« Nom » est un vrai label —
+  la garde ≥4 des ancres était trop stricte, vécu au re-run). (3) **Garde anti-dump** : valeur extraite
+  >120 chars ou >1 saut de ligne = table/block, droppée avec raison (« mécaniquement stable » ≠ champ).
+  (4) **`_value_below/right` filtrent `page_index`** (`template.py` — iso prouvable : tous les templates
+  géométriques actuels sont mono-page ; vécu : un block p1 « sous » un label p0). **Re-run réel (pool
+  4 certificats)** : anchors inchangés propres, champs = **nom + prénom du titulaire** (valeurs réelles
+  vérifiées en console, non reproduites ici — repo public), 8 candidats droppés avec raisons explicites.
+  `draft_smoke` **12/12** (+ cas « ligne collée → pattern »), `ui_smoke` **15/15** (5 candidats cochables).
+  **2 findings notés** : (a) la similarité TF-IDF dépend du POOL (IDF) — la paire seule score 0.49<0.5,
+  dans un pool de 4 → 0.59 ; cas réel = file d'unknowns mélangée, `--threshold` = bouton si besoin ;
+  (b) les dates de formation (non-colon, enfouies dans les tables) = frontière D-c.
 - **D-d — le draft VOYAGE jusqu'à D2 par le geste humain : schéma D3 + revue v2 (COCHAGE des checks) +
   promotion + re-match, prouvé en NAVIGATEUR RÉEL (zéro llama, zéro OCR — corpus synthétique).**
   (1) **D3** : colonne **`suggested_template_json`** (+ migration auto des .sqlite existants, même patron
