@@ -36,10 +36,16 @@ discipline smoke-first.
 >   L'API route depuis D2 → une catégorie promue apparaît seule dans la select box.
 >
 > **NEXT CONCRET (dans l'ordre) :**
-> 1. **D-c — le SLM contraint** (GBNF/json_schema, machine libre requise) : nomme les champs placeholder,
->    propose `normalize`/`pattern` pour les zones hors-famille-déterministe (ex. dates de formation
->    « Le 12 janvier 2024 », non-colon, dans les tables), propose les CHECKS candidats du kit anti-fraude.
->    Le SLM **propose**, le déterministe **dispose** (gate de re-test inchangé). Patron = `suggestion.py`.
+> 1. **D-c — le SLM contraint** (GBNF/json_schema, machine libre requise). **PARTIE 1 (nommage) FAITE +
+>    PROUVÉE LIVE (2026-07-03, `f578445`)** : `field_naming.py` réveille granite pour nommer sémantiquement
+>    les champs placeholder ; le déterministe **dispose** (sanitize → identifiant sûr, unicité, fallback
+>    placeholder) + **re-test inchangé** sur tout le cluster ; `field_naming_check.py` **10/10** (granite :
+>    `nom_du_titulaire`→`name_of_holder`, etc., valeurs invariantes). PII-free (prompt = placeholders
+>    structurels + méthode d'extraction, JAMAIS les valeurs). **PARTIE 2 (reste)** : propose
+>    `normalize`/`pattern` pour les zones hors-famille-déterministe (dates « Le 12 janvier 2024 »,
+>    non-colon, tables) + propose les CHECKS candidats du kit anti-fraude — **bloquée sur le kit de checks
+>    (item 3)** : sans checks codés, la proposition n'a rien à re-tester. Le SLM **propose**, le
+>    déterministe **dispose**. Patron = `suggestion.py`.
 > 2. **D-e — l'oracle en or** : les checks draftés (`date_order`/`date_span`/`vocabulary`/`reconcile_ci`
 >    strict + `issuer_registry`/`corroborated_by`) doivent TIRER les 2 fraudes vues à l'œil → `needs_review`.
 >    ⚠️ **SEUL l'utilisateur sait QUELS 2 docs** — le demander AU MOMENT de D-e, pas avant (ne pas biaiser).
@@ -172,6 +178,25 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   chemin absolu (`MSYS_NO_PATHCONV=1`) ; PowerShell bloqué par règle `deny` (pas dans `settings.json` global).
 
 ## Fait (2026-07-03)
+- **D-c PARTIE 1 — le SLM contraint NOMME les champs placeholder du draft ; PROUVÉ LIVE (granite via
+  llama-swap, corpus synthétique PII-free, zéro OCR). `f578445`.** Suite déterministe de D-b : le draft
+  sort avec des noms placeholder (slugs de label) ; `ocr_bifunction/field_naming.py` réveille granite
+  (`/completion` + `json_schema` : `placeholder` = enum des champs DU draft → impossible de nommer un champ
+  inexistant ; `name` = string libre) pour proposer un nom sémantique par champ. **Le SLM propose, le
+  déterministe dispose** : `_sanitize_name` (ASCII-fold + slug → identifiant sûr), unicité garantie,
+  **fallback au placeholder** sur vide/collision → le mapping est TOUJOURS total et sans collision ; puis
+  **re-test inchangé** (`_draft_retests_green` = match + extract + validate sur TOUT le cluster) — un
+  renommage qui casse l'extraction (impossible, c'est un pur relabel) → rejet, draft original gardé.
+  **PII-free** : le prompt n'envoie QUE les placeholders (déjà des slugs structurels) + la méthode
+  d'extraction (below/right/pattern), **jamais les valeurs** (la PII du titulaire) — même discipline que
+  `suggestion.py`. **Prouvé** : `field_naming_check.py` **10/10** (réutilise le corpus de `draft_smoke`) —
+  granite a renommé les 5 champs attestation (`nom_du_titulaire`→`name_of_holder`, `delivree_le`→
+  `date_of_issue`, `codes_obtenus`→`codes_obtained`…), re-test vert sur le cluster 3-docs, **invariance des
+  valeurs** vérifiée (le relabel change les noms, pas les valeurs), règles `validation.required` suivent le
+  renommage (zéro champ pendant). Warmup granite ~129 s (load), appels ensuite = secondes ; machine libérée
+  (mon task llama-swap seul arrêté, 0 orphelin). **Additif — aucun module existant touché** (zéro régression).
+  **PARTIE 2 restante** (normalize/pattern hors-famille + CHECKS candidats) **bloquée sur le kit de checks
+  non codé** : sans validateur, une proposition de check n'a rien à re-tester. Oracle = run réel, pas de pytest.
 - **D-b v2 — famille prefix-pattern + gates durcis ; RE-RUN RÉEL VERT (nom/prénom extraits). Une fuite
   PII dans l'invariance trouvée par repro et SOLDÉE.** Corrections nées du 1er run réel : (1) **fuite
   PII** : l'invariance réutilisait le prédicat FUZZY du match (fait pour les slips OCR) → une ligne
