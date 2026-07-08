@@ -37,23 +37,21 @@ structurels/logiques + KAT (composite MRZ), conforme à la discipline smoke-firs
 >   L'API route depuis D2 → une catégorie promue apparaît seule dans la select box.
 >
 > **NEXT CONCRET (dans l'ordre) :**
-> 1. **D-c — le SLM contraint** (GBNF/json_schema, machine libre requise). **PARTIE 1 (nommage) FAITE +
->    PROUVÉE LIVE (2026-07-03, `f578445`)** : `field_naming.py` réveille granite pour nommer sémantiquement
->    les champs placeholder ; le déterministe **dispose** (sanitize → identifiant sûr, unicité, fallback
->    placeholder) + **re-test inchangé** sur tout le cluster ; `field_naming_check.py` **10/10** (granite :
->    `nom_du_titulaire`→`name_of_holder`, etc., valeurs invariantes). PII-free (prompt = placeholders
->    structurels + méthode d'extraction, JAMAIS les valeurs). **PARTIE 2 (reste)** : propose
->    `normalize`/`pattern` pour les zones hors-famille-déterministe (dates « Le 12 janvier 2024 »,
->    non-colon, tables) + propose les CHECKS candidats du kit anti-fraude — **bloquée sur le kit de checks
->    (item 3)** : sans checks codés, la proposition n'a rien à re-tester. Le SLM **propose**, le
+> 1. **D-c — le SLM contraint.** **PARTIE 1 (nommage) FAITE (`f578445`) + BRANCHÉE AU FLUX (2026-07-08,
+>    `--slm-naming` de la passe DRAFT, fallback placeholders si serveur mort).** **PARTIE 2 : cœur
+>    déterministe FAIT (2026-07-08)** — `seed_candidate_checks` propose `date_order`/`date_span`/
+>    `vocabulary` + `normalize date_ddmmyyyy` depuis les extractions du cluster (garde PII par
+>    récurrence), re-testé par la gate D-b. **Reste la part SLM** : `normalize`/`pattern` pour les
+>    zones hors-famille (dates « Le 12 janvier 2024 », non-colon, tables). Le SLM **propose**, le
 >    déterministe **dispose**. Patron = `suggestion.py`.
-> 2. **D-e — l'oracle en or** : les 6 checks + le verdict 3-états sont codés ET **câblés de bout en bout**
->    (structuré + CI/MRZ → `rejected` ; template bizarre → `needs_review`) — cf. Fait `ab397d6`/`bab3ab7`.
->    Reste UNIQUEMENT le côté DONNÉES : (a) peupler un `ValidationContext` RÉEL (record CI du technicien,
->    registre organismes curé, D1 des attestations validées) — le threading `context`/`today` est déjà en
->    place jusqu'à `route_document`/`process_batch`, il suffit de le remplir ; (b) prouver sur les 2 vraies
->    fraudes qu'elles sortent `rejected`. ⚠️ **SEUL l'utilisateur sait QUELS 2 docs** — le demander AU
->    MOMENT de D-e, pas avant (ne pas biaiser). Les checks purs (dates/vocabulary) tirent déjà sans contexte.
+> 2. **D-e — l'oracle en or : PLOMBERIE FAITE (2026-07-08)** — registre d'organismes curable
+>    (`issuer_registry.py`, page `/registry`) + `ValidationContext(issuer_registry)`/`today` câblés
+>    dans la porte ET le watchdog. **Reste le côté DONNÉES, bloqué sur 3 réponses UTILISATEUR** :
+>    (a) QUELS 2 docs sont les vraies fraudes (à prouver `rejected`) ; (b) la LIAISON doc↔titulaire
+>    (d'où vient `ci_reference_name` : champ dossier à l'upload ? record CI en D1 ?) ; (c) le mapping
+>    AttestationReference (quels champs du record = holder/issue/expiry pour `corroborated_by`).
+>    Les checks purs (dates/vocabulary) tirent déjà sans contexte ; `reconcile_ci`/`corroborated_by`
+>    fail-loud → review en attendant.
 > 3. **Kit de checks anti-fraude — COMPLET (6 checks) + PROUVÉ (2026-07-03).** PURS (`7a67297`) :
 >    `date_order`/`date_span`/`vocabulary` (`checks_check.py` **12/12**). CONTEXTUELS (`97075e2`) :
 >    `reconcile_ci`/`issuer_registry`/`corroborated_by` via `ValidationContext` (dataclass, keyword-only
@@ -76,10 +74,12 @@ structurels/logiques + KAT (composite MRZ), conforme à la discipline smoke-firs
 > d'organisme validée du même titulaire, reconcile STRICT Ahmed≠Hamed). Concepts → `docs/dictionnaire-
 > metier.md` (créé, curé+confirmé). Détail → brief drafting § régimes d'émetteur.
 >
-> **PIÈGE PERSISTANT** : D1 ne retient NI chemin NI texte des unknowns (`source` = nom de fichier seul)
-> → D-a prend les docs en CLI ; le câblage « re-lire depuis D1 » (colonne path/texte vs re-scan) reste une
-> décision à trancher. **Finding D-a** : la similarité TF-IDF dépend du POOL (IDF) — une paire seule peut
-> scorer <0.5 et ≥0.5 dans un pool plus large ; `--threshold` = le bouton.
+> **PIÈGE SOLDÉ (2026-07-08)** : « D1 ne retient ni chemin ni texte des unknowns » → résolu par la
+> **rétention du spool** : une row `needs_review` GARDE ses bytes (`document_ref`), purgés seulement à
+> la clôture (sweep) ou tout autre état terminal. La passe DRAFT nightly clusterise depuis D1 (plus de
+> CLI obligatoire) ; `draft_check.py` reste utilisable à la main. **Finding D-a toujours vrai** : la
+> similarité TF-IDF dépend du POOL (IDF) — une paire seule peut scorer <0.5 et ≥0.5 dans un pool plus
+> large ; `--threshold` = le bouton.
 >
 > Contexte stable : mix local (uvicorn + watchdog + navigateur) LIVRÉ + prouvé (2026-07-02) ; D1/D2/D3
 > proxifiés + consolidés end-to-end ; lane SLM de suggestion (liste fermée) live dans le batch.
@@ -189,6 +189,36 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   chemin absolu (`MSYS_NO_PATHCONV=1`) ; PowerShell bloqué par règle `deny` (pas dans `settings.json` global).
 
 ## Fait (2026-07-08)
+- **FLUX COMPLET fermé depuis les surfaces — upload → décision → revue (doc visible) → drafting
+  automatique → cochage → promotion → re-match ; prouvé `flow_smoke.py` 14/14 + navigateur réel.**
+  Décisions utilisateur : (1) garder le spool ; (2) lier le drafting au flux ; (3) doc ET extraction
+  côte à côte en revue (« cela nous permet aussi d'évaluer l'extraction ») ; plugger D-c et D-e.
+  Livré : **(A) rétention du spool** — toute row `needs_review` garde ses bytes (`document_ref`),
+  y compris la lane sync (`_spool_files`) ; le watchdog ne purge PLUS sur needs_review, le **sweep
+  purge à la clôture** ; endpoint `GET /v1/jobs/{id}/document` (+`?index=`) ; la file de revue expose
+  `documents[]` et `review.html` rend le doc (img/embed PDF) à côté des champs/raisons (prouvé
+  Playwright, screenshot envoyé). **(B) passe DRAFT dans le flux** — `ocr_bifunction/drafting_flow.py`
+  (`run_draft_pass`) branchée sur `--nightly` : unknowns needs_review avec bytes → cluster D-a →
+  draft D-b → **D-c partie 2 déterministe** (`drafting.seed_candidate_checks` : champs 100 % dates →
+  `normalize date_ddmmyyyy` + candidats `date_order`/`date_span` à écart d'années constant ;
+  **vocabulary avec garde PII par RÉCURRENCE** — un token n'entre dans `allowed` que s'il revient
+  dans ≥2 docs : un nom de titulaire n'y entre jamais, un code réglementaire oui) → re-test gate D-b
+  inchangée (candidats infaisables droppés avec raison) → **D-c partie 1 opt-in `--slm-naming`**
+  (granite nomme ; serveur mort → placeholders + raison, jamais bloquant) → stage D3 sur le 1er job
+  du cluster. **Idempotent** (suggestion déjà stagée → skip) ; images sans OCR → skip sauf
+  `--draft-ocr` (frein machine partagée) ; catégorie = le type déclaré par l'appelant (fix : la lane
+  rag persiste maintenant `document_type` au lieu de None). **(C) plomberie D-e** —
+  `ocr_bifunction/issuer_registry.py` (table `ocr_issuer_registry`, curation métier) + endpoints
+  GET/PUT/DELETE `/v1/issuer-registry` + page `/registry` ; **contexte câblé** : porte API et
+  watchdog passent `ValidationContext(issuer_registry=…)` + `today` à `route_document` (registre
+  vide → None → review fail-loud). `reconcile_ci`/`corroborated_by` restent fail-loud → **questions
+  D-e posées à l'utilisateur** (les 2 docs fraude ; liaison doc↔titulaire ; mapping attestation).
+  **Prouvé** : `flow_smoke.py` **14/14** (bytes servis = originaux ; draft stagé par la passe avec
+  4 types de candidats ; garde PII (l'ancre organisme « SPECIMEN SAS » ≠ PII titulaire, faux positif
+  de smoke corrigé) ; idempotence ; subset coché promu ; 4e doc re-matche `validated/auto` avec
+  **dates ISO au record** (normalize prouvé par extraction) ; sweep purge le spool ; registre CRUD).
+  Régressions vertes : policy_smoke 20/20, ui_smoke 15/15, draft_smoke 12/12, checks 12/12,
+  context_checks 14/14, verdict_flow 7/7, review_check.
 - **Politiques d'exécution — la surface de config « QUAND traiter » livrée + prouvée (demande
   utilisateur : le mapping catégorie→régime doit être une config opérée, les infra/besoins changent ;
   cohabitation avec la variable optionnelle de l'API).** Nouveau domaine **D4** `ocr_execution_policies`

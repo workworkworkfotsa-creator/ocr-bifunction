@@ -100,3 +100,32 @@ Source de vérité : `ocr_bifunction/execution_policy.py` (`EXECUTION_MODES`, `r
 (`CONTINUOUS_EXECUTION_LANES`, `--nightly`). Prouvé : `policy_smoke.py` 20/20 (2026-07-08).
 Voir aussi [[verdict de routing (auto / humain / invalide)]] — le verdict dit « vers qui »,
 la politique dit « quand ».
+
+## registre des organismes (de formation)
+
+La liste CURÉE des organismes de formation reconnus — la preuve forte du régime
+[[attestation de formation (organisme)]] : l'émetteur lu sur le document (SIRET de préférence, un nom
+se copie) doit appartenir à cette liste. C'est l'expert métier qui la possède et l'édite (page
+`/registry`), pas l'IT ni l'algo. **Registre vide ou émetteur absent → revue humaine, JAMAIS un pass
+silencieux ni un rejet auto** (un organisme inconnu peut être un nouvel organisme légitime que
+l'humain ajoute). Concept confirmé utilisateur 2026-07-03 (2 régimes d'émetteur), surface livrée
+2026-07-08.
+
+Source de vérité : `ocr_bifunction/issuer_registry.py` (table `ocr_issuer_registry`) ; check
+`issuer_registry` → `ocr_bifunction/template.py` (`_check_issuer_registry`) ; contexte câblé →
+`api_maquette._build_validation_context`, `worker_watchdog` (construction par passe).
+Voir [[verdict de routing (auto / humain / invalide)]].
+
+## passe DRAFT (drafting câblé au flux)
+
+L'étape nocturne qui transforme les inconnus ACCUMULÉS en brouillons de templates, sans CLI : les
+rows D1 `needs_review` sans template gardent leurs bytes (rétention du spool) → cluster par layout
+(D-a) → draft par invariance (D-b) → checks candidats dérivés des extractions du cluster (D-c
+partie 2 déterministe : dates → `date_order`/`date_span`, codes récurrents → `vocabulary` ; **garde
+PII = récurrence** : un token n'entre en liste fermée que s'il revient dans ≥2 documents — un nom de
+titulaire n'y entre jamais) → nommage SLM opt-in (fallback placeholders) → suggestion D3 `pending`
+que l'humain COCHE et valide (promotion D2, re-match). Idempotente nuit après nuit.
+
+Source de vérité : `ocr_bifunction/drafting_flow.py` (`run_draft_pass`),
+`ocr_bifunction/drafting.py` (`seed_candidate_checks`), `worker_watchdog.py` (`--nightly`,
+`--draft-ocr`, `--slm-naming`). Prouvé : `flow_smoke.py` 14/14 (2026-07-08).
