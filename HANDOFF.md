@@ -52,8 +52,12 @@ structurels/logiques + KAT (composite MRZ), conforme à la discipline smoke-firs
 >    à l'upload (saisi à la main, colonne D1, voyage avec les jobs async) → `ci_reference_name` de
 >    `reconcile_ci` ; prouvé `holder_reference_smoke.py` 5/5. **Upgrade actée « pour plus tard »** :
 >    lire le titulaire depuis le record CI validé en D1 au lieu de la saisie manuelle.
->    (c) mapping AttestationReference (`corroborated_by`) : ENCORE OUVERT (pas répondu).
->    `corroborated_by` reste fail-loud → review en attendant.
+>    (c) **mapping AttestationReference : RÉPONDU + IMPLÉMENTÉ (2026-07-08)** — « configurable par
+>    le métier » : bloc `attestation_reference_roles` {holder/issue_date/expiry_date}_field qui
+>    VOYAGE avec le template (colonne D2 `reference_roles_json`), assigné par le reviewer à la
+>    promotion (selects de la page revue) ou curé à la main ; `context_assembly.py` projette les
+>    jobs D1 clos de ces templates en `AttestationReference`. Prouvé `corroboration_smoke.py` 7/7.
+>    **→ Les 3 questions D-e sont soldées ; ne reste que la preuve fraude réelle (attente métier).**
 > 3. **Kit de checks anti-fraude — COMPLET (6 checks) + PROUVÉ (2026-07-03).** PURS (`7a67297`) :
 >    `date_order`/`date_span`/`vocabulary` (`checks_check.py` **12/12**). CONTEXTUELS (`97075e2`) :
 >    `reconcile_ci`/`issuer_registry`/`corroborated_by` via `ValidationContext` (dataclass, keyword-only
@@ -191,6 +195,23 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   chemin absolu (`MSYS_NO_PATHCONV=1`) ; PowerShell bloqué par règle `deny` (pas dans `settings.json` global).
 
 ## Fait (2026-07-08)
+- **Rôles d'attestation configurables par le MÉTIER — `corroborated_by` tire de bout en bout à
+  travers la porte ; les 2 régimes d'émetteur sont opérationnels dans le flux.** Décision
+  utilisateur : le mapping « quels champs du record = titulaire / délivrance / expiration » doit
+  être configurable par le métier → bloc **`attestation_reference_roles`** qui voyage AVEC le
+  template (comme les checks) : nouvelle colonne D2 `reference_roles_json` (+ migration auto,
+  `template_repository.py` — piège attrapé : l'upsert D2 aurait silencieusement PERDU le bloc) ;
+  **assignation par le reviewer à la promotion** (3 selects « titulaire / délivrance / expiration »
+  sur la carte draft de `review.html`, parmi les champs du draft — les 3 ou aucun ; gardes 400 :
+  mapping incomplet, champ inexistant) ; `ocr_bifunction/context_assembly.py` =
+  `collect_validated_attestations` (jobs D1 `done` des templates à rôles → `AttestationReference`,
+  projection mécanique, zéro code par type de doc). Contexte branché porte (par requête) + watchdog
+  (par passe — une attestation fraîchement close corrobore dès la passe suivante). **Prouvé** :
+  `corroboration_smoke.py` **7/7** (round-trip D2 du bloc ; attestation validée on-file ; titre
+  même titulaire dans la fenêtre → **validated/auto corroboré** ; titre sans attestation couvrante
+  → review (jamais reject — « ma mère peut me faire une certif » = en attente, pas prouvé faux) ;
+  titre hors fenêtre → review ; gardes 400 ; la promotion écrit le bloc en D2). Régressions
+  vertes : flow 14/14, holder 5/5, policy 20/20, review, promotion, ui_smoke.
 - **Titulaire déclaré (liaison doc↔titulaire MANUELLE) — décision utilisateur implémentée + prouvée.**
   Réponses D-e : pas de fraude confirmée (soupçon attestations, attente métier) ; le titulaire est
   saisi À LA MAIN pour l'instant (l'auto-liaison depuis le record CI D1 = upgrade plus tard).

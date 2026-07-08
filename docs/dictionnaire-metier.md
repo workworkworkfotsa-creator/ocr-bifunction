@@ -146,3 +146,23 @@ Source de vérité : `api_maquette.py` (`ValidateRequest.expected_holder_name`,
 (`_check_reconcile_ci`) ; normalisation stricte → `ocr_bifunction/reconcile.py`.
 Prouvé : `holder_reference_smoke.py` 5/5 (2026-07-08).
 Voir [[verdict de routing (auto / humain / invalide)]].
+
+## rôles d'attestation (mapping métier pour la corroboration)
+
+Le mapping « quels champs du record d'une attestation validée jouent les rôles titulaire /
+délivrance / expiration » quand ses documents servent à CORROBORER un [[titre-d-habilitation]]
+(check `corroborated_by`). **Confirmé utilisateur 2026-07-08 : c'est de la CONFIG MÉTIER, pas du
+code** — le bloc `attestation_reference_roles` voyage AVEC le template (même doctrine que les
+checks : compute-all/config-requires) et c'est le reviewer qui l'assigne à la promotion (3 selects
+sur la carte draft, parmi les champs du draft — les 3 rôles ou aucun). Un template sans bloc ne
+corrobore rien ; aucun code à écrire par type de document. La projection record→référence est
+mécanique (`context_assembly.py`) : jobs D1 clos (`done`) des templates à rôles →
+`AttestationReference` (titulaire strict, fenêtre de validité ISO).
+
+Source de vérité : `ocr_bifunction/context_assembly.py` (`ATTESTATION_REFERENCE_ROLES_KEY`,
+`collect_validated_attestations`) ; colonne D2 `reference_roles_json`
+(`ocr_bifunction/template_repository.py`) ; assignation → `api_maquette.py`
+(`ValidateSuggestionRequest.reference_roles`, gardes 400) + `ui/review.html` ; check →
+`ocr_bifunction/template.py` (`_check_corroborated_by`). Prouvé : `corroboration_smoke.py` 7/7
+(2026-07-08). Voir [[attestation de formation (organisme)]], [[titre-d-habilitation]],
+[[titulaire attendu (liaison document-titulaire)]].
