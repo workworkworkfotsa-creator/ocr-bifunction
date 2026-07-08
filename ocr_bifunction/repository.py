@@ -58,9 +58,14 @@ class Job:
     path or needs escalation; `verdict` is the ④/⑤ auto/human decision."""
 
     source: str
-    category_lane: str  # 'ci' | 'structured' | 'rag'
+    category_lane: (
+        str  # 'ci' | 'structured' | 'rag' | 'unrouted' (async, router not run yet)
+    )
     status: str  # one of STATUS_*
-    execution_lane: str = "fast"  # 'fast' | 'escalation'
+    # 'fast' = in the request; 'escalation' = doubtful CI re-run (VLM); 'deferred' =
+    # policy async_immediate (continuous watchdog); 'nightly' = policy async_nightly
+    # (drained only by a `--nightly` pass — the cron seam).
+    execution_lane: str = "fast"
     verdict: str | None = None  # 'auto' | 'human'
     category: str | None = None
     template_id: str | None = None
@@ -113,8 +118,15 @@ class Repository(ABC):
         verdict: str | None = None,
         record_fields: dict[str, str | None] | None = None,
         reasons: list[str] | None = None,
+        category_lane: str | None = None,
+        category: str | None = None,
+        template_id: str | None = None,
     ) -> None:
-        """The worker's state transition: advance a job and (optionally) write its result."""
+        """The worker's state transition: advance a job and (optionally) write its result.
+
+        `category_lane`/`category`/`template_id` let the worker FINALIZE a row that was
+        enqueued before routing (an async 'unrouted' job): once routed, the row says
+        honestly what the document turned out to be."""
 
     @abstractmethod
     def close(self) -> None: ...
@@ -314,6 +326,9 @@ class SqliteRepository(Repository):
         verdict: str | None = None,
         record_fields: dict[str, str | None] | None = None,
         reasons: list[str] | None = None,
+        category_lane: str | None = None,
+        category: str | None = None,
+        template_id: str | None = None,
     ) -> None:
         assignments = ["status = ?", "updated_at = ?"]
         parameters: list[object] = [status, self._clock()]
@@ -326,6 +341,15 @@ class SqliteRepository(Repository):
         if reasons is not None:
             assignments.append("reasons = ?")
             parameters.append(json.dumps(reasons, ensure_ascii=False))
+        if category_lane is not None:
+            assignments.append("category_lane = ?")
+            parameters.append(category_lane)
+        if category is not None:
+            assignments.append("category = ?")
+            parameters.append(category)
+        if template_id is not None:
+            assignments.append("template_id = ?")
+            parameters.append(template_id)
         parameters.append(job_id)
         self._connection.execute(
             f"UPDATE ocr_jobs SET {', '.join(assignments)} WHERE job_id = ?", parameters

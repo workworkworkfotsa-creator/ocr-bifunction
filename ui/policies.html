@@ -1,0 +1,145 @@
+<!doctype html>
+<!-- Execution-policy page — disposable local-test adapter over the policy endpoints.
+     No business logic here: it lists /v1/execution-policies and writes rows back with
+     PUT/DELETE. The RESOLUTION (policy vs caller hint) lives in the engine, never here.
+     No PII in this file. -->
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <title>OCR BiFunction — Politiques d'exécution</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 2rem auto; max-width: 52rem; color: #222; }
+    h1 { font-size: 1.3rem; }
+    table { border-collapse: collapse; width: 100%; margin-top: 1rem; }
+    th, td { border: 1px solid #ccc; padding: 0.5rem 0.7rem; text-align: left; font-size: 0.95rem; }
+    th { background: #f2f2f2; }
+    select { font-size: 0.95rem; }
+    button { padding: 0.25rem 0.9rem; font-size: 0.9rem; cursor: pointer; }
+    .muted { color: #666; font-size: 0.85rem; }
+    #message { margin-top: 1rem; padding: 0.6rem 1rem; border-radius: 8px; display: none; }
+    #message.ok   { background: #e7f6e7; border: 1px solid #7c7; display: block; }
+    #message.warn { background: #fff7e0; border: 1px solid #dbb84d; display: block; }
+    code { background: #f4f4f4; padding: 0 0.25rem; }
+    a { color: #2a5db0; }
+  </style>
+</head>
+<body>
+  <h1>OCR BiFunction — Politiques d'exécution</h1>
+  <p class="muted">
+    Qui tourne quand : <code>sync</code> = dans la requête (secondes) ;
+    <code>async_immediate</code> = file continue du watchdog ;
+    <code>async_nightly</code> = passe de nuit (<code>--nightly</code>).
+    La ligne <code>*</code> = défaut pour toute catégorie sans ligne propre.
+    « Override » = le client de l'API peut imposer son <code>processing_mode</code>.
+    Dépôt : <a href="/">page upload</a> · Revue : <a href="/review">page revue</a>.
+  </p>
+
+  <table>
+    <thead>
+      <tr><th>Catégorie</th><th>Mode d'exécution</th><th>Override client</th><th></th></tr>
+    </thead>
+    <tbody id="rows"></tbody>
+  </table>
+
+  <div id="message"></div>
+
+  <script>
+    const rowsBody = document.getElementById("rows");
+    const messagePanel = document.getElementById("message");
+    let executionModes = [];
+
+    function say(kind, text) {
+      messagePanel.className = kind;
+      messagePanel.textContent = text;
+    }
+
+    function modeSelect(currentMode) {
+      const select = document.createElement("select");
+      for (const mode of executionModes) {
+        const option = document.createElement("option");
+        option.value = mode;
+        option.textContent = mode;
+        option.selected = mode === currentMode;
+        select.appendChild(option);
+      }
+      return select;
+    }
+
+    function addRow(category, currentMode, overrideAllowed, hasOwnRow) {
+      const row = document.createElement("tr");
+
+      const categoryCell = document.createElement("td");
+      categoryCell.textContent = category;
+      if (!hasOwnRow) {
+        const badge = document.createElement("span");
+        badge.className = "muted";
+        badge.textContent = " (hérite de *)";
+        categoryCell.appendChild(badge);
+      }
+      row.appendChild(categoryCell);
+
+      const select = modeSelect(currentMode);
+      const modeCell = document.createElement("td");
+      modeCell.appendChild(select);
+      row.appendChild(modeCell);
+
+      const overrideCheckbox = document.createElement("input");
+      overrideCheckbox.type = "checkbox";
+      overrideCheckbox.checked = overrideAllowed;
+      const overrideCell = document.createElement("td");
+      overrideCell.appendChild(overrideCheckbox);
+      row.appendChild(overrideCell);
+
+      const actionCell = document.createElement("td");
+      const saveButton = document.createElement("button");
+      saveButton.textContent = "Enregistrer";
+      saveButton.addEventListener("click", async () => {
+        const response = await fetch("/v1/execution-policies/" + encodeURIComponent(category), {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            execution_mode: select.value,
+            override_allowed: overrideCheckbox.checked,
+          }),
+        });
+        if (response.ok) { say("ok", "Politique « " + category + " » enregistrée."); load(); }
+        else { say("warn", "Erreur " + response.status + " : " + (await response.json()).detail); }
+      });
+      actionCell.appendChild(saveButton);
+
+      if (hasOwnRow && category !== "*") {
+        const revertButton = document.createElement("button");
+        revertButton.textContent = "Revenir au défaut";
+        revertButton.style.marginLeft = "0.5rem";
+        revertButton.addEventListener("click", async () => {
+          const response = await fetch("/v1/execution-policies/" + encodeURIComponent(category), {
+            method: "DELETE",
+          });
+          if (response.ok) { say("ok", "« " + category + " » retombe sur la politique *."); load(); }
+          else { say("warn", "Erreur " + response.status + " : " + (await response.json()).detail); }
+        });
+        actionCell.appendChild(revertButton);
+      }
+      row.appendChild(actionCell);
+      rowsBody.appendChild(row);
+    }
+
+    async function load() {
+      const body = await (await fetch("/v1/execution-policies")).json();
+      executionModes = body.execution_modes;
+      rowsBody.innerHTML = "";
+      const defaultRow = body.policies.find(policy => policy.category === "*");
+      for (const policy of body.policies) {
+        addRow(policy.category, policy.execution_mode, policy.override_allowed, true);
+      }
+      // Categories known to D2 but without their own row: shown inheriting '*', one save away.
+      for (const category of body.categories_without_policy) {
+        addRow(category, defaultRow ? defaultRow.execution_mode : "sync",
+               defaultRow ? defaultRow.override_allowed : false, false);
+      }
+    }
+
+    load();
+  </script>
+</body>
+</html>

@@ -11,10 +11,12 @@ processes, and closes — the API door only ever INSERTS rows; the review UI onl
 One pass does, in order:
   1. RECOVER  — `processing` rows whose lease expired (a worker crashed mid-job) go back to
                 `received` for a retry, or `failed` once `attempts` hits the cap (poison pill).
-  2. DRAIN    — claim the oldest `received` escalation row (ATOMIC: two workers can never take
-                the same row), re-run the CI submission WITH the escalation engine from the
-                spooled files, write the terminal state, purge the spool dir (PII hygiene).
-                Strictly ONE job at a time (8 GB target: never two heavy engines at once).
+  2. DRAIN    — claim the oldest `received` row lane by lane (ATOMIC: two workers can never
+                take the same row): 'escalation' (doubtful CI, re-run WITH the VLM) and
+                'deferred' (execution policy async_immediate, routed through the 2-lane
+                router) always; 'nightly' (policy async_nightly) only with `--nightly` —
+                the night cron runs `--once --nightly`. Terminal state written, spool dir
+                purged (PII hygiene). Strictly ONE job at a time (8 GB target).
   3. SWEEP    — D3 decisions (accept/reject) on jobs still `needs_review` close those D1 rows
                 (accept -> done, reject -> failed): the UI wrote D3, THIS process writes D1.
 
@@ -39,6 +41,7 @@ from ocr_bifunction.repository import (
     STATUS_DONE,
     STATUS_FAILED,
     STATUS_NEEDS_REVIEW,
+    STATUS_REJECTED,
     Job,
     SqliteRepository,
 )
@@ -46,6 +49,8 @@ from ocr_bifunction.review_repository import (
     DECISION_ACCEPT,
     SqliteReviewRepository,
 )
+from ocr_bifunction.router import route_document
+from ocr_bifunction.template_repository import SqliteTemplateRepository
 
 PROJECT_ROOT = Path(__file__).parent
 TEMPLATES_DIRECTORY = PROJECT_ROOT / "templates"
@@ -99,41 +104,110 @@ def _terminal_from_record(
     return STATUS_NEEDS_REVIEW, "human", record.fields, reasons
 
 
-def _process_claimed_job(
+# Routed-document verdict -> D1 terminal status (mirrors the API/batch bridge): auto ->
+# done; human -> needs_review; reject -> rejected (proven invalid, anti-fraud, terminal).
+_D1_STATUS_FOR_ROUTED_VERDICT = {
+    "auto": STATUS_DONE,
+    "human": STATUS_NEEDS_REVIEW,
+    "reject": STATUS_REJECTED,
+}
+
+
+def _spooled_files(job: Job) -> list[Path]:
+    spool_directory = Path(job.document_ref) if job.document_ref else None
+    if spool_directory is None or not spool_directory.is_dir():
+        raise FileNotFoundError(f"spool missing: {job.document_ref!r}")
+    return sorted(path for path in spool_directory.iterdir() if path.is_file())
+
+
+def _process_routed_job(
+    job: Job,
+    repository: SqliteRepository,
+    fast_engine: OcrEngine,
+    active_templates: list[dict],
+) -> None:
+    """A policy-deferred non-CI job: run the 2-lane router on the spooled document and
+    FINALIZE the row (it was enqueued 'unrouted' — routing now says what it really is)."""
+    source_paths = _spooled_files(job)
+    routed = route_document(
+        source_paths[0],
+        TEMPLATES_DIRECTORY,
+        fast_engine,
+        category=job.category,
+        templates=active_templates,
+    )
+    if routed.lane == "structured":
+        status_value = _D1_STATUS_FOR_ROUTED_VERDICT.get(
+            routed.verdict or "", STATUS_NEEDS_REVIEW
+        )
+        repository.update_status(
+            job.job_id,
+            status_value,
+            verdict=routed.verdict,
+            record_fields=routed.fields,
+            reasons=[*job.reasons, *routed.reasons],
+            category_lane="structured",
+            category=routed.category,
+            template_id=routed.template_id,
+        )
+    else:
+        reasons = [
+            *job.reasons,
+            "non-structured document — routed to retrieval / human review",
+        ]
+        if routed.summary is not None and routed.summary.keywords:
+            reasons.append("keywords: " + ", ".join(routed.summary.keywords))
+        status_value = STATUS_NEEDS_REVIEW
+        repository.update_status(
+            job.job_id, status_value, reasons=reasons, category_lane="rag"
+        )
+    print(f"  job #{job.job_id}: routed -> {status_value}")
+
+
+def _process_ci_job(
     job: Job,
     repository: SqliteRepository,
     fast_engine: OcrEngine,
     escalation_engine: OcrEngine,
 ) -> None:
-    """Re-run the spooled submission WITH the escalation engine; terminal state + spool purge."""
+    """Re-run the spooled CI submission WITH the escalation engine; write the terminal state."""
+    source_paths = _spooled_files(job)
+    result = process_ci_submission(
+        source_paths,
+        fast_engine,
+        TEMPLATES_DIRECTORY,
+        category=job.category,
+        escalation_engine=escalation_engine,
+    )
+    status_value, verdict, fields, reasons = _terminal_from_record(result.record)
+    repository.update_status(
+        job.job_id,
+        status_value,
+        verdict=verdict,
+        record_fields=fields,
+        reasons=reasons,
+    )
+    print(f"  job #{job.job_id}: processed -> {status_value}")
+
+
+def _process_claimed_job(
+    job: Job,
+    repository: SqliteRepository,
+    fast_engine: OcrEngine,
+    escalation_engine: OcrEngine,
+    active_templates: list[dict],
+) -> None:
+    """Dispatch a claimed job to its flow (CI pair vs routed single doc); spool purge either way."""
     try:
-        spool_directory = Path(job.document_ref) if job.document_ref else None
-        if spool_directory is None or not spool_directory.is_dir():
-            raise FileNotFoundError(f"spool missing: {job.document_ref!r}")
-        source_paths = sorted(
-            path for path in spool_directory.iterdir() if path.is_file()
-        )
-        result = process_ci_submission(
-            source_paths,
-            fast_engine,
-            TEMPLATES_DIRECTORY,
-            category=job.category,
-            escalation_engine=escalation_engine,
-        )
-        status_value, verdict, fields, reasons = _terminal_from_record(result.record)
-        repository.update_status(
-            job.job_id,
-            status_value,
-            verdict=verdict,
-            record_fields=fields,
-            reasons=reasons,
-        )
-        print(f"  job #{job.job_id}: processed -> {status_value}")
+        if job.category_lane == "ci":
+            _process_ci_job(job, repository, fast_engine, escalation_engine)
+        else:
+            _process_routed_job(job, repository, fast_engine, active_templates)
     except Exception as error:  # terminal failure lands IN the row, never hidden
         repository.update_status(
             job.job_id,
             STATUS_FAILED,
-            reasons=[f"escalation failure: {type(error).__name__}: {error}"],
+            reasons=[f"worker failure: {type(error).__name__}: {error}"],
         )
         print(f"  job #{job.job_id}: FAILED ({type(error).__name__})")
     finally:
@@ -175,26 +249,39 @@ def _sweep_decisions(
     return closed
 
 
+# The continuously running watchdog drains the doubt escalations AND the policy's
+# async_immediate lane; 'nightly' rows wait for a `--nightly` pass (the night cron seam).
+CONTINUOUS_EXECUTION_LANES = ("escalation", "deferred")
+
+
 def _one_pass(
     repository: SqliteRepository,
     review_repository: SqliteReviewRepository,
     fast_engine: OcrEngine,
     escalation_engine: OcrEngine,
+    active_templates: list[dict],
     lease_seconds: float,
     max_attempts: int,
+    execution_lanes: tuple[str, ...] = CONTINUOUS_EXECUTION_LANES,
 ) -> int:
-    """Recover -> drain (all queued, one at a time) -> sweep. Returns jobs processed."""
+    """Recover -> drain each lane (all queued, one at a time) -> sweep. Returns jobs processed."""
     requeued, gave_up = repository.recover_stale(lease_seconds, max_attempts)
     if requeued or gave_up:
         print(f"  recover: {requeued} requeued, {gave_up} gave up (stale leases)")
     processed = 0
-    while True:
-        job = repository.claim_next("escalation")
-        if job is None:
-            break
-        print(f"  claimed job #{job.job_id} (attempt {job.attempts}) <- {job.source}")
-        _process_claimed_job(job, repository, fast_engine, escalation_engine)
-        processed += 1
+    for execution_lane in execution_lanes:
+        while True:
+            job = repository.claim_next(execution_lane)
+            if job is None:
+                break
+            print(
+                f"  claimed job #{job.job_id} (attempt {job.attempts}, "
+                f"lane {execution_lane}) <- {job.source}"
+            )
+            _process_claimed_job(
+                job, repository, fast_engine, escalation_engine, active_templates
+            )
+            processed += 1
     _sweep_decisions(repository, review_repository)
     return processed
 
@@ -226,6 +313,14 @@ def main() -> int:
         action="store_true",
         help="Use a no-op escalation engine (smokes: no llama, no VLM).",
     )
+    parser.add_argument(
+        "--nightly",
+        action="store_true",
+        help=(
+            "Also drain the 'nightly' lane (execution policy async_nightly). The night "
+            "cron runs `--once --nightly`; the continuous watchdog leaves that lane alone."
+        ),
+    )
     parser.add_argument("--pid-file", type=Path, default=Path("watchdog.pid"))
     arguments = parser.parse_args()
 
@@ -243,11 +338,20 @@ def main() -> int:
 
     repository = SqliteRepository(arguments.store)
     review_repository = SqliteReviewRepository(arguments.store)
+    # D2 read path for the routed (non-CI) jobs: same seed-then-read as the API door, so a
+    # template promoted through the review page matches in the async lanes too.
+    template_repository = SqliteTemplateRepository(arguments.store)
+    template_repository.seed_from_directory(TEMPLATES_DIRECTORY)
+    active_templates = template_repository.active_templates()
     fast_engine = _LazyRapidOcrEngine()
     escalation_engine = _build_escalation_engine(arguments.fake_escalation)
+    execution_lanes = CONTINUOUS_EXECUTION_LANES + (
+        ("nightly",) if arguments.nightly else ()
+    )
     print(
         f"watchdog up (pid {os.getpid()}): store={arguments.store}, "
-        f"escalation={escalation_engine.name}, {'once' if arguments.once else 'loop'}"
+        f"escalation={escalation_engine.name}, lanes={'/'.join(execution_lanes)}, "
+        f"{'once' if arguments.once else 'loop'}"
     )
     try:
         while True:
@@ -256,8 +360,10 @@ def main() -> int:
                 review_repository,
                 fast_engine,
                 escalation_engine,
+                active_templates,
                 arguments.lease_seconds,
                 arguments.max_attempts,
+                execution_lanes,
             )
             if arguments.once:
                 break
@@ -267,6 +373,7 @@ def main() -> int:
     finally:
         repository.close()
         review_repository.close()
+        template_repository.close()
         arguments.pid_file.unlink(missing_ok=True)
     return 0
 

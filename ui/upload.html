@@ -27,11 +27,20 @@
 <body>
   <h1>OCR BiFunction — Dépôt de documents</h1>
   <p class="muted">Maquette locale : les fichiers partent vers <code>POST /v1/documents:validate</code>.
-     File de revue humaine : <a href="/review">page revue</a>.</p>
+     File de revue humaine : <a href="/review">page revue</a> ·
+     Politiques d'exécution : <a href="/policies">page politiques</a>.</p>
 
   <fieldset>
     <label for="document_type">Type de document</label>
     <select id="document_type"><option value="">(détection automatique)</option></select>
+
+    <label for="processing_mode">Mode de traitement (optionnel — la politique du serveur peut l'ignorer)</label>
+    <select id="processing_mode">
+      <option value="">(politique du serveur)</option>
+      <option value="sync">sync — dans la requête</option>
+      <option value="async_immediate">async_immediate — file continue</option>
+      <option value="async_nightly">async_nightly — passe de nuit</option>
+    </select>
 
     <label for="files">Fichier(s) — une soumission (ex. recto + verso, ou un PDF combiné)</label>
     <input type="file" id="files" multiple />
@@ -91,6 +100,8 @@
           ({ filename: f.name, content_base64: await fileToBase64(f) }))),
       };
       if (typeSelect.value) payload.document_type = typeSelect.value;
+      const modeSelect = document.getElementById("processing_mode");
+      if (modeSelect.value) payload.processing_mode = modeSelect.value;
       const response = await fetch("/v1/documents:validate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -103,7 +114,7 @@
       const lines = [...(body.reasons ?? [])];
       if (body.missing?.length) lines.push("côté(s) manquant(s) : " + body.missing.join(", "));
       if (body.job_id != null) lines.push("job D1 : #" + body.job_id);
-      if (body.status === "pending") { render("wait", "Douteux — escaladé en asynchrone", lines); pollJob(body.job_id); return; }
+      if (body.status === "pending") { render("wait", "En attente — traitement asynchrone (doute escaladé ou politique d'exécution)", lines); pollJob(body.job_id); return; }
       render(body.status === "validated" ? "ok" : "warn",
              "Résultat : " + body.status + (body.verdict ? " (" + body.verdict + ")" : ""), lines);
     });

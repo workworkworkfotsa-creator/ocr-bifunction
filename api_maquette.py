@@ -46,6 +46,16 @@ from fastapi import FastAPI, HTTPException, Response, status
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
+from ocr_bifunction.execution_policy import (
+    DEFAULT_POLICY_CATEGORY,
+    EXECUTION_LANE_FOR_ASYNC_MODE,
+    EXECUTION_MODE_SYNC,
+    EXECUTION_MODES,
+    ExecutionPolicy,
+    ExecutionPolicyRepository,
+    SqliteExecutionPolicyRepository,
+    resolve_execution,
+)
 from ocr_bifunction.pipeline import CiSubmissionResult, process_ci_submission
 from ocr_bifunction.promotion import promote_suggestion
 from ocr_bifunction.reader import OcrEngine
@@ -180,6 +190,14 @@ class ValidateRequest(BaseModel):
         default=None,
         description="Idempotency key: replaying it returns the first result verbatim.",
     )
+    processing_mode: Literal["sync", "async_immediate", "async_nightly"] | None = Field(
+        default=None,
+        description=(
+            "Optional caller hint on WHEN to process. Honored only where the category's "
+            "execution policy allows override; otherwise the policy wins and the ignored "
+            "hint is traced in `reasons`."
+        ),
+    )
 
     model_config = {
         "json_schema_extra": {
@@ -272,12 +290,17 @@ def _spool_and_enqueue(
     category: str | None,
     fast_reasons: list[str],
     request_id: str | None,
+    *,
+    category_lane: str = "ci",
+    execution_lane: str = "escalation",
 ) -> int:
     """Persist the uploaded bytes to the spool and insert a `received` D1 row pointing at them.
 
     That row IS the queue entry (the status column is the signal): the watchdog worker — a
-    separate process — claims it, re-runs the submission WITH the VLM from the spooled files
-    (`document_ref`), writes the terminal state and purges the spool directory (PII hygiene)."""
+    separate process — claims it, processes the spooled files (`document_ref`), writes the
+    terminal state and purges the spool directory (PII hygiene). Two producers use this door:
+    the CI doubt escalation (defaults) and the execution policy's async modes
+    (category_lane 'unrouted', execution_lane 'deferred'/'nightly')."""
     spool_directory = SPOOL_ROOT / f"sub_{uuid.uuid4().hex[:12]}"
     spool_directory.mkdir(parents=True, exist_ok=False)
     _write_files(files, spool_directory)
@@ -285,11 +308,11 @@ def _spool_and_enqueue(
     return _save_job(
         Job(
             source=source,
-            category_lane="ci",
+            category_lane=category_lane,
             status=STATUS_RECEIVED,
-            execution_lane="escalation",
+            execution_lane=execution_lane,
             category=category,
-            reasons=fast_reasons,  # WHY the fast path doubted, visible while pending
+            reasons=fast_reasons,  # WHY it waits (doubt or policy), visible while pending
             request_id=request_id,
             document_ref=str(spool_directory),
         )
@@ -526,12 +549,14 @@ def _handle_single_document(
 
 @app.post("/v1/documents:validate", response_model=ValidateResponse)
 def validate_document(request: ValidateRequest, response: Response) -> ValidateResponse:
-    """Validate one upload, dispatched by `document_type` to the flow it declares.
+    """Validate one upload: the EXECUTION POLICY decides WHEN, `document_type` decides WHICH flow.
 
-    `carte_identite` -> CI submission (validated / pending / incomplete+missing /
-    unrecognized). Any other type (facture, preuve_test, …) or none -> a single document
-    through the 2-lane router (validated / needs_review). The hint says what the document
-    is *supposed* to be, so the API runs the matching flow instead of assuming a CI.
+    First the execution policy for the category (fallback '*') resolves sync vs async,
+    honoring the caller's optional `processing_mode` hint only where the policy allows
+    override. Async -> spool + a `received` D1 row in the mode's lane ('deferred' drained
+    continuously, 'nightly' drained by the night pass), answered 202 pending. Sync ->
+    `carte_identite` runs the CI submission flow; any other type (facture, …) or none runs
+    a single document through the 2-lane router.
     """
     if request.request_id and request.request_id in _idempotency_cache:
         cached = _idempotency_cache[request.request_id]
@@ -539,7 +564,32 @@ def validate_document(request: ValidateRequest, response: Response) -> ValidateR
         return cached
 
     files = _decode_files(request)  # may raise 400
-    if request.document_type == "carte_identite":
+    with _repository_lock:
+        policies = {
+            policy.category: policy
+            for policy in _ensure_execution_policy_repository().all_policies()
+        }
+    resolved = resolve_execution(
+        request.document_type, request.processing_mode, policies
+    )
+
+    if resolved.execution_mode != EXECUTION_MODE_SYNC:
+        # Policy says async: no processing in the request. The bytes wait in the spool;
+        # the row's lane says which drain schedule picks it up.
+        job_id = _spool_and_enqueue(
+            files,
+            request.document_type,
+            resolved.reasons,
+            request.request_id,
+            category_lane=(
+                "ci" if request.document_type == "carte_identite" else "unrouted"
+            ),
+            execution_lane=EXECUTION_LANE_FOR_ASYNC_MODE[resolved.execution_mode],
+        )
+        wire = ValidateResponse(
+            status="pending", verdict=None, reasons=resolved.reasons, job_id=job_id
+        )
+    elif request.document_type == "carte_identite":
         wire = _handle_ci_submission(
             files, request.document_type, request.request_id
         )  # may raise 500
@@ -547,6 +597,11 @@ def validate_document(request: ValidateRequest, response: Response) -> ValidateR
         wire = _handle_single_document(
             files, request.document_type, request.request_id
         )  # may raise 500
+    if resolved.execution_mode == EXECUTION_MODE_SYNC and resolved.reasons:
+        wire.reasons = [
+            *wire.reasons,
+            *resolved.reasons,
+        ]  # e.g. an ignored hint, traced
 
     if request.request_id:
         _idempotency_cache[request.request_id] = wire
@@ -609,9 +664,31 @@ def _ensure_template_repository() -> TemplateRepository:
     return _template_repository
 
 
+_execution_policy_repository: ExecutionPolicyRepository | None = None
+
+
+def _ensure_execution_policy_repository() -> ExecutionPolicyRepository:
+    """Build the shared execution-policy store once (lazy). Caller MUST hold `_repository_lock`.
+
+    In-code defaults are seeded on first use (MISSING rows only): an operator edit made
+    through /policies survives restarts, the doctrine of the config surface."""
+    global _execution_policy_repository
+    if _execution_policy_repository is None:
+        _execution_policy_repository = SqliteExecutionPolicyRepository(
+            STORE_PATH, check_same_thread=False
+        )
+        _execution_policy_repository.seed_defaults()
+    return _execution_policy_repository
+
+
 @app.get("/", response_class=HTMLResponse, include_in_schema=False)
 def upload_page() -> str:
     return (UI_DIRECTORY / "upload.html").read_text(encoding="utf-8")
+
+
+@app.get("/policies", response_class=HTMLResponse, include_in_schema=False)
+def policies_page() -> str:
+    return (UI_DIRECTORY / "policies.html").read_text(encoding="utf-8")
 
 
 @app.get("/review", response_class=HTMLResponse, include_in_schema=False)
@@ -819,3 +896,79 @@ def reject_suggestion(review_id: int) -> dict:
             review_id, SUGGESTION_REJECTED
         )
     return {"review_id": review_id, "suggestion_status": SUGGESTION_REJECTED}
+
+
+# --- Execution-policy surface: the /policies page's endpoints (reads the door obeys). ---
+
+
+def _policy_payload(policy: ExecutionPolicy) -> dict:
+    return {
+        "category": policy.category,
+        "execution_mode": policy.execution_mode,
+        "override_allowed": policy.override_allowed,
+        "updated_at": policy.updated_at,
+    }
+
+
+@app.get("/v1/execution-policies")
+def execution_policies() -> dict:
+    """Every policy row + the categories known to D2 (rows the operator may still add).
+
+    The door resolves each upload against these rows; a category without its own row
+    falls back to the '*' default. `execution_modes` feeds the page's select box."""
+    with _repository_lock:
+        policies = _ensure_execution_policy_repository().all_policies()
+        active_templates = _ensure_template_repository().active_templates()
+    categories_with_policy = {policy.category for policy in policies}
+    known_categories = sorted(
+        {
+            template.get("category")
+            for template in active_templates
+            if template.get("category")
+        }
+        - categories_with_policy
+    )
+    return {
+        "policies": [_policy_payload(policy) for policy in policies],
+        "categories_without_policy": known_categories,
+        "execution_modes": list(EXECUTION_MODES),
+    }
+
+
+class ExecutionPolicyRequest(BaseModel):
+    """One policy row as the /policies page writes it."""
+
+    execution_mode: Literal["sync", "async_immediate", "async_nightly"]
+    override_allowed: bool = False
+
+
+@app.put("/v1/execution-policies/{category}")
+def put_execution_policy(category: str, request: ExecutionPolicyRequest) -> dict:
+    """Create or update the policy row for a category ('*' = the default row). Takes
+    effect on the NEXT upload — no restart, no redeploy (the door re-reads per request)."""
+    policy = ExecutionPolicy(
+        category=category,
+        execution_mode=request.execution_mode,
+        override_allowed=request.override_allowed,
+    )
+    with _repository_lock:
+        _ensure_execution_policy_repository().upsert(policy)
+        saved = _ensure_execution_policy_repository().get(category)
+    return _policy_payload(saved) if saved else {"category": category}
+
+
+@app.delete("/v1/execution-policies/{category}")
+def delete_execution_policy(category: str) -> dict:
+    """Remove a category's row so it falls back to the '*' default. The default row
+    itself cannot be deleted — the door always needs a fallback."""
+    if category == DEFAULT_POLICY_CATEGORY:
+        raise HTTPException(
+            status_code=400, detail="the '*' default policy cannot be deleted"
+        )
+    with _repository_lock:
+        removed = _ensure_execution_policy_repository().delete(category)
+    if not removed:
+        raise HTTPException(
+            status_code=404, detail=f"no execution policy for category {category!r}"
+        )
+    return {"category": category, "deleted": True}
