@@ -27,7 +27,9 @@ tables préfixées** (pas 3 bases). « 3 BD » = **3 domaines** = 3 lifecycles +
 Le store opérationnel = le `_jobs` de la maquette rendu réel. La **queue = les lignes `status` en
 attente** (un worker les dépile ; mécanisme = adaptateur). Colonnes (esquisse) :
 
-- `job_id` (PK), `request_id` (idempotence), `document_ref` (pointeur spool). **Lifecycle du spool** :
+- `job_id` (PK), `request_id` (idempotence), `expected_holder_name` (titulaire DÉCLARÉ à la porte —
+  saisie manuelle v1, nourrit `reconcile_ci` ; upgrade futur : lu depuis le record CI validé),
+  `document_ref` (pointeur spool). **Lifecycle du spool** :
   une row `needs_review` GARDE ses bytes (la revue montre le doc, la passe DRAFT clusterise les
   unknowns) ; purge à TOUT autre état terminal et au sweep de clôture — PII hygiène, un seul purgeur
   par phase

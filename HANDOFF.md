@@ -44,14 +44,16 @@ structurels/logiques + KAT (composite MRZ), conforme à la discipline smoke-firs
 >    récurrence), re-testé par la gate D-b. **Reste la part SLM** : `normalize`/`pattern` pour les
 >    zones hors-famille (dates « Le 12 janvier 2024 », non-colon, tables). Le SLM **propose**, le
 >    déterministe **dispose**. Patron = `suggestion.py`.
-> 2. **D-e — l'oracle en or : PLOMBERIE FAITE (2026-07-08)** — registre d'organismes curable
->    (`issuer_registry.py`, page `/registry`) + `ValidationContext(issuer_registry)`/`today` câblés
->    dans la porte ET le watchdog. **Reste le côté DONNÉES, bloqué sur 3 réponses UTILISATEUR** :
->    (a) QUELS 2 docs sont les vraies fraudes (à prouver `rejected`) ; (b) la LIAISON doc↔titulaire
->    (d'où vient `ci_reference_name` : champ dossier à l'upload ? record CI en D1 ?) ; (c) le mapping
->    AttestationReference (quels champs du record = holder/issue/expiry pour `corroborated_by`).
->    Les checks purs (dates/vocabulary) tirent déjà sans contexte ; `reconcile_ci`/`corroborated_by`
->    fail-loud → review en attendant.
+> 2. **D-e — l'oracle en or : plomberie FAITE + réponses utilisateur ACTÉES (2026-07-08).**
+>    (a) **Fraude : AUCUNE confirmée pour l'instant** — l'utilisateur en SOUPÇONNE une sur les
+>    attestations, en attente de **confirmation métier** → la preuve « 2 vraies fraudes → rejected »
+>    est DIFFÉRÉE jusqu'à cette confirmation (ne pas inventer de fraude de test à sa place).
+>    (b) **Liaison doc↔titulaire : MANUELLE, implémentée** — champ optionnel `expected_holder_name`
+>    à l'upload (saisi à la main, colonne D1, voyage avec les jobs async) → `ci_reference_name` de
+>    `reconcile_ci` ; prouvé `holder_reference_smoke.py` 5/5. **Upgrade actée « pour plus tard »** :
+>    lire le titulaire depuis le record CI validé en D1 au lieu de la saisie manuelle.
+>    (c) mapping AttestationReference (`corroborated_by`) : ENCORE OUVERT (pas répondu).
+>    `corroborated_by` reste fail-loud → review en attendant.
 > 3. **Kit de checks anti-fraude — COMPLET (6 checks) + PROUVÉ (2026-07-03).** PURS (`7a67297`) :
 >    `date_order`/`date_span`/`vocabulary` (`checks_check.py` **12/12**). CONTEXTUELS (`97075e2`) :
 >    `reconcile_ci`/`issuer_registry`/`corroborated_by` via `ValidationContext` (dataclass, keyword-only
@@ -189,6 +191,16 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   chemin absolu (`MSYS_NO_PATHCONV=1`) ; PowerShell bloqué par règle `deny` (pas dans `settings.json` global).
 
 ## Fait (2026-07-08)
+- **Titulaire déclaré (liaison doc↔titulaire MANUELLE) — décision utilisateur implémentée + prouvée.**
+  Réponses D-e : pas de fraude confirmée (soupçon attestations, attente métier) ; le titulaire est
+  saisi À LA MAIN pour l'instant (l'auto-liaison depuis le record CI D1 = upgrade plus tard).
+  Livré : champ optionnel **`expected_holder_name`** sur `ValidateRequest` + input « Titulaire
+  attendu » sur l'upload ; **colonne D1** (`ocr_jobs.expected_holder_name`, migration auto) → le
+  déclaré VOYAGE avec les jobs async ; porte : `_build_validation_context(expected_holder_name)` →
+  `ci_reference_name` ; watchdog : contexte PAR JOB (`dataclasses.replace` sur le contexte de passe).
+  **Prouvé** : `holder_reference_smoke.py` **5/5** (match→auto ; mismatch→**rejected** terminal —
+  la fraude fratrie ; absent→review fail-loud ; async : la row porte le déclaré et le watchdog
+  rejette le mismatch). Régressions : flow_smoke 14/14, policy_smoke 20/20, review_check, ui_smoke.
 - **FLUX COMPLET fermé depuis les surfaces — upload → décision → revue (doc visible) → drafting
   automatique → cochage → promotion → re-match ; prouvé `flow_smoke.py` 14/14 + navigateur réel.**
   Décisions utilisateur : (1) garder le spool ; (2) lier le drafting au flux ; (3) doc ET extraction

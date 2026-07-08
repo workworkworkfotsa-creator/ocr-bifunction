@@ -129,3 +129,20 @@ que l'humain COCHE et valide (promotion D2, re-match). Idempotente nuit après n
 Source de vérité : `ocr_bifunction/drafting_flow.py` (`run_draft_pass`),
 `ocr_bifunction/drafting.py` (`seed_candidate_checks`), `worker_watchdog.py` (`--nightly`,
 `--draft-ocr`, `--slm-naming`). Prouvé : `flow_smoke.py` 14/14 (2026-07-08).
+
+## titulaire attendu (liaison document-titulaire)
+
+Le nom du titulaire tel que le DOSSIER le déclare — la référence contre laquelle
+`reconcile_ci` compare le nom lu sur le document (strict, accents pliés seulement :
+la fraude réelle = frères aux noms proches, Ahmed≠Hamed). **v1 (confirmé utilisateur
+2026-07-08) : saisi À LA MAIN** à l'upload (champ optionnel `expected_holder_name`) ;
+absent → le check part en revue (fail-loud), jamais un pass ni un reject silencieux ;
+divergence prouvée → **rejet auto terminal**. **Upgrade actée pour plus tard** : le lire
+automatiquement depuis le record CI validé du même dossier (D1) au lieu de la saisie.
+
+Source de vérité : `api_maquette.py` (`ValidateRequest.expected_holder_name`,
+`_build_validation_context`) ; colonne `ocr_jobs.expected_holder_name`
+(`ocr_bifunction/repository.py`) ; check → `ocr_bifunction/template.py`
+(`_check_reconcile_ci`) ; normalisation stricte → `ocr_bifunction/reconcile.py`.
+Prouvé : `holder_reference_smoke.py` 5/5 (2026-07-08).
+Voir [[verdict de routing (auto / humain / invalide)]].
