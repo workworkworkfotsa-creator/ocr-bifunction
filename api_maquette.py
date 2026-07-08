@@ -204,6 +204,15 @@ class ValidateRequest(BaseModel):
             "hint is traced in `reasons`."
         ),
     )
+    expected_holder_name: str | None = Field(
+        default=None,
+        description=(
+            "Optional DECLARED holder (manual entry for now — the dossier says whose "
+            "document this is). Feeds the reconcile_ci anti-fraud check as the CI "
+            "reference name; absent, that check routes to review (fail-loud). A future "
+            "upgrade reads it from the validated CI record instead."
+        ),
+    )
 
     model_config = {
         "json_schema_extra": {
@@ -312,6 +321,7 @@ def _spool_and_enqueue(
     *,
     category_lane: str = "ci",
     execution_lane: str = "escalation",
+    expected_holder_name: str | None = None,
 ) -> int:
     """Persist the uploaded bytes to the spool and insert a `received` D1 row pointing at them.
 
@@ -331,6 +341,7 @@ def _spool_and_enqueue(
             reasons=fast_reasons,  # WHY it waits (doubt or policy), visible while pending
             request_id=request_id,
             document_ref=_spool_files(files),
+            expected_holder_name=expected_holder_name,
         )
     )
 
@@ -382,18 +393,24 @@ def _run_fast_submission(
 # --- Dispatch by document_type: route the upload to the flow it declares. -------------
 
 
-def _build_validation_context() -> ValidationContext:
+def _build_validation_context(
+    expected_holder_name: str | None = None,
+) -> ValidationContext:
     """Assemble what the context-dependent anti-fraud checks can read TODAY: the curated
-    issuer registry (None when empty — fail-loud review, never an empty false proof).
-    The CI reference and the validated attestations await the D-e data decisions
-    (document<->holder linkage), so those checks keep failing loud to review."""
+    issuer registry (None when empty — fail-loud review, never an empty false proof) and
+    the DECLARED holder (manual entry; feeds reconcile_ci). The validated attestations
+    (corroborated_by) await their field-mapping decision and keep failing loud."""
     with _repository_lock:
         identifiers = _ensure_issuer_registry_repository().identifiers()
-    return ValidationContext(issuer_registry=identifiers)
+    return ValidationContext(
+        ci_reference_name=expected_holder_name, issuer_registry=identifiers
+    )
 
 
 def _run_route_document(
-    files: list[tuple[str, bytes]], category: str | None
+    files: list[tuple[str, bytes]],
+    category: str | None,
+    expected_holder_name: str | None = None,
 ) -> RoutedDocument:
     """Route the first uploaded file through the 2-lane router (non-CI document types).
 
@@ -415,7 +432,7 @@ def _run_route_document(
                 _get_engine(),
                 category=category,
                 templates=active_templates,
-                context=_build_validation_context(),
+                context=_build_validation_context(expected_holder_name),
                 today=date.today(),
             )
         except Exception as error:  # surface a pipeline/engine crash as 5xx, don't hide
@@ -517,7 +534,10 @@ _WIRE_STATUS_FOR_VERDICT = {
 
 
 def _handle_single_document(
-    files: list[tuple[str, bytes]], document_type: str | None, request_id: str | None
+    files: list[tuple[str, bytes]],
+    document_type: str | None,
+    request_id: str | None,
+    expected_holder_name: str | None = None,
 ) -> ValidateResponse:
     """Non-CI document types: validate ONE doc via the 2-lane router (no VLM escalation).
 
@@ -526,7 +546,7 @@ def _handle_single_document(
     needs_review (a human handles it). Multiple files: only the first is used. EVERY outcome
     leaves a D1 row; the sync needs_review rows are what the review UI lists.
     """
-    routed = _run_route_document(files, document_type)
+    routed = _run_route_document(files, document_type, expected_holder_name)
     source = files[0][0]  # the original filename (routed.source is the temp name)
     if routed.lane == "structured":
         d1_status = _D1_STATUS_FOR_VERDICT.get(
@@ -550,6 +570,7 @@ def _handle_single_document(
                 document_ref=(
                     _spool_files(files) if d1_status == STATUS_NEEDS_REVIEW else None
                 ),
+                expected_holder_name=expected_holder_name,
             )
         )
         return ValidateResponse(
@@ -574,6 +595,7 @@ def _handle_single_document(
             reasons=reasons,
             request_id=request_id,
             document_ref=_spool_files(files),
+            expected_holder_name=expected_holder_name,
         )
     )
     return ValidateResponse(
@@ -622,6 +644,7 @@ def validate_document(request: ValidateRequest, response: Response) -> ValidateR
                 "ci" if request.document_type == "carte_identite" else "unrouted"
             ),
             execution_lane=EXECUTION_LANE_FOR_ASYNC_MODE[resolved.execution_mode],
+            expected_holder_name=request.expected_holder_name,
         )
         wire = ValidateResponse(
             status="pending", verdict=None, reasons=resolved.reasons, job_id=job_id
@@ -632,7 +655,10 @@ def validate_document(request: ValidateRequest, response: Response) -> ValidateR
         )  # may raise 500
     else:
         wire = _handle_single_document(
-            files, request.document_type, request.request_id
+            files,
+            request.document_type,
+            request.request_id,
+            request.expected_holder_name,
         )  # may raise 500
     if resolved.execution_mode == EXECUTION_MODE_SYNC and resolved.reasons:
         wire.reasons = [

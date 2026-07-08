@@ -75,6 +75,9 @@ class Job:
     document_ref: str | None = (
         None  # storage pointer (spool dir) for async work on the bytes
     )
+    # The holder name the submitter DECLARED (manual entry for now; a future upgrade
+    # reads it from the validated CI record in D1). Feeds reconcile_ci's reference.
+    expected_holder_name: str | None = None
     attempts: int = 0  # times a worker claimed this row (poison-pill cap)
     job_id: int | None = None  # assigned by the store on save
     created_at: str | None = None
@@ -146,6 +149,7 @@ CREATE TABLE IF NOT EXISTS ocr_jobs (
     record_fields  TEXT,
     reasons        TEXT,
     document_ref   TEXT,
+    expected_holder_name TEXT,
     attempts       INTEGER NOT NULL DEFAULT 0,
     created_at     TEXT NOT NULL,
     updated_at     TEXT NOT NULL
@@ -158,12 +162,13 @@ CREATE INDEX IF NOT EXISTS idx_ocr_jobs_status ON ocr_jobs (status, execution_la
 _MIGRATION_COLUMNS = {
     "document_ref": "ALTER TABLE ocr_jobs ADD COLUMN document_ref TEXT",
     "attempts": "ALTER TABLE ocr_jobs ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0",
+    "expected_holder_name": "ALTER TABLE ocr_jobs ADD COLUMN expected_holder_name TEXT",
 }
 
 _COLUMNS = (
     "job_id, request_id, source, category_lane, category, template_id, status, "
-    "execution_lane, verdict, record_fields, reasons, document_ref, attempts, "
-    "created_at, updated_at"
+    "execution_lane, verdict, record_fields, reasons, document_ref, "
+    "expected_holder_name, attempts, created_at, updated_at"
 )
 
 
@@ -205,8 +210,8 @@ class SqliteRepository(Repository):
         cursor = self._connection.execute(
             "INSERT INTO ocr_jobs (request_id, source, category_lane, category, "
             "template_id, status, execution_lane, verdict, record_fields, reasons, "
-            "document_ref, attempts, created_at, updated_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "document_ref, expected_holder_name, attempts, created_at, updated_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 job.request_id,
                 job.source,
@@ -219,6 +224,7 @@ class SqliteRepository(Repository):
                 json.dumps(job.record_fields, ensure_ascii=False),
                 json.dumps(job.reasons, ensure_ascii=False),
                 job.document_ref,
+                job.expected_holder_name,
                 job.attempts,
                 now,
                 now,
@@ -242,6 +248,7 @@ class SqliteRepository(Repository):
             record_fields=json.loads(row["record_fields"] or "{}"),
             reasons=json.loads(row["reasons"] or "[]"),
             document_ref=row["document_ref"],
+            expected_holder_name=row["expected_holder_name"],
             attempts=row["attempts"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],

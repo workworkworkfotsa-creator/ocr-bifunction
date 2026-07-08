@@ -43,6 +43,9 @@
       <option value="async_nightly">async_nightly — passe de nuit</option>
     </select>
 
+    <label for="expected_holder">Titulaire attendu (optionnel — saisi à la main, nourrit le contrôle anti-fraude reconcile_ci)</label>
+    <input type="text" id="expected_holder" placeholder="ex. NOM Prénom du dossier" style="width: 24rem" />
+
     <label for="files">Fichier(s) — une soumission (ex. recto + verso, ou un PDF combiné)</label>
     <input type="file" id="files" multiple />
 
@@ -103,6 +106,8 @@
       if (typeSelect.value) payload.document_type = typeSelect.value;
       const modeSelect = document.getElementById("processing_mode");
       if (modeSelect.value) payload.processing_mode = modeSelect.value;
+      const expectedHolder = document.getElementById("expected_holder").value.trim();
+      if (expectedHolder) payload.expected_holder_name = expectedHolder;
       const response = await fetch("/v1/documents:validate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },

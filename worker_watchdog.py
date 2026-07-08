@@ -33,6 +33,7 @@ import argparse
 import os
 import shutil
 import time
+from dataclasses import replace
 from datetime import date
 from pathlib import Path
 
@@ -135,13 +136,18 @@ def _process_routed_job(
     FINALIZE the row (it was enqueued 'unrouted' — routing now says what it really is).
     Returns the terminal status."""
     source_paths = _spooled_files(job)
+    # The declared holder travels ON the row (manual entry at the door): it becomes this
+    # job's reconcile_ci reference, layered over the pass-wide context (registry).
+    job_context = replace(
+        validation_context, ci_reference_name=job.expected_holder_name
+    )
     routed = route_document(
         source_paths[0],
         TEMPLATES_DIRECTORY,
         fast_engine,
         category=job.category,
         templates=active_templates,
-        context=validation_context,
+        context=job_context,
         today=date.today(),
     )
     if routed.lane == "structured":
