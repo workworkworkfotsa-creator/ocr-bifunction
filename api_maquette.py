@@ -39,11 +39,12 @@ import os
 import tempfile
 import threading
 import uuid
+from datetime import date
 from pathlib import Path
 from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Response, status
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel, Field
 
 from ocr_bifunction.execution_policy import (
@@ -55,6 +56,11 @@ from ocr_bifunction.execution_policy import (
     ExecutionPolicyRepository,
     SqliteExecutionPolicyRepository,
     resolve_execution,
+)
+from ocr_bifunction.issuer_registry import (
+    IssuerEntry,
+    IssuerRegistryRepository,
+    SqliteIssuerRegistryRepository,
 )
 from ocr_bifunction.pipeline import CiSubmissionResult, process_ci_submission
 from ocr_bifunction.promotion import promote_suggestion
@@ -77,7 +83,7 @@ from ocr_bifunction.review_repository import (
     SqliteReviewRepository,
 )
 from ocr_bifunction.router import RoutedDocument, route_document
-from ocr_bifunction.template import load_templates
+from ocr_bifunction.template import ValidationContext, load_templates
 from ocr_bifunction.template_repository import (
     SqliteTemplateRepository,
     TemplateRepository,
@@ -285,6 +291,19 @@ def _write_files(files: list[tuple[str, bytes]], directory: Path) -> list[Path]:
     return paths
 
 
+def _spool_files(files: list[tuple[str, bytes]]) -> str:
+    """Persist one submission's bytes to a fresh spool directory; return its path.
+
+    The spool is the document's WAITING ROOM: async work reads it, and a `needs_review`
+    row keeps it so the reviewer can SEE the document next to its extraction. The
+    watchdog purges it at every terminal state except needs_review; the sweep purges it
+    when the human decision closes the job (PII hygiene, one owner per phase)."""
+    spool_directory = SPOOL_ROOT / f"sub_{uuid.uuid4().hex[:12]}"
+    spool_directory.mkdir(parents=True, exist_ok=False)
+    _write_files(files, spool_directory)
+    return str(spool_directory)
+
+
 def _spool_and_enqueue(
     files: list[tuple[str, bytes]],
     category: str | None,
@@ -301,9 +320,6 @@ def _spool_and_enqueue(
     terminal state and purges the spool directory (PII hygiene). Two producers use this door:
     the CI doubt escalation (defaults) and the execution policy's async modes
     (category_lane 'unrouted', execution_lane 'deferred'/'nightly')."""
-    spool_directory = SPOOL_ROOT / f"sub_{uuid.uuid4().hex[:12]}"
-    spool_directory.mkdir(parents=True, exist_ok=False)
-    _write_files(files, spool_directory)
     source = ", ".join(filename for filename, _ in files)
     return _save_job(
         Job(
@@ -314,7 +330,7 @@ def _spool_and_enqueue(
             category=category,
             reasons=fast_reasons,  # WHY it waits (doubt or policy), visible while pending
             request_id=request_id,
-            document_ref=str(spool_directory),
+            document_ref=_spool_files(files),
         )
     )
 
@@ -366,6 +382,16 @@ def _run_fast_submission(
 # --- Dispatch by document_type: route the upload to the flow it declares. -------------
 
 
+def _build_validation_context() -> ValidationContext:
+    """Assemble what the context-dependent anti-fraud checks can read TODAY: the curated
+    issuer registry (None when empty — fail-loud review, never an empty false proof).
+    The CI reference and the validated attestations await the D-e data decisions
+    (document<->holder linkage), so those checks keep failing loud to review."""
+    with _repository_lock:
+        identifiers = _ensure_issuer_registry_repository().identifiers()
+    return ValidationContext(issuer_registry=identifiers)
+
+
 def _run_route_document(
     files: list[tuple[str, bytes]], category: str | None
 ) -> RoutedDocument:
@@ -389,6 +415,8 @@ def _run_route_document(
                 _get_engine(),
                 category=category,
                 templates=active_templates,
+                context=_build_validation_context(),
+                today=date.today(),
             )
         except Exception as error:  # surface a pipeline/engine crash as 5xx, don't hide
             raise HTTPException(
@@ -517,6 +545,11 @@ def _handle_single_document(
                 record_fields=routed.fields,
                 reasons=routed.reasons,
                 request_id=request_id,
+                # A doubtful doc keeps its bytes: the reviewer sees the document next to
+                # the extraction, and the nightly draft pass clusters the unknowns.
+                document_ref=(
+                    _spool_files(files) if d1_status == STATUS_NEEDS_REVIEW else None
+                ),
             )
         )
         return ValidateResponse(
@@ -534,9 +567,13 @@ def _handle_single_document(
             category_lane="rag",
             status=STATUS_NEEDS_REVIEW,
             execution_lane="fast",
-            category=routed.category,
+            # The rag lane matches no template, so routed.category is always None —
+            # keep the CALLER's declared type (real information: it names the future
+            # category when the nightly draft pass clusters these unknowns).
+            category=routed.category or document_type,
             reasons=reasons,
             request_id=request_id,
+            document_ref=_spool_files(files),
         )
     )
     return ValidateResponse(
@@ -631,6 +668,32 @@ def get_job(job_id: int) -> JobResponse:
     )
 
 
+def _spooled_document_files(job: Job) -> list[Path]:
+    """The job's spooled files, [] when nothing is retained (purged or never spooled)."""
+    if not job.document_ref:
+        return []
+    spool_directory = Path(job.document_ref)
+    if not spool_directory.is_dir():
+        return []
+    return sorted(path for path in spool_directory.iterdir() if path.is_file())
+
+
+@app.get("/v1/jobs/{job_id}/document")
+def job_document(job_id: int, index: int = 0) -> FileResponse:
+    """Serve one retained document file of a job (the review page's preview). Only jobs
+    whose spool is still on disk have one — needs_review keeps it, terminal states purge
+    it. `index` picks a file for multi-file submissions (e.g. a CI pair)."""
+    job = _get_job_row(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"unknown job_id: {job_id}")
+    files = _spooled_document_files(job)
+    if not files or index < 0 or index >= len(files):
+        raise HTTPException(
+            status_code=404, detail=f"no retained document for job {job_id}"
+        )
+    return FileResponse(files[index])
+
+
 # --- Local-test UI + review surface (disposable adapters, BRIEF-fonctionnement-mix). ---
 # The pages are plain HTML files (ui/), skins over the endpoints below. Writer contract:
 # these endpoints READ D1 and WRITE D3 (decision, suggestion validation) — never D1.status;
@@ -665,6 +728,17 @@ def _ensure_template_repository() -> TemplateRepository:
 
 
 _execution_policy_repository: ExecutionPolicyRepository | None = None
+_issuer_registry_repository: IssuerRegistryRepository | None = None
+
+
+def _ensure_issuer_registry_repository() -> IssuerRegistryRepository:
+    """Build the shared issuer-registry store once (lazy). Caller MUST hold `_repository_lock`."""
+    global _issuer_registry_repository
+    if _issuer_registry_repository is None:
+        _issuer_registry_repository = SqliteIssuerRegistryRepository(
+            STORE_PATH, check_same_thread=False
+        )
+    return _issuer_registry_repository
 
 
 def _ensure_execution_policy_repository() -> ExecutionPolicyRepository:
@@ -689,6 +763,11 @@ def upload_page() -> str:
 @app.get("/policies", response_class=HTMLResponse, include_in_schema=False)
 def policies_page() -> str:
     return (UI_DIRECTORY / "policies.html").read_text(encoding="utf-8")
+
+
+@app.get("/registry", response_class=HTMLResponse, include_in_schema=False)
+def registry_page() -> str:
+    return (UI_DIRECTORY / "registry.html").read_text(encoding="utf-8")
 
 
 @app.get("/review", response_class=HTMLResponse, include_in_schema=False)
@@ -721,6 +800,7 @@ def review_queue() -> dict:
         payload = []
         for job in jobs:
             review = review_repository.by_job(job.job_id)
+            document_files = _spooled_document_files(job)
             payload.append(
                 {
                     "job_id": job.job_id,
@@ -731,6 +811,16 @@ def review_queue() -> dict:
                     "record_fields": job.record_fields,
                     "reasons": job.reasons,
                     "decision": review.decision if review else None,
+                    # The retained document(s), so the reviewer sees the doc NEXT TO the
+                    # extraction (and can judge the extraction itself, not just the record).
+                    "documents": [
+                        {
+                            "url": f"/v1/jobs/{job.job_id}/document?index={file_index}",
+                            "filename": file_path.name,
+                            "suffix": file_path.suffix.lower(),
+                        }
+                        for file_index, file_path in enumerate(document_files)
+                    ],
                 }
             )
     return {"jobs": payload}
@@ -972,3 +1062,52 @@ def delete_execution_policy(category: str) -> dict:
             status_code=404, detail=f"no execution policy for category {category!r}"
         )
     return {"category": category, "deleted": True}
+
+
+# --- Issuer-registry surface: the métier list the issuer_registry check reads (D-e). ---
+
+
+@app.get("/v1/issuer-registry")
+def issuer_registry() -> dict:
+    """The curated organisms. Empty registry = the issuer_registry check fails loud to
+    review (an absent registry never proves an issuer legitimate)."""
+    with _repository_lock:
+        entries = _ensure_issuer_registry_repository().all_entries()
+    return {
+        "issuers": [
+            {
+                "identifier": entry.identifier,
+                "label": entry.label,
+                "updated_at": entry.updated_at,
+            }
+            for entry in entries
+        ]
+    }
+
+
+class IssuerEntryRequest(BaseModel):
+    """One organism as the registry page writes it (identifier lives in the path)."""
+
+    label: str | None = None
+
+
+@app.put("/v1/issuer-registry/{identifier}")
+def put_issuer_entry(identifier: str, request: IssuerEntryRequest) -> dict:
+    """Add or relabel a recognized organism (SIRET preferred as identifier). Takes
+    effect on the NEXT validation — the check reads the registry per request."""
+    entry = IssuerEntry(identifier=identifier, label=request.label)
+    with _repository_lock:
+        _ensure_issuer_registry_repository().upsert(entry)
+    return {"identifier": identifier, "label": request.label}
+
+
+@app.delete("/v1/issuer-registry/{identifier}")
+def delete_issuer_entry(identifier: str) -> dict:
+    """Remove an organism from the registry."""
+    with _repository_lock:
+        removed = _ensure_issuer_registry_repository().delete(identifier)
+    if not removed:
+        raise HTTPException(
+            status_code=404, detail=f"unknown issuer identifier: {identifier!r}"
+        )
+    return {"identifier": identifier, "deleted": True}

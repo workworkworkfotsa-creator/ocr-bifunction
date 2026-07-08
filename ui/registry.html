@@ -1,0 +1,106 @@
+<!doctype html>
+<!-- Issuer-registry page — disposable local-test adapter over the registry endpoints.
+     The métier expert curates the recognized training organisms here; the
+     issuer_registry anti-fraud check reads this list at validation time. No business
+     logic client-side. No PII (SIRET/organism names are public identifiers). -->
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <title>OCR BiFunction — Registre des organismes</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 2rem auto; max-width: 48rem; color: #222; }
+    h1 { font-size: 1.3rem; }
+    table { border-collapse: collapse; width: 100%; margin-top: 1rem; }
+    th, td { border: 1px solid #ccc; padding: 0.5rem 0.7rem; text-align: left; font-size: 0.95rem; }
+    th { background: #f2f2f2; }
+    input[type=text] { font-size: 0.95rem; padding: 0.2rem 0.4rem; }
+    button { padding: 0.25rem 0.9rem; font-size: 0.9rem; cursor: pointer; }
+    .muted { color: #666; font-size: 0.85rem; }
+    #message { margin-top: 1rem; padding: 0.6rem 1rem; border-radius: 8px; display: none; }
+    #message.ok   { background: #e7f6e7; border: 1px solid #7c7; display: block; }
+    #message.warn { background: #fff7e0; border: 1px solid #dbb84d; display: block; }
+    a { color: #2a5db0; }
+  </style>
+</head>
+<body>
+  <h1>OCR BiFunction — Registre des organismes de formation</h1>
+  <p class="muted">
+    La preuve forte du régime <code>attestation_formation</code> : un émetteur lu sur le
+    document doit appartenir à cette liste curée (SIRET de préférence). Registre vide =
+    le check <code>issuer_registry</code> envoie en revue, jamais un pass silencieux.
+    Dépôt : <a href="/">upload</a> · Revue : <a href="/review">revue</a> ·
+    Politiques : <a href="/policies">politiques</a>.
+  </p>
+
+  <table>
+    <thead><tr><th>Identifiant (SIRET)</th><th>Libellé</th><th></th></tr></thead>
+    <tbody id="rows"></tbody>
+    <tfoot>
+      <tr>
+        <td><input type="text" id="new_identifier" placeholder="ex. 12345678900011" /></td>
+        <td><input type="text" id="new_label" placeholder="nom de l'organisme (optionnel)" /></td>
+        <td><button id="add">Ajouter</button></td>
+      </tr>
+    </tfoot>
+  </table>
+
+  <div id="message"></div>
+
+  <script>
+    const rowsBody = document.getElementById("rows");
+    const messagePanel = document.getElementById("message");
+
+    function say(kind, text) {
+      messagePanel.className = kind;
+      messagePanel.textContent = text;
+    }
+
+    function escapeHtml(text) {
+      return String(text ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+    }
+
+    async function load() {
+      const body = await (await fetch("/v1/issuer-registry")).json();
+      if (!body.issuers.length) {
+        rowsBody.innerHTML = '<tr><td colspan="3" class="muted">Registre vide — tout émetteur part en revue.</td></tr>';
+        return;
+      }
+      rowsBody.innerHTML = "";
+      for (const issuer of body.issuers) {
+        const row = document.createElement("tr");
+        row.innerHTML = `<td>${escapeHtml(issuer.identifier)}</td><td>${escapeHtml(issuer.label)}</td>`;
+        const actionCell = document.createElement("td");
+        const removeButton = document.createElement("button");
+        removeButton.textContent = "Retirer";
+        removeButton.addEventListener("click", async () => {
+          const response = await fetch("/v1/issuer-registry/" + encodeURIComponent(issuer.identifier), { method: "DELETE" });
+          if (response.ok) { say("ok", "« " + issuer.identifier + " » retiré."); load(); }
+          else { say("warn", "Erreur " + response.status); }
+        });
+        actionCell.appendChild(removeButton);
+        row.appendChild(actionCell);
+        rowsBody.appendChild(row);
+      }
+    }
+
+    document.getElementById("add").addEventListener("click", async () => {
+      const identifier = document.getElementById("new_identifier").value.trim();
+      const label = document.getElementById("new_label").value.trim() || null;
+      if (!identifier) { say("warn", "Identifiant requis."); return; }
+      const response = await fetch("/v1/issuer-registry/" + encodeURIComponent(identifier), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ label }),
+      });
+      if (response.ok) {
+        say("ok", "« " + identifier + " » ajouté au registre.");
+        document.getElementById("new_identifier").value = "";
+        document.getElementById("new_label").value = "";
+        load();
+      } else { say("warn", "Erreur " + response.status); }
+    });
+
+    load();
+  </script>
+</body>
+</html>

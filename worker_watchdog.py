@@ -33,6 +33,7 @@ import argparse
 import os
 import shutil
 import time
+from datetime import date
 from pathlib import Path
 
 from ocr_bifunction.pipeline import CiRecord, process_ci_submission
@@ -49,7 +50,10 @@ from ocr_bifunction.review_repository import (
     DECISION_ACCEPT,
     SqliteReviewRepository,
 )
+from ocr_bifunction.drafting_flow import run_draft_pass
+from ocr_bifunction.issuer_registry import SqliteIssuerRegistryRepository
 from ocr_bifunction.router import route_document
+from ocr_bifunction.template import ValidationContext
 from ocr_bifunction.template_repository import SqliteTemplateRepository
 
 PROJECT_ROOT = Path(__file__).parent
@@ -125,9 +129,11 @@ def _process_routed_job(
     repository: SqliteRepository,
     fast_engine: OcrEngine,
     active_templates: list[dict],
-) -> None:
+    validation_context: ValidationContext,
+) -> str:
     """A policy-deferred non-CI job: run the 2-lane router on the spooled document and
-    FINALIZE the row (it was enqueued 'unrouted' — routing now says what it really is)."""
+    FINALIZE the row (it was enqueued 'unrouted' — routing now says what it really is).
+    Returns the terminal status."""
     source_paths = _spooled_files(job)
     routed = route_document(
         source_paths[0],
@@ -135,6 +141,8 @@ def _process_routed_job(
         fast_engine,
         category=job.category,
         templates=active_templates,
+        context=validation_context,
+        today=date.today(),
     )
     if routed.lane == "structured":
         status_value = _D1_STATUS_FOR_ROUTED_VERDICT.get(
@@ -162,6 +170,7 @@ def _process_routed_job(
             job.job_id, status_value, reasons=reasons, category_lane="rag"
         )
     print(f"  job #{job.job_id}: routed -> {status_value}")
+    return status_value
 
 
 def _process_ci_job(
@@ -169,8 +178,9 @@ def _process_ci_job(
     repository: SqliteRepository,
     fast_engine: OcrEngine,
     escalation_engine: OcrEngine,
-) -> None:
-    """Re-run the spooled CI submission WITH the escalation engine; write the terminal state."""
+) -> str:
+    """Re-run the spooled CI submission WITH the escalation engine; write the terminal state.
+    Returns the terminal status."""
     source_paths = _spooled_files(job)
     result = process_ci_submission(
         source_paths,
@@ -188,6 +198,7 @@ def _process_ci_job(
         reasons=reasons,
     )
     print(f"  job #{job.job_id}: processed -> {status_value}")
+    return status_value
 
 
 def _process_claimed_job(
@@ -196,13 +207,23 @@ def _process_claimed_job(
     fast_engine: OcrEngine,
     escalation_engine: OcrEngine,
     active_templates: list[dict],
+    validation_context: ValidationContext,
 ) -> None:
-    """Dispatch a claimed job to its flow (CI pair vs routed single doc); spool purge either way."""
+    """Dispatch a claimed job to its flow (CI pair vs routed single doc).
+
+    Spool policy: purged at every terminal state EXCEPT needs_review — a job awaiting a
+    human keeps its bytes so the review page shows the document and the nightly draft
+    pass can cluster the unknowns. The sweep purges it once the decision closes the job."""
+    status_value = STATUS_FAILED
     try:
         if job.category_lane == "ci":
-            _process_ci_job(job, repository, fast_engine, escalation_engine)
+            status_value = _process_ci_job(
+                job, repository, fast_engine, escalation_engine
+            )
         else:
-            _process_routed_job(job, repository, fast_engine, active_templates)
+            status_value = _process_routed_job(
+                job, repository, fast_engine, active_templates, validation_context
+            )
     except Exception as error:  # terminal failure lands IN the row, never hidden
         repository.update_status(
             job.job_id,
@@ -211,7 +232,7 @@ def _process_claimed_job(
         )
         print(f"  job #{job.job_id}: FAILED ({type(error).__name__})")
     finally:
-        if job.document_ref:
+        if job.document_ref and status_value != STATUS_NEEDS_REVIEW:
             shutil.rmtree(job.document_ref, ignore_errors=True)  # PII leaves the disk
 
 
@@ -245,6 +266,8 @@ def _sweep_decisions(
             print(
                 f"  job #{job.job_id}: closed failed (human rejected, review #{review.review_id})"
             )
+        if job.document_ref:  # the decision closes the job -> its bytes leave the disk
+            shutil.rmtree(job.document_ref, ignore_errors=True)
         closed += 1
     return closed
 
@@ -260,6 +283,7 @@ def _one_pass(
     fast_engine: OcrEngine,
     escalation_engine: OcrEngine,
     active_templates: list[dict],
+    validation_context: ValidationContext,
     lease_seconds: float,
     max_attempts: int,
     execution_lanes: tuple[str, ...] = CONTINUOUS_EXECUTION_LANES,
@@ -279,7 +303,12 @@ def _one_pass(
                 f"lane {execution_lane}) <- {job.source}"
             )
             _process_claimed_job(
-                job, repository, fast_engine, escalation_engine, active_templates
+                job,
+                repository,
+                fast_engine,
+                escalation_engine,
+                active_templates,
+                validation_context,
             )
             processed += 1
     _sweep_decisions(repository, review_repository)
@@ -317,8 +346,26 @@ def main() -> int:
         "--nightly",
         action="store_true",
         help=(
-            "Also drain the 'nightly' lane (execution policy async_nightly). The night "
-            "cron runs `--once --nightly`; the continuous watchdog leaves that lane alone."
+            "Also drain the 'nightly' lane (execution policy async_nightly) AND run the "
+            "DRAFT pass (cluster the accumulated unknowns -> draft templates -> stage "
+            "D3 suggestions). The night cron runs `--once --nightly`; the continuous "
+            "watchdog leaves both alone."
+        ),
+    )
+    parser.add_argument(
+        "--draft-ocr",
+        action="store_true",
+        help=(
+            "Arm OCR for image-only unknowns in the DRAFT pass (default: skip them — "
+            "the shared-machine brake, same contract as draft_check --ocr)."
+        ),
+    )
+    parser.add_argument(
+        "--slm-naming",
+        action="store_true",
+        help=(
+            "Wake the SLM (llama-swap/granite) to name the drafts' placeholder fields "
+            "(D-c part 1). Unreachable server degrades to placeholders, never blocks."
         ),
     )
     parser.add_argument("--pid-file", type=Path, default=Path("watchdog.pid"))
@@ -343,6 +390,7 @@ def main() -> int:
     template_repository = SqliteTemplateRepository(arguments.store)
     template_repository.seed_from_directory(TEMPLATES_DIRECTORY)
     active_templates = template_repository.active_templates()
+    issuer_registry_repository = SqliteIssuerRegistryRepository(arguments.store)
     fast_engine = _LazyRapidOcrEngine()
     escalation_engine = _build_escalation_engine(arguments.fake_escalation)
     execution_lanes = CONTINUOUS_EXECUTION_LANES + (
@@ -355,16 +403,37 @@ def main() -> int:
     )
     try:
         while True:
+            # Rebuilt each pass: a registry edit through /registry applies to the very
+            # next drained job. CI reference + validated attestations await the D-e
+            # data decisions (document<->holder linkage) and stay None (fail-loud).
+            validation_context = ValidationContext(
+                issuer_registry=issuer_registry_repository.identifiers()
+            )
             _one_pass(
                 repository,
                 review_repository,
                 fast_engine,
                 escalation_engine,
                 active_templates,
+                validation_context,
                 arguments.lease_seconds,
                 arguments.max_attempts,
                 execution_lanes,
             )
+            if arguments.nightly:
+                # The DRAFT step of the night pass: unknowns that accumulated in D1
+                # become staged template drafts the reviewer validates tomorrow.
+                draft_report = run_draft_pass(
+                    repository,
+                    review_repository,
+                    template_repository,
+                    engine=fast_engine if arguments.draft_ocr else None,
+                    slm_naming=arguments.slm_naming,
+                )
+                for staged_id in draft_report.staged_template_ids:
+                    print(f"  draft pass: staged '{staged_id}' as a D3 suggestion")
+                for skip_reason in draft_report.skipped:
+                    print(f"  draft pass: skipped — {skip_reason}")
             if arguments.once:
                 break
             time.sleep(arguments.interval)
@@ -374,6 +443,7 @@ def main() -> int:
         repository.close()
         review_repository.close()
         template_repository.close()
+        issuer_registry_repository.close()
         arguments.pid_file.unlink(missing_ok=True)
     return 0
 

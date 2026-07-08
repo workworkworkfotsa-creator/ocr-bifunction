@@ -14,6 +14,11 @@
     h1 { font-size: 1.3rem; }  h2 { font-size: 1.1rem; margin-top: 2rem; }
     .card { border: 1px solid #ccc; border-radius: 8px; padding: 0.9rem 1.1rem; margin: 0.8rem 0; }
     .card h3 { margin: 0 0 0.4rem; font-size: 1rem; }
+    .side-by-side { display: flex; gap: 1rem; align-items: flex-start; }
+    .doc-preview { flex: 0 0 46%; max-width: 46%; }
+    .doc-preview img { max-width: 100%; border: 1px solid #ddd; border-radius: 4px; }
+    .doc-preview embed { width: 100%; height: 26rem; border: 1px solid #ddd; border-radius: 4px; }
+    .doc-details { flex: 1; min-width: 0; }
     .fields td { padding: 0.1rem 0.8rem 0.1rem 0; font-size: 0.9rem; }
     ul { margin: 0.3rem 0; padding-left: 1.2rem; font-size: 0.9rem; }
     .muted { color: #666; font-size: 0.85rem; }
@@ -41,6 +46,25 @@
       return String(text).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
     }
 
+    // The retained document rendered NEXT TO its extraction, so the reviewer judges the
+    // extraction itself (doc + fields side by side), not just the record.
+    const IMAGE_SUFFIXES = [".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"];
+
+    function documentPreview(documents) {
+      if (!documents || !documents.length) {
+        return '<p class="muted">Document non retenu (traité avant la rétention, ou purgé).</p>';
+      }
+      return documents.map(doc => {
+        if (IMAGE_SUFFIXES.includes(doc.suffix)) {
+          return `<img src="${doc.url}" alt="${escapeHtml(doc.filename)}" />`;
+        }
+        if (doc.suffix === ".pdf") {
+          return `<embed src="${doc.url}" type="application/pdf" />`;
+        }
+        return `<p><a href="${doc.url}" target="_blank">${escapeHtml(doc.filename)}</a></p>`;
+      }).join("");
+    }
+
     async function loadQueue() {
       const body = await (await fetch("/v1/reviews/queue")).json();
       const container = document.getElementById("queue");
@@ -48,17 +72,22 @@
       container.innerHTML = body.jobs.map(job => `
         <div class="card">
           <h3>#${job.job_id} — ${escapeHtml(job.source)} <span class="muted">[${job.category_lane}${job.template_id ? " / " + escapeHtml(job.template_id) : ""}]</span></h3>
-          ${Object.keys(job.record_fields).length ? "<table class='fields'>" +
-            Object.entries(job.record_fields).map(([name, value]) =>
-              `<tr><td>${escapeHtml(name)}</td><td><b>${escapeHtml(value ?? "—")}</b></td></tr>`).join("") + "</table>" : ""}
-          <ul>${job.reasons.map(reason => `<li>${escapeHtml(reason)}</li>`).join("")}</ul>
-          ${job.decision
-            ? `<p class="done">Décision enregistrée : ${job.decision} (clôture au prochain passage du watchdog)</p>`
-            : `<input type="text" id="comment_${job.job_id}" placeholder="commentaire (optionnel)" />
-               <div style="margin-top:0.5rem">
-                 <button class="accept" onclick="decide(${job.job_id}, 'accept')">Accepter</button>
-                 <button class="reject" onclick="decide(${job.job_id}, 'reject')">Rejeter</button>
-               </div>`}
+          <div class="side-by-side">
+            <div class="doc-preview">${documentPreview(job.documents)}</div>
+            <div class="doc-details">
+              ${Object.keys(job.record_fields).length ? "<table class='fields'>" +
+                Object.entries(job.record_fields).map(([name, value]) =>
+                  `<tr><td>${escapeHtml(name)}</td><td><b>${escapeHtml(value ?? "—")}</b></td></tr>`).join("") + "</table>" : ""}
+              <ul>${job.reasons.map(reason => `<li>${escapeHtml(reason)}</li>`).join("")}</ul>
+              ${job.decision
+                ? `<p class="done">Décision enregistrée : ${job.decision} (clôture au prochain passage du watchdog)</p>`
+                : `<input type="text" id="comment_${job.job_id}" placeholder="commentaire (optionnel)" />
+                   <div style="margin-top:0.5rem">
+                     <button class="accept" onclick="decide(${job.job_id}, 'accept')">Accepter</button>
+                     <button class="reject" onclick="decide(${job.job_id}, 'reject')">Rejeter</button>
+                   </div>`}
+            </div>
+          </div>
         </div>`).join("");
     }
 

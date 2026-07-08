@@ -34,9 +34,11 @@ the human owns them.
 
 from __future__ import annotations
 
+import json
 import re
 import unicodedata
 from dataclasses import dataclass, field
+from datetime import date
 
 from ocr_bifunction.rag import Chunk, TfidfRetriever
 from ocr_bifunction.reader import TextLine
@@ -441,3 +443,171 @@ def draft_from_cluster(
         dropped_fields=dropped_fields,
         extractions_by_source=final_extractions,
     )
+
+
+# --- D-c part 2, deterministic core: candidate anti-fraud checks seeded from the ---
+# --- cluster's own extractions (the SLM never invents a check; the human ticks). ---
+
+# A candidate date value: dd/mm/yyyy (or dd.mm.yyyy / dd-mm-yyyy), the shape
+# `normalize: date_ddmmyyyy` folds to ISO at extraction time.
+_CANDIDATE_DATE_PATTERN = re.compile(r"^\s*(\d{2})[/.\-](\d{2})[/.\-](\d{4})\s*$")
+_ISO_DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+# A vocabulary token: a short uppercase alphanumeric code (H0B0, B1V, BR...). Names,
+# references and prose never fit.
+_VOCABULARY_TOKEN_PATTERN = re.compile(r"^[A-Z0-9]{1,8}$")
+_MAXIMUM_VOCABULARY_SIZE = 8
+_DATE_SPAN_TOLERANCE_DAYS = 2
+
+
+def _parse_candidate_date(value: str | None) -> "date | None":
+    """Parse a dd/mm/yyyy or ISO value to a date, else None."""
+    if not value:
+        return None
+    stripped = value.strip()
+    if _ISO_DATE_PATTERN.match(stripped):
+        try:
+            return date.fromisoformat(stripped)
+        except ValueError:
+            return None
+    match = _CANDIDATE_DATE_PATTERN.match(stripped)
+    if match is None:
+        return None
+    day, month, year = (int(group) for group in match.groups())
+    try:
+        return date(year, month, day)
+    except ValueError:
+        return None
+
+
+def _add_calendar_years(start: date, years: int) -> date:
+    """`start` plus whole calendar years, Feb 29 folding to Feb 28 (mirrors template.py)."""
+    try:
+        return start.replace(year=start.year + years)
+    except ValueError:
+        return start.replace(year=start.year + years, day=28)
+
+
+def seed_candidate_checks(
+    draft: dict, extractions_by_source: dict[str, dict[str, str | None]]
+) -> dict:
+    """Derive CANDIDATE anti-fraud checks from the cluster's own extractions (D-c part 2,
+    the deterministic core). Returns an augmented copy of the draft; the caller re-tests
+    it with the unchanged D-b gate and the reviewer TICKS what becomes required
+    (compute-all/config-requires — nothing here is required by itself).
+
+    - A field whose every value reads dd/mm/yyyy gains `normalize: date_ddmmyyyy` (ISO at
+      extraction — what the date checks consume).
+    - Two date fields strictly ordered in EVERY document -> `date_order` candidate; a
+      constant whole-year gap (±2 days) additionally -> `date_span` candidate.
+    - A field of short uppercase codes whose EVERY distinct token recurs in >=2 documents
+      -> `vocabulary` candidate with the observed closed list. Recurrence is the PII
+      guard: a holder's name appears in exactly one document, so it can never enter an
+      `allowed` list; a regulatory code recurs across holders.
+    """
+    augmented = json.loads(json.dumps(draft))  # deep copy, drafts are plain JSON
+    extractions = list(extractions_by_source.values())
+    if len(extractions) < 2:
+        return augmented
+
+    values_by_field: dict[str, list[str]] = {}
+    for field_entry in augmented.get("fields", []):
+        values = [extraction.get(field_entry["name"]) for extraction in extractions]
+        if all(isinstance(value, str) and value.strip() for value in values):
+            values_by_field[field_entry["name"]] = [value.strip() for value in values]
+
+    # Date fields: every value parses as a date (dd/mm/yyyy or already ISO).
+    dates_by_field: dict[str, list[date]] = {}
+    for field_name, values in values_by_field.items():
+        parsed = [_parse_candidate_date(value) for value in values]
+        if all(parsed_date is not None for parsed_date in parsed):
+            dates_by_field[field_name] = parsed  # type: ignore[assignment]
+            for field_entry in augmented["fields"]:
+                if field_entry["name"] == field_name and not _ISO_DATE_PATTERN.match(
+                    values[0]
+                ):
+                    field_entry["normalize"] = "date_ddmmyyyy"
+
+    candidates: list[dict] = []
+    date_field_names = sorted(dates_by_field)
+    for earlier_index, earlier_name in enumerate(date_field_names):
+        for later_name in date_field_names[earlier_index + 1 :]:
+            earlier_dates = dates_by_field[earlier_name]
+            later_dates = dates_by_field[later_name]
+            if all(
+                first_date < second_date
+                for first_date, second_date in zip(earlier_dates, later_dates)
+            ):
+                ordered = (earlier_name, later_name)
+            elif all(
+                second_date < first_date
+                for first_date, second_date in zip(earlier_dates, later_dates)
+            ):
+                ordered = (later_name, earlier_name)
+            else:
+                continue  # no consistent order across the cluster -> no candidate
+            first, second = ordered
+            candidates.append(
+                {"check": "date_order", "earlier": first, "later": second}
+            )
+            gaps = {
+                second_date.year - first_date.year
+                for first_date, second_date in zip(
+                    dates_by_field[first], dates_by_field[second]
+                )
+            }
+            if len(gaps) == 1:
+                years = gaps.pop()
+                if years >= 1 and all(
+                    abs((second_date - _add_calendar_years(first_date, years)).days)
+                    <= _DATE_SPAN_TOLERANCE_DAYS
+                    for first_date, second_date in zip(
+                        dates_by_field[first], dates_by_field[second]
+                    )
+                ):
+                    candidates.append(
+                        {
+                            "check": "date_span",
+                            "start": first,
+                            "end": second,
+                            "years": years,
+                            "tolerance_days": _DATE_SPAN_TOLERANCE_DAYS,
+                        }
+                    )
+
+    # Vocabulary fields: short uppercase codes, every distinct token recurring (PII guard).
+    for field_name, values in values_by_field.items():
+        if field_name in dates_by_field:
+            continue
+        token_sets = [
+            {token for token in re.split(r"[\s,;/]+", value) if token}
+            for value in values
+        ]
+        distinct_tokens = set().union(*token_sets)
+        if not distinct_tokens or len(distinct_tokens) > _MAXIMUM_VOCABULARY_SIZE:
+            continue
+        if not all(_VOCABULARY_TOKEN_PATTERN.match(token) for token in distinct_tokens):
+            continue
+        occurrences = {
+            token: sum(1 for token_set in token_sets if token in token_set)
+            for token in distinct_tokens
+        }
+        if all(count >= 2 for count in occurrences.values()):
+            candidates.append(
+                {
+                    "check": "vocabulary",
+                    "field": field_name,
+                    "allowed": sorted(distinct_tokens),
+                }
+            )
+
+    if candidates:
+        augmented["validation"]["required"] = [
+            *augmented["validation"].get("required", []),
+            *candidates,
+        ]
+        augmented["validation"]["comment"] = (
+            "Draft candidates only (presence + value checks derived from the "
+            "cluster's own extractions); the reviewer ticks which become REQUIRED "
+            "(compute-all/config-requires)."
+        )
+    return augmented
