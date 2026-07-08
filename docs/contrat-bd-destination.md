@@ -3,7 +3,8 @@
 > **SKETCH, pas un schéma figé.** Vue sur la cible pour garder la direction en tête — **PAS à
 > construire maintenant**. À **co-geler conjointement avec l'IT et dater** le jour de la passation
 > (leçon dure du contrat de fabrique : livrer ≠ geler). Cadrage POC↔IT → skill `handoff-it`.
-> Aujourd'hui seul le **domaine 1** est touché (câblage async ; le `_jobs` de la maquette → table).
+> État : les **4 domaines sont proxifiés** (D1/D2/D3 depuis 2026-07-02 ; politiques d'exécution
+> depuis 2026-07-08).
 
 ## Principe
 
@@ -15,9 +16,10 @@ tables préfixées** (pas 3 bases). « 3 BD » = **3 domaines** = 3 lifecycles +
 
 | Domaine | Préfixe proposé | Surface (handoff-it) | Propriétaire | Lifecycle | Proxy actuel |
 |---|---|---|---|---|---|
-| **1 — Jobs + queue async** | `ocr_jobs_*` | Infra / exécution | **IT** | opérationnel / transient | **`ocr_bifunction/repository.py` (`SqliteRepository`, table `ocr_jobs`)** + `_jobs` dict (`api_maquette.py`, à migrer) |
-| **2 — Templates (+ critères validés)** | `ocr_templates_*` | Dictionnaire métier | **Expert métier / Backoffice** (PAS IT, PAS algo) | référence, lent | `templates/*.json` |
-| **3 — Revue / curation** | `ocr_review_*` | Métier (revue) + staging | **User / reviewer** | curation, croissance organique | — (à venir) |
+| **1 — Jobs + queue async** | `ocr_jobs_*` | Infra / exécution | **IT** | opérationnel / transient | **`ocr_bifunction/repository.py` (`SqliteRepository`, table `ocr_jobs`)** |
+| **2 — Templates (+ critères validés)** | `ocr_templates_*` | Dictionnaire métier | **Expert métier / Backoffice** (PAS IT, PAS algo) | référence, lent | `ocr_bifunction/template_repository.py` (seed = `templates/*.json`) |
+| **3 — Revue / curation** | `ocr_review_*` | Métier (revue) + staging | **User / reviewer** | curation, croissance organique | `ocr_bifunction/review_repository.py` |
+| **4 — Politiques d'exécution** | `ocr_execution_policies` | Infra / exécution (contenu opéré par le Backoffice) | **Backoffice / opérateur** (l'IT possède le store, pas le contenu) | config vivante, très lent | `ocr_bifunction/execution_policy.py` |
 
 ## Domaine 1 — Jobs + queue (worker Python écrit)
 
@@ -25,8 +27,10 @@ Le store opérationnel = le `_jobs` de la maquette rendu réel. La **queue = les
 attente** (un worker les dépile ; mécanisme = adaptateur). Colonnes (esquisse) :
 
 - `job_id` (PK), `request_id` (idempotence), `document_ref` (recto/verso ou pointeur stockage)
-- `lane` : `fast` | `escalation`
-- `status` : `received` | `processing` | `needs_review` | `done` | `failed`
+- `execution_lane` : `fast` | `escalation` (CI douteuse, VLM) | `deferred` (politique
+  `async_immediate`, drainée en continu) | `nightly` (politique `async_nightly`, drainée
+  par la passe de nuit `--nightly` — le cron IT)
+- `status` : `received` | `processing` | `needs_review` | `done` | `rejected` | `failed`
 - `verdict` : `auto` | `human` | null ; `reasons` (texte/JSON)
 - `verso_read_path` : `raw` | `enhance` | `escalation` | `none`
 - **le RECORD extrait** (champs consolidés) = **ici, source de vérité unique**
@@ -53,13 +57,32 @@ La couche humaine + le **staging des suggestions**. **Référence le job (D1), n
 un template suggéré → validé par l'humain → devient actif en D2. (Bonus futur, non construit :
 l'historique des `decision` en D3 = données pour améliorer les suggestions SLM.)
 
-## Contrat de colonnes — QUI écrit QUOI (non négociable : 2 écrivains)
+## Domaine 4 — Politiques d'exécution (l'opérateur écrit, la porte lit)
+
+Le « quand » : par catégorie de document, le régime d'exécution — `sync` (dans la requête),
+`async_immediate` (file continue du watchdog), `async_nightly` (passe de nuit). Les infra et les
+besoins changent → **table éditée via UI (`/policies`), effet immédiat, zéro redéploy**. Défauts
+**dans le code** (`DEFAULT_EXECUTION_POLICIES`), seed idempotent qui **n'écrase jamais** une édition
+opérateur (patron « leviers » de la fabrique). Colonnes :
+
+- `category` (PK ; `*` = la ligne de défaut, non supprimable)
+- `execution_mode` : `sync` | `async_immediate` | `async_nightly`
+- `override_allowed` : le client de l'API peut-il imposer son `processing_mode` optionnel
+  (cohabitation : `carte_identite` verrouillée sync, une facture peut être poussée en nuit)
+- `created_at`, `updated_at` (`NOW()` explicite)
+
+Résolution à la porte : ligne de la catégorie, sinon `*` ; hint client honoré **seulement** si
+`override_allowed` ; toute décision non triviale tracée dans `reasons`.
+
+## Contrat de colonnes — QUI écrit QUOI (non négociable)
 
 | Écrivain | Écrit | Lit seulement |
 |---|---|---|
 | **Worker async (Python)** | D1 (status, verdict, record) | D2 (templates actifs) |
 | **UI de revue (humain / PHP)** | D3 (comment, decision, suggestions) | D1 (`needs_review`) |
 | **Promotion (transaction)** | D2 (template activé) | D3 (suggestion validée) |
+| **UI politiques (opérateur / PHP)** | D4 (`ocr_execution_policies`) | — |
+| **Porte API (Python)** | D1 (insertion des jobs) | D4 (résolution sync/async), D2 |
 
 L'UI **lit** le `status` D1, ne le réécrit jamais → pas de course Python↔PHP sur la même ligne.
 

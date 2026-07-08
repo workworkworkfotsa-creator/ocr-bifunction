@@ -10,14 +10,15 @@
 > repo ni l'historique (audité 2026-06-26). **Ce repo part sur GitHub** → ne jamais `git add -f` un doc,
 > ne jamais coller de valeur réelle (nom, n°doc, adresse) dans le code, les docs ou un message de commit.
 
-## État au 2026-07-03
+## État au 2026-07-08
 
 **Porte d'entrée CI prouvée bout-en-bout + pipeline câblé + extraction factures multi-layout + lecture
 couverte (RapidOCR + Docling fallback) ; LightOnOCR-2 validé en moteur d'escalade ; maquette API avec
 escalade ASYNC câblée + prouvée sur vraies images (validated / pending→done) ; validation facture
-config-driven (value-check HT+TVA=TTC).** POC solo sur `master`, pas de remote. **Pas de tests pytest**
-— oracle = runs réels sur vrais docs + smokes structurels/logiques + KAT (composite MRZ), conforme à la
-discipline smoke-first.
+config-driven (value-check HT+TVA=TTC) ; POLITIQUES D'EXÉCUTION (sync / async_immediate / async_nightly
+par catégorie, hint API optionnel, UI `/policies`) livrées + prouvées 20/20.** POC solo sur `master`,
+pas de remote. **Pas de tests pytest** — oracle = runs réels sur vrais docs + smokes
+structurels/logiques + KAT (composite MRZ), conforme à la discipline smoke-first.
 
 > ▶ **NEXT (reprise) — lane de DRAFTING de templates.** Spec → `docs/briefs/BRIEF-template-drafting.md`
 > (gitignoré). Boucle : UNKNOWN s'accumulent → cluster même-layout (TF-IDF, déterministe) → DRAFT
@@ -186,6 +187,37 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   (202/job/404/400/idempotence via `TestClient`). **Smoke vraies images (validated/needs_review) PAS encore
   fait** → DoD non clos (cf. NEXT). Friction shell notée : `uv`/`git` hors PATH Git Bash → route `cmd.exe`
   chemin absolu (`MSYS_NO_PATHCONV=1`) ; PowerShell bloqué par règle `deny` (pas dans `settings.json` global).
+
+## Fait (2026-07-08)
+- **Politiques d'exécution — la surface de config « QUAND traiter » livrée + prouvée (demande
+  utilisateur : le mapping catégorie→régime doit être une config opérée, les infra/besoins changent ;
+  cohabitation avec la variable optionnelle de l'API).** Nouveau domaine **D4** `ocr_execution_policies`
+  (`ocr_bifunction/execution_policy.py` : `ExecutionPolicyRepository` ABC + proxy SQLite, patron
+  « leviers » handoff-it — défauts DANS le code `DEFAULT_EXECUTION_POLICIES`, seed idempotent qui
+  n'écrase JAMAIS une édition opérateur). 3 modes : `sync` (dans la requête) / `async_immediate`
+  (lane D1 `deferred`, watchdog continu) / `async_nightly` (lane `nightly`, drainée SEULEMENT par
+  `worker_watchdog.py --nightly` = le seam cron IT). **Résolution pure** (`resolve_execution`) : ligne
+  catégorie sinon `*` ; hint client `processing_mode` honoré SEULEMENT si `override_allowed` (défauts
+  seedés : `*`=sync+override, `carte_identite`=sync VERROUILLÉE — son doute escalade par son propre
+  chemin) ; tout tracé dans `reasons`. Câblage : la porte `validate_document` résout AVANT de
+  dispatcher (async → spool + row `received`, non-CI = `category_lane='unrouted'`) ; le watchdog
+  draine lane par lane et gagne `_process_routed_job` (route_document depuis le spool, templates D2,
+  row FINALISÉE — `update_status` étendu `category_lane`/`category`/`template_id`) ; UI : page
+  `/policies` (liste/édite/revert, zéro logique métier) + select `processing_mode` sur l'upload ;
+  endpoints GET/PUT/DELETE `/v1/execution-policies`. **Prouvé** : `policy_smoke.py` **20/20**
+  (autonome, corpus synthétique draft_smoke, zéro OCR/SLM : défauts seedés ; `*`→sync ; nightly →
+  202 + row nightly/unrouted + la passe plaine NE la claim PAS + `--nightly` la route → done/auto +
+  spool purgé ; hint ignoré/honoré ; deferred drainé par la passe par défaut ; delete → retombe sur
+  `*` ; gardes 400/422/404). Régressions vertes : `ui_smoke` 15/15, `verdict_flow_check` 7/7,
+  `review_check`, `promotion_check`, + micro-run réel lane escalation CI (claim → done/auto, spool
+  purgé) post-refactor `_process_claimed_job`. Docs : D4 + contrat de colonnes dans
+  `contrat-bd-destination.md`, entrée dictionnaire « politique d'exécution ».
+- **⚠️ Finding — `api_smoke_async.py` FAIL, PRÉEXISTANT (vérifié par A/B sur master sans mes
+  changements : même sortie).** La vraie paire (IMG_8391/8392) lit désormais **validated** en
+  fast-path (plus de doute → pas d'escalade), et depuis `bab3ab7` un recto A + verso B sort
+  **rejected sync** (plus `pending`). Le smoke attend `202 pending` → il lui faut une paire
+  GENUINEMENT douteuse (complete + human), introuvable dans le corpus actuel. À re-pointer ou faire
+  évoluer — le chemin escalade lui-même reste prouvé (micro-run réel ci-dessus).
 
 ## Fait (2026-07-03)
 - **CI/MRZ recto≠verso → `reject` — dernière pièce du câblage verdict. Décision utilisateur : « tout

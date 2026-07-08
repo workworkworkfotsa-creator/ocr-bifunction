@@ -74,3 +74,29 @@ Source de vérité : `ocr_bifunction/template.py` (`class CheckFailure`, `class 
 CI/MRZ ; `STATUS_REJECTED` (`repository.py`), mapping `router`/`orchestrator`/`api_maquette`/`batch_check`.
 Confirmation utilisateur 2026-07-03. Prouvé : `verdict_check.py` (11/11), `verdict_flow_check.py` (7/7,
 bout-en-bout), `reconcile_verdict_check.py` (5/5). **Câblé de bout en bout** (structuré + CI/MRZ).
+
+## politique d'exécution (sync / async immédiat / async nuit)
+
+Le « QUAND traiter » d'un document, découplé du « QUOI » (demande utilisateur 2026-07-08 : les infra
+et les besoins changent → le mapping catégorie→régime doit être une **config opérée**, pas du code).
+Trois modes :
+
+- **sync** — dans la requête HTTP (secondes ; moteurs classe RapidOCR).
+- **async_immediate** — spool + ligne D1 `received` en lane `deferred`, drainée par le watchdog
+  qui tourne en continu (minutes).
+- **async_nightly** — même mécanique en lane `nightly`, drainée UNIQUEMENT par la passe de nuit
+  (`worker_watchdog.py --once --nightly` = le cron IT).
+
+Résolution à la porte : la ligne de la catégorie gagne, sinon la ligne `*` (défaut, non supprimable).
+Le client de l'API peut envoyer un `processing_mode` optionnel — honoré **seulement** si la politique
+de la catégorie dit `override_allowed` (cohabitation : `carte_identite` verrouillée sync — son doute
+escalade par son propre chemin — pendant qu'une facture peut être poussée en nuit). Hint ignoré ou
+mode async → tracé dans `reasons`. Défauts dans le code, seed qui n'écrase jamais une édition
+opérateur, édition via la page `/policies` — effet à l'upload suivant, zéro redéploy.
+
+Source de vérité : `ocr_bifunction/execution_policy.py` (`EXECUTION_MODES`, `resolve_execution`,
+`DEFAULT_EXECUTION_POLICIES`, table `ocr_execution_policies`) ; porte `api_maquette.py`
+(`validate_document`) ; lanes `deferred`/`nightly` → `worker_watchdog.py`
+(`CONTINUOUS_EXECUTION_LANES`, `--nightly`). Prouvé : `policy_smoke.py` 20/20 (2026-07-08).
+Voir aussi [[verdict de routing (auto / humain / invalide)]] — le verdict dit « vers qui »,
+la politique dit « quand ».
