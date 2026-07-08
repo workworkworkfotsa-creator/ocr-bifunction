@@ -105,9 +105,17 @@
     // them (the human never authors rules here), the subset becomes `required`.
     const draftCandidatesByReview = {};
 
+    function roleSelect(reviewId, roleKey, fieldNames) {
+      return `<select class="role_${reviewId}" data-role="${roleKey}">
+          <option value="">(aucun)</option>
+          ${fieldNames.map(name => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join("")}
+        </select>`;
+    }
+
     function draftBlock(suggestion) {
       const draft = suggestion.draft_template;
       draftCandidatesByReview[suggestion.review_id] = suggestion.validation.required || [];
+      const fieldNames = draft.fields.map(field => field.name);
       return `
           <p class="muted">DRAFT complet (lane drafting) — champs extraits sur tout le cluster :</p>
           <ul>${draft.fields.map(field =>
@@ -117,6 +125,13 @@
             ${(suggestion.validation.required || []).map((rule, index) =>
               `<label><input type="checkbox" class="check_${suggestion.review_id}" data-index="${index}" checked />
                  ${escapeHtml(rule.check)} — ${escapeHtml(rule.field)}</label><br/>`).join("")}
+          </div>
+          <div class="criteria" style="margin-top:0.5rem"><b>Rôles d'attestation (optionnel — métier)</b> :
+            si les documents de ce template doivent CORROBORER des titres (corroborated_by),
+            désignez les 3 rôles parmi les champs du draft — les 3, ou aucun :<br/>
+            titulaire ${roleSelect(suggestion.review_id, "holder_field", fieldNames)}
+            délivrance ${roleSelect(suggestion.review_id, "issue_date_field", fieldNames)}
+            expiration ${roleSelect(suggestion.review_id, "expiry_date_field", fieldNames)}
           </div>`;
     }
 
@@ -151,8 +166,14 @@
         const ticked = [...document.querySelectorAll(`.check_${reviewId}`)]
           .filter(box => box.checked)
           .map(box => candidates[Number(box.dataset.index)]);
+        const body = { required: ticked };
+        const roles = {};
+        for (const select of document.querySelectorAll(`.role_${reviewId}`)) {
+          if (select.value) roles[select.dataset.role] = select.value;
+        }
+        if (Object.keys(roles).length === 3) body.reference_roles = roles;
         options.headers = { "Content-Type": "application/json" };
-        options.body = JSON.stringify({ required: ticked });
+        options.body = JSON.stringify(body);
       }
       await fetch(`/v1/suggestions/${reviewId}/${action}`, options);
       loadSuggestions();

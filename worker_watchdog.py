@@ -51,6 +51,7 @@ from ocr_bifunction.review_repository import (
     DECISION_ACCEPT,
     SqliteReviewRepository,
 )
+from ocr_bifunction.context_assembly import collect_validated_attestations
 from ocr_bifunction.drafting_flow import run_draft_pass
 from ocr_bifunction.issuer_registry import SqliteIssuerRegistryRepository
 from ocr_bifunction.router import route_document
@@ -409,11 +410,15 @@ def main() -> int:
     )
     try:
         while True:
-            # Rebuilt each pass: a registry edit through /registry applies to the very
-            # next drained job. CI reference + validated attestations await the D-e
-            # data decisions (document<->holder linkage) and stay None (fail-loud).
+            # Rebuilt each pass: a registry edit or a freshly closed attestation
+            # applies to the very next drained job. The CI reference is per-job (the
+            # declared holder on the row); attestations project through each
+            # template's métier-configured roles block.
             validation_context = ValidationContext(
-                issuer_registry=issuer_registry_repository.identifiers()
+                issuer_registry=issuer_registry_repository.identifiers(),
+                validated_attestations=collect_validated_attestations(
+                    repository, active_templates
+                ),
             )
             _one_pass(
                 repository,

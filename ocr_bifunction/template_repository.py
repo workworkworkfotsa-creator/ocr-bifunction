@@ -60,6 +60,7 @@ CREATE TABLE IF NOT EXISTS ocr_templates (
     match_json      TEXT,
     fields_json     TEXT,
     validation_json TEXT,
+    reference_roles_json TEXT,
     active          INTEGER NOT NULL DEFAULT 1,
     version         INTEGER NOT NULL DEFAULT 1,
     created_at      TEXT NOT NULL,
@@ -67,6 +68,14 @@ CREATE TABLE IF NOT EXISTS ocr_templates (
 );
 CREATE INDEX IF NOT EXISTS idx_ocr_templates_active ON ocr_templates (active, category);
 """
+
+# Columns added after the first proxy shipped; existing local .sqlite files gain them on
+# open (proxy-only migration — the MariaDB DDL at handoff bakes them in).
+_MIGRATION_COLUMNS = {
+    "reference_roles_json": (
+        "ALTER TABLE ocr_templates ADD COLUMN reference_roles_json TEXT"
+    ),
+}
 
 
 class SqliteTemplateRepository(TemplateRepository):
@@ -90,6 +99,13 @@ class SqliteTemplateRepository(TemplateRepository):
         )
         self._connection.row_factory = sqlite3.Row
         self._connection.executescript(_SCHEMA)
+        existing_columns = {
+            row["name"]
+            for row in self._connection.execute("PRAGMA table_info(ocr_templates)")
+        }
+        for column_name, alter_statement in _MIGRATION_COLUMNS.items():
+            if column_name not in existing_columns:
+                self._connection.execute(alter_statement)
         self._connection.commit()
 
     def upsert(self, template: dict, *, active: bool = True) -> None:
@@ -101,16 +117,22 @@ class SqliteTemplateRepository(TemplateRepository):
         ).fetchone()
         created_at = existing["created_at"] if existing else now
         version = (existing["version"] + 1) if existing else 1
+        reference_roles = template.get("attestation_reference_roles")
         self._connection.execute(
             "INSERT OR REPLACE INTO ocr_templates (template_id, category, match_json, "
-            "fields_json, validation_json, active, version, created_at, updated_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?)",
+            "fields_json, validation_json, reference_roles_json, active, version, "
+            "created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
             (
                 template_id,
                 template.get("category"),
                 json.dumps(template.get("match", {}), ensure_ascii=False),
                 json.dumps(template.get("fields", []), ensure_ascii=False),
                 json.dumps(template.get("validation", {}), ensure_ascii=False),
+                (
+                    json.dumps(reference_roles, ensure_ascii=False)
+                    if reference_roles
+                    else None
+                ),
                 1 if active else 0,
                 version,
                 created_at,
@@ -121,13 +143,20 @@ class SqliteTemplateRepository(TemplateRepository):
 
     def _row_to_template(self, row: sqlite3.Row) -> dict:
         """Rebuild the JSON-template shape match_template/extract_fields expect."""
-        return {
+        template = {
             "template_id": row["template_id"],
             "category": row["category"],
             "match": json.loads(row["match_json"] or "{}"),
             "fields": json.loads(row["fields_json"] or "[]"),
             "validation": json.loads(row["validation_json"] or "{}"),
         }
+        if row["reference_roles_json"]:
+            # The métier's corroboration mapping travels WITH the template (context
+            # assembly reads it); absent for most templates, so only added when set.
+            template["attestation_reference_roles"] = json.loads(
+                row["reference_roles_json"]
+            )
+        return template
 
     def get(self, template_id: str) -> dict | None:
         row = self._connection.execute(

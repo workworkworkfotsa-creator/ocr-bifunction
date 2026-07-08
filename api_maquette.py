@@ -57,6 +57,11 @@ from ocr_bifunction.execution_policy import (
     SqliteExecutionPolicyRepository,
     resolve_execution,
 )
+from ocr_bifunction.context_assembly import (
+    ATTESTATION_REFERENCE_ROLES_KEY,
+    REFERENCE_ROLE_FIELD_KEYS,
+    collect_validated_attestations,
+)
 from ocr_bifunction.issuer_registry import (
     IssuerEntry,
     IssuerRegistryRepository,
@@ -396,14 +401,20 @@ def _run_fast_submission(
 def _build_validation_context(
     expected_holder_name: str | None = None,
 ) -> ValidationContext:
-    """Assemble what the context-dependent anti-fraud checks can read TODAY: the curated
-    issuer registry (None when empty — fail-loud review, never an empty false proof) and
-    the DECLARED holder (manual entry; feeds reconcile_ci). The validated attestations
-    (corroborated_by) await their field-mapping decision and keep failing loud."""
+    """Assemble what the context-dependent anti-fraud checks read: the curated issuer
+    registry (None when empty — fail-loud review, never an empty false proof), the
+    DECLARED holder (manual entry; feeds reconcile_ci), and the validated attestations
+    on file — projected through each template's MÉTIER-configured
+    `attestation_reference_roles` block (corroborated_by)."""
     with _repository_lock:
         identifiers = _ensure_issuer_registry_repository().identifiers()
+        attestations = collect_validated_attestations(
+            _ensure_repository(), _ensure_template_repository().active_templates()
+        )
     return ValidationContext(
-        ci_reference_name=expected_holder_name, issuer_registry=identifiers
+        ci_reference_name=expected_holder_name,
+        issuer_registry=identifiers,
+        validated_attestations=attestations,
     )
 
 
@@ -929,10 +940,14 @@ def pending_suggestions() -> dict:
 
 class ValidateSuggestionRequest(BaseModel):
     """The reviewer's ticking on a DRAFT suggestion: the subset of the draft's candidate
-    checks that become REQUIRED. The human selects among candidates, never authors rules
-    here (curation surface). Absent body = every candidate stays required."""
+    checks that become REQUIRED, plus (optionally) the attestation reference ROLES — the
+    métier's mapping of which draft fields play holder / issue / expiry when documents
+    of this template corroborate a titre (corroborated_by). The human selects among the
+    draft's own fields, never authors rules here (curation surface). Absent body =
+    every candidate stays required, no roles declared."""
 
     required: list[dict] | None = None
+    reference_roles: dict[str, str] | None = None
 
 
 @app.post("/v1/suggestions/{review_id}/validate")
@@ -978,6 +993,36 @@ def validate_suggestion(
                         ),
                         "required": request.required,
                     },
+                }
+            if request is not None and request.reference_roles is not None:
+                # The métier's roles assignment: all three roles, each naming one of
+                # the draft's OWN fields (the human maps, never invents a field).
+                roles = request.reference_roles
+                if sorted(roles) != sorted(REFERENCE_ROLE_FIELD_KEYS):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            "reference_roles must name exactly "
+                            f"{list(REFERENCE_ROLE_FIELD_KEYS)}"
+                        ),
+                    )
+                draft_field_names = {
+                    field_entry["name"]
+                    for field_entry in draft_template.get("fields", [])
+                }
+                unknown_fields = [
+                    field_name
+                    for field_name in roles.values()
+                    if field_name not in draft_field_names
+                ]
+                if unknown_fields:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"not draft fields: {unknown_fields}",
+                    )
+                curated_template = {
+                    **curated_template,
+                    ATTESTATION_REFERENCE_ROLES_KEY: roles,
                 }
         else:
             templates_by_id = {
