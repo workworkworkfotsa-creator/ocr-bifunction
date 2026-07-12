@@ -1212,13 +1212,33 @@ def validate_suggestion(
             curated_template = draft_template
             if request is not None and request.required is not None:
                 candidates = draft_template.get("validation", {}).get("required", [])
+                # The reviewer may ATTACH a severity to a ticked candidate (the métier
+                # hardens/softens a check) — comparison against the draft's candidates
+                # ignores that key; the value itself is guarded.
                 rejected_rules = [
-                    rule for rule in request.required if rule not in candidates
+                    rule
+                    for rule in request.required
+                    if {key: value for key, value in rule.items() if key != "severity"}
+                    not in candidates
                 ]
                 if rejected_rules:
                     raise HTTPException(
                         status_code=400,
                         detail=f"not draft candidates: {rejected_rules}",
+                    )
+                invalid_severities = [
+                    rule["severity"]
+                    for rule in request.required
+                    if "severity" in rule
+                    and rule["severity"] not in ("reject", "review")
+                ]
+                if invalid_severities:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"unknown severity values: {invalid_severities} "
+                            "(expected 'reject' or 'review')"
+                        ),
                     )
                 curated_template = {
                     **draft_template,

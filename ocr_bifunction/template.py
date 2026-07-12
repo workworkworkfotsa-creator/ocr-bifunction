@@ -215,6 +215,12 @@ REJECT = "reject"
 class CheckFailure:
     reason: str
     kind: str  # REVIEW | REJECT
+    # True when the check RAN with all its inputs and the answer is negative (a
+    # DETERMINED failure); False when it could not tell (missing/unreadable input,
+    # absent context — the fail-loud branches). Only determined failures may be
+    # reclassified by a rule's métier `severity` override: an "I can't tell" must
+    # never be hardened into a rejection (input-vs-preuve doctrine, 2026-07-03).
+    determined: bool = False
 
 
 def _check_sum(fields: dict[str, str | None], rule: dict) -> list[CheckFailure]:
@@ -252,6 +258,7 @@ def _check_sum(fields: dict[str, str | None], rule: dict) -> list[CheckFailure]:
                 f"sum check failed: {' + '.join(terms)} = {summed:.2f} "
                 f"!= {equals_field} = {total:.2f} (tolerance {tolerance})",
                 REVIEW,
+                determined=True,
             )
         ]
     return []
@@ -306,6 +313,7 @@ def _check_date_order(
                 f"date_order check failed: {earlier_name} {earlier.isoformat()} is not "
                 f"before {later_name} {later.isoformat()}",
                 REJECT,
+                determined=True,
             )
         )
     if rule.get("require_future"):
@@ -316,6 +324,7 @@ def _check_date_order(
                     f"date_order check failed: {later_name} {later.isoformat()} is in "
                     f"the past (expired as of {reference_date.isoformat()})",
                     REJECT,
+                    determined=True,
                 )
             )
     return failures
@@ -349,6 +358,7 @@ def _check_date_span(fields: dict[str, str | None], rule: dict) -> list[CheckFai
                 f"+ {years}y ({expected_end.isoformat()}), off by {difference_days} days "
                 f"(tolerance {tolerance_days})",
                 REJECT,
+                determined=True,
             )
         ]
     return []
@@ -374,6 +384,7 @@ def _check_vocabulary(fields: dict[str, str | None], rule: dict) -> list[CheckFa
                 f"vocabulary check failed ({field_name}): "
                 f"{', '.join(unknown)} not in the allowed list",
                 REJECT,
+                determined=True,
             )
         ]
     return []
@@ -434,6 +445,7 @@ def _check_reconcile_ci(
                 f"reconcile_ci check failed ({field_name}): holder {value!r} does not "
                 f"match the CI record {context.ci_reference_name!r} (strict)",
                 REJECT,
+                determined=True,
             )
         ]
     return []
@@ -468,6 +480,7 @@ def _check_issuer_registry(
                 f"issuer_registry check failed ({field_name}): issuer {value!r} is not "
                 "in the recognized-organism registry",
                 REVIEW,
+                determined=True,
             )
         ]
     return []
@@ -522,6 +535,7 @@ def _check_corroborated_by(
             f"corroborates the self-declared titre for {holder!r} at "
             f"{titre_issue.isoformat()}",
             REVIEW,
+            determined=True,
         )
     ]
 
@@ -608,12 +622,30 @@ def evaluate_validation(
     carries the external state the last three checks read (both injected for reproducible
     tests). A context check declared without its context resolves to REVIEW (undetermined),
     never a silent pass and never a reject.
+
+    SEVERITY OVERRIDE (métier knob, 2026-07-12): a rule may carry `"severity": "reject" |
+    "review"` to harden or soften its DETERMINED failures — e.g. once the organism
+    registry is trusted, `issuer_registry` hardens from review to non conforme (« émetteur
+    ≠ Y → non valide »). It never touches an UNDETERMINED failure: "I can't tell" (missing
+    input, absent registry) stays review whatever the config says — the fail-loud guard is
+    not overridable. An unknown severity value is itself surfaced as a review reason
+    (a config typo must never pass silently).
     """
     reject_reasons: list[str] = []
     review_reasons: list[str] = []
     for rule in validation.get("required", []):
+        severity: str | None = rule.get("severity")
+        if severity is not None and severity not in (REJECT, REVIEW):
+            review_reasons.append(
+                f"unknown severity {severity!r} on check '{rule.get('check')}' — "
+                "config error (expected 'reject' or 'review'), routed to review"
+            )
+            severity = None
         for failure in _evaluate_rule(fields, rule, today, context):
-            if failure.kind == REJECT:
+            kind = failure.kind
+            if severity is not None and failure.determined:
+                kind = severity
+            if kind == REJECT:
                 reject_reasons.append(failure.reason)
             else:
                 review_reasons.append(failure.reason)

@@ -155,10 +155,17 @@
           <ul>${draft.fields.map(field =>
             `<li><b>${escapeHtml(field.name)}</b> <span class="muted">[${escapeHtml(field.direction || "pattern")} de « ${escapeHtml(field.anchor || field.pattern)} »]</span></li>`).join("")}</ul>
           <div class="criteria"><b>Checks candidats — cochez ceux qui deviennent REQUIS</b>
-            (tout est calculé ; le template dit ce qui est exigé) :<br/>
+            (tout est calculé ; le template dit ce qui est exigé). Sévérité (métier) : que fait un
+            échec DÉTERMINÉ de ce check — défaut du check, non conforme, ou revue ; un « je ne peux
+            pas savoir » part toujours en revue :<br/>
             ${(suggestion.validation.required || []).map((rule, index) =>
               `<label><input type="checkbox" class="check_${suggestion.review_id}" data-index="${index}" checked />
-                 ${escapeHtml(rule.check)} — ${escapeHtml(rule.field)}</label><br/>`).join("")}
+                 ${escapeHtml(rule.check)} — ${escapeHtml(rule.field)}</label>
+               <select class="severity_${suggestion.review_id}" data-index="${index}">
+                 <option value="">(défaut du check)</option>
+                 <option value="reject">non conforme</option>
+                 <option value="review">revue</option>
+               </select><br/>`).join("")}
           </div>
           <div class="criteria" style="margin-top:0.5rem"><b>Rôles d'attestation (optionnel — métier)</b> :
             si les documents de ce template doivent CORROBORER des titres (corroborated_by),
@@ -199,7 +206,13 @@
       if (action === "validate" && candidates && candidates.length) {
         const ticked = [...document.querySelectorAll(`.check_${reviewId}`)]
           .filter(box => box.checked)
-          .map(box => candidates[Number(box.dataset.index)]);
+          .map(box => {
+            const index = Number(box.dataset.index);
+            const rule = { ...candidates[index] };
+            const severitySelect = document.querySelector(`.severity_${reviewId}[data-index="${index}"]`);
+            if (severitySelect && severitySelect.value) rule.severity = severitySelect.value;
+            return rule;
+          });
         const body = { required: ticked };
         const roles = {};
         for (const select of document.querySelectorAll(`.role_${reviewId}`)) {
