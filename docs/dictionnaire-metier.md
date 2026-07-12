@@ -69,6 +69,15 @@ hors liste) → reject.
 
 Priorité : **reject > review > auto** (un doc prouvé invalide n'est pas adouci en « à revoir » parce
 qu'il porte aussi un check en attente).
+
+**Terminologie (confirmé utilisateur 2026-07-12) : dire « document NON CONFORME », pas « fraude ».**
+La machine prouve une non-conformité (checksum cassé, dates incohérentes, émetteur hors registre,
+type déclaré ≠ type reconnu) ; la FRAUDE est un jugement d'intention qui appartient au département
+compliance — le mot est souvent employé de façon exagérée. Le statut technique reste `rejected` ;
+les surfaces disent « document non validé car Y » et la PREUVE (template, checks calculés, document
+retenu) part à la revue / compliance. La réaction est configurable →
+[[politique de non-conformité (block / block_holder / flag_and_continue)]].
+
 Source de vérité : `ocr_bifunction/template.py` (`class CheckFailure`, `class ValidationOutcome`,
 `evaluate_validation`) pour la lane structurée ; `ocr_bifunction/reconcile.py` (verdict 3-états) pour
 CI/MRZ ; `STATUS_REJECTED` (`repository.py`), mapping `router`/`orchestrator`/`api_maquette`/`batch_check`.
@@ -166,3 +175,33 @@ Source de vérité : `ocr_bifunction/context_assembly.py` (`ATTESTATION_REFERENC
 `ocr_bifunction/template.py` (`_check_corroborated_by`). Prouvé : `corroboration_smoke.py` 7/7
 (2026-07-08). Voir [[attestation de formation (organisme)]], [[titre-d-habilitation]],
 [[titulaire attendu (liaison document-titulaire)]].
+
+## politique de non-conformité (block / block_holder / flag_and_continue)
+
+Ce qu'un document PROUVÉ non conforme DÉCLENCHE — une config métier par catégorie (demande
+utilisateur 2026-07-12 : « dans ces cas-là on bloque les uploads suivants, ou pas, ou on flag mais
+le process continue ») :
+
+- **block** (défaut) — CET upload est refusé, terminal : « document non validé car Y » à la page.
+- **block_holder** — idem, ET les uploads SUIVANTS déclarant le même [[titulaire attendu (liaison
+  document-titulaire)]] sont refusés tant que la non-conformité est OUVERTE (pas de décision de
+  revue) ; « clore » à la revue débloque le dossier. Une row-trace d'upload refusé (sans document
+  retenu) ne re-bloque jamais elle-même.
+- **flag_and_continue** — rien n'est bloqué : la non-conformité est flaggée dans les raisons et le
+  document part en revue humaine ; le process continue.
+
+Dans TOUS les cas la preuve est RETENUE (bytes au spool, row `rejected` listée dans la section
+« Documents non conformes » de la revue) jusqu'à la clôture, où le watchdog purge. La résolution se
+fait sur le type DÉCLARÉ d'abord (un passeport envoyé comme CI = un incident « carte_identite »).
+Ligne `*` = défaut, non supprimable ; édition page `/policies`, effet à l'upload suivant.
+
+Cas automatisé inclus : **type déclaré ≠ type reconnu** — un doc qui ne matche aucun template de sa
+catégorie déclarée mais matche un template d'une AUTRE catégorie est non conforme (« attendu
+carte_identite, reconnu passeport ») — il suffit qu'un template de l'autre type existe (croissance
+organique).
+
+Source de vérité : `ocr_bifunction/conformity_policy.py` (table `ocr_conformity_policies`,
+`resolve_conformity_action`) ; application → `api_maquette.py` (`_nonconformity_response`,
+`_holder_block_reason`, `_detected_type_mismatch`) et `worker_watchdog.py` (lanes async, sweep
+« clore » = purge de la preuve). Prouvé : `conformity_smoke.py` 12/12 (2026-07-12).
+Voir [[verdict de routing (auto / humain / invalide)]].

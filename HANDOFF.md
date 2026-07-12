@@ -10,15 +10,24 @@
 > repo ni l'historique (audité 2026-06-26). **Ce repo part sur GitHub** → ne jamais `git add -f` un doc,
 > ne jamais coller de valeur réelle (nom, n°doc, adresse) dans le code, les docs ou un message de commit.
 
-## État au 2026-07-08
+## État au 2026-07-12
 
 **Porte d'entrée CI prouvée bout-en-bout + pipeline câblé + extraction factures multi-layout + lecture
 couverte (RapidOCR + Docling fallback) ; LightOnOCR-2 validé en moteur d'escalade ; maquette API avec
 escalade ASYNC câblée + prouvée sur vraies images (validated / pending→done) ; validation facture
 config-driven (value-check HT+TVA=TTC) ; POLITIQUES D'EXÉCUTION (sync / async_immediate / async_nightly
-par catégorie, hint API optionnel, UI `/policies`) livrées + prouvées 20/20.** POC solo sur `master`,
-pas de remote. **Pas de tests pytest** — oracle = runs réels sur vrais docs + smokes
-structurels/logiques + KAT (composite MRZ), conforme à la discipline smoke-first.
+par catégorie, hint API optionnel, UI `/policies`) 20/20 ; TERMINOLOGIE « document NON CONFORME »
+actée (fraude = jugement compliance) + POLITIQUE DE NON-CONFORMITÉ configurable métier
+(block / block_holder / flag_and_continue) + preuve retenue pour la revue/compliance + check « type
+déclaré ≠ type reconnu », `conformity_smoke` 12/12.** POC solo sur `master`, pas de remote.
+**Pas de tests pytest** — oracle = runs réels sur vrais docs + smokes structurels/logiques + KAT
+(composite MRZ), conforme à la discipline smoke-first.
+
+> ⚠️ **inputs/ nettoyé entre le 08 et le 12/07** : les photos CI (IMG_8391/8392) et les courriers
+> mise-en-demeure ont disparu. Régressions re-pointées : `ui_smoke` = facture 14a + docx ;
+> régression CI = `recto_verso.pdf --expect validated` (verte). Le cas LIVE « recto A + verso B »
+> n'est plus re-jouable avec le corpus actuel (le chemin est couvert par `reconcile_verdict_check`
+> 5/5 + la branche porte via `conformity_smoke`).
 
 > ▶ **NEXT (reprise) — lane de DRAFTING de templates.** Spec → `docs/briefs/BRIEF-template-drafting.md`
 > (gitignoré). Boucle : UNKNOWN s'accumulent → cluster même-layout (TF-IDF, déterministe) → DRAFT
@@ -193,6 +202,34 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   (202/job/404/400/idempotence via `TestClient`). **Smoke vraies images (validated/needs_review) PAS encore
   fait** → DoD non clos (cf. NEXT). Friction shell notée : `uv`/`git` hors PATH Git Bash → route `cmd.exe`
   chemin absolu (`MSYS_NO_PATHCONV=1`) ; PowerShell bloqué par règle `deny` (pas dans `settings.json` global).
+
+## Fait (2026-07-12)
+- **« Document NON CONFORME » — terminologie actée + politique de réaction configurable métier ;
+  prouvé `conformity_smoke.py` 12/12.** Décisions utilisateur : la machine prouve une
+  NON-CONFORMITÉ, la FRAUDE est le jugement de compliance (mot souvent exagéré) ; la preuve est
+  RETENUE et « passe par la revue humaine » ; et il manquait LA config de réaction : « on bloque
+  les uploads suivants, ou pas, ou on flag mais le process continue ». Livré : **D6**
+  `ocr_conformity_policies` (`conformity_policy.py`, patron leviers, `*`=block par défaut) avec
+  3 actions — `block` (cet upload refusé), `block_holder` (+ uploads suivants du même titulaire
+  déclaré refusés tant que la non-conformité est OUVERTE ; « clore » débloque ; une row-trace de
+  blocage — sans document retenu — ne re-bloque jamais elle-même, bug attrapé par le smoke),
+  `flag_and_continue` (rien de bloqué : flag + needs_review). Résolution sur le type DÉCLARÉ
+  d'abord (un passeport envoyé comme CI = incident carte_identite). **Rétention de la preuve** :
+  les rows `rejected` gardent leurs bytes (porte + watchdog) ; section « Documents non conformes »
+  sur la page revue (doc + « non validé car Y » + note compliance) ; « Clore » = décision D3 → le
+  sweep purge la preuve, status reste `rejected`. **Check « type déclaré ≠ type reconnu »** : un
+  doc sans match dans sa catégorie déclarée mais qui matche un template d'une AUTRE catégorie →
+  non conforme (« type mismatch: declared X, recognized Y ») — branché single-doc ET flux CI
+  (unrecognized → re-route ; coût = 2e lecture, simplification maquette) ; le reject CI
+  recto↔verso passe aussi par la politique (+ paire retenue). Watchdog : mêmes règles sur les
+  lanes async (flag → needs_review). UI : 2e table « non-conformité » sur `/policies`, libellé
+  upload « Document non conforme — ne peut pas aller plus loin ». **Prouvé 12/12** (rétention ;
+  file non-conformes ; clore→purge ; flag ; blocage titulaire + déblocage ; 2 type-mismatch ;
+  async flaggé ; gardes 422/400 ; page). Régressions vertes : flow 14/14, holder 5/5,
+  corroboration 7/7, policy 20/20, verdict_flow 7/7, review, ui_smoke (docs re-pointés),
+  `api_smoke_real recto_verso.pdf --expect validated`. **Dette notée** : sévérité PAR CHECK
+  (ex. durcir `issuer_registry` review→non conforme quand le registre sera de confiance) =
+  bouton métier futur, pas construit.
 
 ## Fait (2026-07-08)
 - **Rôles d'attestation configurables par le MÉTIER — `corroborated_by` tire de bout en bout à
