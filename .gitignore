@@ -37,3 +37,10 @@ tools/llamacpp/
 
 # Playwright MCP browser artifacts (snapshots, scratch uploads)
 .playwright-mcp/
+
+# IT handoff round-trips (internal stack details + delivery zips) — transmitted directly,
+# never through the public repo
+0_Aller_retour_IT/
+
+# CodeGraph index (local tooling)
+.codegraph/
