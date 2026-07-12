@@ -41,6 +41,21 @@
     <tbody id="rows"></tbody>
   </table>
 
+  <h2 style="font-size:1.1rem; margin-top:2rem">Politique de non-conformité (métier)</h2>
+  <p class="muted">
+    Ce qu'un document PROUVÉ non conforme déclenche : <code>block</code> = cet upload est
+    refusé (défaut) ; <code>block_holder</code> = refuse aussi les uploads SUIVANTS du même
+    titulaire déclaré tant que la non-conformité est ouverte ; <code>flag_and_continue</code> =
+    rien n'est bloqué, le document part en revue humaine avec le flag. La preuve (template,
+    checks calculés, document retenu) part à la <a href="/review">revue</a> / compliance.
+  </p>
+  <table>
+    <thead>
+      <tr><th>Catégorie</th><th>Action sur non-conformité</th><th></th></tr>
+    </thead>
+    <tbody id="conformity_rows"></tbody>
+  </table>
+
   <div id="message"></div>
 
   <script>
@@ -136,6 +151,74 @@
       for (const category of body.categories_without_policy) {
         addRow(category, defaultRow ? defaultRow.execution_mode : "sync",
                defaultRow ? defaultRow.override_allowed : false, false);
+      }
+      loadConformity(body);
+    }
+
+    const conformityBody = document.getElementById("conformity_rows");
+
+    function addConformityRow(category, currentAction, actions, hasOwnRow) {
+      const row = document.createElement("tr");
+      const categoryCell = document.createElement("td");
+      categoryCell.textContent = category + (hasOwnRow ? "" : " (hérite de *)");
+      row.appendChild(categoryCell);
+
+      const select = document.createElement("select");
+      for (const action of actions) {
+        const option = document.createElement("option");
+        option.value = action;
+        option.textContent = action;
+        option.selected = action === currentAction;
+        select.appendChild(option);
+      }
+      const actionCell = document.createElement("td");
+      actionCell.appendChild(select);
+      row.appendChild(actionCell);
+
+      const buttonCell = document.createElement("td");
+      const saveButton = document.createElement("button");
+      saveButton.textContent = "Enregistrer";
+      saveButton.addEventListener("click", async () => {
+        const response = await fetch("/v1/conformity-policies/" + encodeURIComponent(category), {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: select.value }),
+        });
+        if (response.ok) { say("ok", "Non-conformité « " + category + " » enregistrée."); load(); }
+        else { say("warn", "Erreur " + response.status + " : " + (await response.json()).detail); }
+      });
+      buttonCell.appendChild(saveButton);
+      if (hasOwnRow && category !== "*") {
+        const revertButton = document.createElement("button");
+        revertButton.textContent = "Revenir au défaut";
+        revertButton.style.marginLeft = "0.5rem";
+        revertButton.addEventListener("click", async () => {
+          const response = await fetch("/v1/conformity-policies/" + encodeURIComponent(category), { method: "DELETE" });
+          if (response.ok) { say("ok", "« " + category + " » retombe sur la politique *."); load(); }
+          else { say("warn", "Erreur " + response.status); }
+        });
+        buttonCell.appendChild(revertButton);
+      }
+      row.appendChild(buttonCell);
+      conformityBody.appendChild(row);
+    }
+
+    async function loadConformity(executionBody) {
+      const body = await (await fetch("/v1/conformity-policies")).json();
+      conformityBody.innerHTML = "";
+      const defaultRow = body.policies.find(policy => policy.category === "*");
+      const withOwnRow = new Set(body.policies.map(policy => policy.category));
+      for (const policy of body.policies) {
+        addConformityRow(policy.category, policy.action, body.conformity_actions, true);
+      }
+      // Categories visible in the execution table but without a conformity row.
+      const knownCategories = [
+        ...executionBody.policies.map(policy => policy.category),
+        ...executionBody.categories_without_policy,
+      ].filter(category => category !== "*" && !withOwnRow.has(category));
+      for (const category of [...new Set(knownCategories)]) {
+        addConformityRow(category, defaultRow ? defaultRow.action : "block",
+                         body.conformity_actions, false);
       }
     }
 

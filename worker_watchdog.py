@@ -51,6 +51,11 @@ from ocr_bifunction.review_repository import (
     DECISION_ACCEPT,
     SqliteReviewRepository,
 )
+from ocr_bifunction.conformity_policy import (
+    CONFORMITY_ACTION_FLAG_AND_CONTINUE,
+    SqliteConformityPolicyRepository,
+    resolve_conformity_action,
+)
 from ocr_bifunction.context_assembly import collect_validated_attestations
 from ocr_bifunction.drafting_flow import run_draft_pass
 from ocr_bifunction.issuer_registry import SqliteIssuerRegistryRepository
@@ -132,6 +137,7 @@ def _process_routed_job(
     fast_engine: OcrEngine,
     active_templates: list[dict],
     validation_context: ValidationContext,
+    conformity_policies: dict,
 ) -> str:
     """A policy-deferred non-CI job: run the 2-lane router on the spooled document and
     FINALIZE the row (it was enqueued 'unrouted' — routing now says what it really is).
@@ -155,12 +161,27 @@ def _process_routed_job(
         status_value = _D1_STATUS_FOR_ROUTED_VERDICT.get(
             routed.verdict or "", STATUS_NEEDS_REVIEW
         )
+        verdict = routed.verdict
+        reasons = [*job.reasons, *routed.reasons]
+        if status_value == STATUS_REJECTED:
+            # A proven non-conformity in an async lane obeys the same métier policy
+            # as the door: flag_and_continue downgrades to human review, flagged.
+            action = resolve_conformity_action(
+                job.category or routed.category, conformity_policies
+            )
+            if action == CONFORMITY_ACTION_FLAG_AND_CONTINUE:
+                status_value = STATUS_NEEDS_REVIEW
+                verdict = "human"
+                reasons = [
+                    "non-conformity FLAGGED (policy: process continues)",
+                    *reasons,
+                ]
         repository.update_status(
             job.job_id,
             status_value,
-            verdict=routed.verdict,
+            verdict=verdict,
             record_fields=routed.fields,
-            reasons=[*job.reasons, *routed.reasons],
+            reasons=reasons,
             category_lane="structured",
             category=routed.category,
             template_id=routed.template_id,
@@ -215,12 +236,13 @@ def _process_claimed_job(
     escalation_engine: OcrEngine,
     active_templates: list[dict],
     validation_context: ValidationContext,
+    conformity_policies: dict,
 ) -> None:
     """Dispatch a claimed job to its flow (CI pair vs routed single doc).
 
-    Spool policy: purged at every terminal state EXCEPT needs_review — a job awaiting a
-    human keeps its bytes so the review page shows the document and the nightly draft
-    pass can cluster the unknowns. The sweep purges it once the decision closes the job."""
+    Spool policy: purged at every terminal state EXCEPT needs_review (a human reviews
+    the doc next to its extraction) and rejected (the non-conforme evidence goes to the
+    review / compliance). The sweep purges both once a decision lands."""
     status_value = STATUS_FAILED
     try:
         if job.category_lane == "ci":
@@ -229,7 +251,12 @@ def _process_claimed_job(
             )
         else:
             status_value = _process_routed_job(
-                job, repository, fast_engine, active_templates, validation_context
+                job,
+                repository,
+                fast_engine,
+                active_templates,
+                validation_context,
+                conformity_policies,
             )
     except Exception as error:  # terminal failure lands IN the row, never hidden
         repository.update_status(
@@ -239,7 +266,10 @@ def _process_claimed_job(
         )
         print(f"  job #{job.job_id}: FAILED ({type(error).__name__})")
     finally:
-        if job.document_ref and status_value != STATUS_NEEDS_REVIEW:
+        if job.document_ref and status_value not in (
+            STATUS_NEEDS_REVIEW,
+            STATUS_REJECTED,
+        ):
             shutil.rmtree(job.document_ref, ignore_errors=True)  # PII leaves the disk
 
 
@@ -253,7 +283,20 @@ def _sweep_decisions(
     closed = 0
     for review in review_repository.decided():
         job = repository.get(review.job_id)
-        if job is None or job.status != STATUS_NEEDS_REVIEW:
+        if job is None:
+            continue
+        if job.status == STATUS_REJECTED:
+            # A decided non-conformity (« clore » at the review): the evidence was
+            # handed over — its bytes leave the disk. Status stays rejected (terminal);
+            # purging only when the spool still exists keeps the re-sweep a no-op.
+            if job.document_ref and Path(job.document_ref).is_dir():
+                shutil.rmtree(job.document_ref, ignore_errors=True)
+                print(
+                    f"  job #{job.job_id}: non-conformity closed "
+                    f"(review #{review.review_id}), evidence spool purged"
+                )
+            continue
+        if job.status != STATUS_NEEDS_REVIEW:
             continue
         if review.decision == DECISION_ACCEPT:
             repository.update_status(
@@ -291,6 +334,7 @@ def _one_pass(
     escalation_engine: OcrEngine,
     active_templates: list[dict],
     validation_context: ValidationContext,
+    conformity_policies: dict,
     lease_seconds: float,
     max_attempts: int,
     execution_lanes: tuple[str, ...] = CONTINUOUS_EXECUTION_LANES,
@@ -316,6 +360,7 @@ def _one_pass(
                 escalation_engine,
                 active_templates,
                 validation_context,
+                conformity_policies,
             )
             processed += 1
     _sweep_decisions(repository, review_repository)
@@ -398,6 +443,8 @@ def main() -> int:
     template_repository.seed_from_directory(TEMPLATES_DIRECTORY)
     active_templates = template_repository.active_templates()
     issuer_registry_repository = SqliteIssuerRegistryRepository(arguments.store)
+    conformity_policy_repository = SqliteConformityPolicyRepository(arguments.store)
+    conformity_policy_repository.seed_defaults()
     fast_engine = _LazyRapidOcrEngine()
     escalation_engine = _build_escalation_engine(arguments.fake_escalation)
     execution_lanes = CONTINUOUS_EXECUTION_LANES + (
@@ -420,6 +467,10 @@ def main() -> int:
                     repository, active_templates
                 ),
             )
+            conformity_policies = {
+                policy.category: policy
+                for policy in conformity_policy_repository.all_policies()
+            }
             _one_pass(
                 repository,
                 review_repository,
@@ -427,6 +478,7 @@ def main() -> int:
                 escalation_engine,
                 active_templates,
                 validation_context,
+                conformity_policies,
                 arguments.lease_seconds,
                 arguments.max_attempts,
                 execution_lanes,
@@ -455,6 +507,7 @@ def main() -> int:
         review_repository.close()
         template_repository.close()
         issuer_registry_repository.close()
+        conformity_policy_repository.close()
         arguments.pid_file.unlink(missing_ok=True)
     return 0
 

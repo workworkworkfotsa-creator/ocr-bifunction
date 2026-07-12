@@ -121,6 +121,10 @@
       if (body.missing?.length) lines.push("côté(s) manquant(s) : " + body.missing.join(", "));
       if (body.job_id != null) lines.push("job D1 : #" + body.job_id);
       if (body.status === "pending") { render("wait", "En attente — traitement asynchrone (doute escaladé ou politique d'exécution)", lines); pollJob(body.job_id); return; }
+      if (body.status === "rejected") {
+        render("warn", "Document non conforme — ne peut pas aller plus loin", lines);
+        return;
+      }
       render(body.status === "validated" ? "ok" : "warn",
              "Résultat : " + body.status + (body.verdict ? " (" + body.verdict + ")" : ""), lines);
     });

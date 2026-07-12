@@ -38,6 +38,12 @@
   <h2>File de revue (D1 <code>needs_review</code>)</h2>
   <div id="queue"><p class="muted">Chargement…</p></div>
 
+  <h2>Documents non conformes (D1 <code>rejected</code> — dossier compliance)</h2>
+  <p class="muted">Preuve mécanique de non-conformité (checks calculés, template, document retenu).
+     La qualification de fraude appartient à compliance — pas à la machine. « Clore » = vu /
+     transmis ; le watchdog purge alors le document retenu.</p>
+  <div id="nonconformities"><p class="muted">Chargement…</p></div>
+
   <h2>Suggestions de templates en attente (D3 <code>pending</code>)</h2>
   <div id="suggestions"><p class="muted">Chargement…</p></div>
 
@@ -99,6 +105,34 @@
         body: JSON.stringify({ decision, comment }),
       });
       loadQueue();
+      loadNonconformities();
+    }
+
+    async function loadNonconformities() {
+      const body = await (await fetch("/v1/reviews/nonconformities")).json();
+      const container = document.getElementById("nonconformities");
+      if (!body.jobs.length) { container.innerHTML = '<p class="muted">Aucun document non conforme en attente.</p>'; return; }
+      container.innerHTML = body.jobs.map(job => `
+        <div class="card">
+          <h3>#${job.job_id} — ${escapeHtml(job.source)}
+              <span class="muted">[${escapeHtml(job.category ?? "?")}${job.template_id ? " / " + escapeHtml(job.template_id) : ""}${job.expected_holder_name ? " — titulaire déclaré : " + escapeHtml(job.expected_holder_name) : ""}]</span></h3>
+          <div class="side-by-side">
+            <div class="doc-preview">${documentPreview(job.documents)}</div>
+            <div class="doc-details">
+              <p><b>Document non validé car :</b></p>
+              <ul>${job.reasons.map(reason => `<li>${escapeHtml(reason)}</li>`).join("")}</ul>
+              ${Object.keys(job.record_fields).length ? "<table class='fields'>" +
+                Object.entries(job.record_fields).map(([name, value]) =>
+                  `<tr><td>${escapeHtml(name)}</td><td><b>${escapeHtml(value ?? "—")}</b></td></tr>`).join("") + "</table>" : ""}
+              ${job.decision
+                ? `<p class="done">Clos (${job.decision}) — purge du document au prochain passage du watchdog</p>`
+                : `<input type="text" id="comment_${job.job_id}" placeholder="note pour compliance (optionnel)" />
+                   <div style="margin-top:0.5rem">
+                     <button class="accept" onclick="decide(${job.job_id}, 'accept')">Clore (vu / transmis compliance)</button>
+                   </div>`}
+            </div>
+          </div>
+        </div>`).join("");
     }
 
     // Draft suggestions: candidate checks by review_id — the ticking selects among
@@ -180,6 +214,7 @@
     }
 
     loadQueue();
+    loadNonconformities();
     loadSuggestions();
   </script>
 </body>

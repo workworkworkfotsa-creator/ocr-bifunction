@@ -57,6 +57,16 @@ from ocr_bifunction.execution_policy import (
     SqliteExecutionPolicyRepository,
     resolve_execution,
 )
+from ocr_bifunction.conformity_policy import (
+    CONFORMITY_ACTION_BLOCK_HOLDER,
+    CONFORMITY_ACTION_FLAG_AND_CONTINUE,
+    CONFORMITY_ACTIONS,
+    ConformityPolicy,
+    ConformityPolicyRepository,
+    DEFAULT_CONFORMITY_CATEGORY,
+    SqliteConformityPolicyRepository,
+    resolve_conformity_action,
+)
 from ocr_bifunction.context_assembly import (
     ATTESTATION_REFERENCE_ROLES_KEY,
     REFERENCE_ROLE_FIELD_KEYS,
@@ -453,12 +463,35 @@ def _run_route_document(
 
 
 def _handle_ci_submission(
-    files: list[tuple[str, bytes]], document_type: str | None, request_id: str | None
+    files: list[tuple[str, bytes]],
+    document_type: str | None,
+    request_id: str | None,
+    expected_holder_name: str | None = None,
 ) -> ValidateResponse:
     """The CI lane: complete -> validated / pending(spool for the watchdog); else
-    incomplete / unrecognized. EVERY outcome leaves a D1 row (single source, stage ④)."""
+    incomplete / unrecognized. EVERY outcome leaves a D1 row (single source, stage ④).
+    An 'unrecognized' upload that actually matches ANOTHER category's template is a
+    declared-vs-recognized type mismatch (a passport sent as a CI) -> non conforme."""
     result = _run_fast_submission(files, document_type)
     source = ", ".join(filename for filename, _ in files)
+    if result.status == "unrecognized" and document_type is not None:
+        mismatch = _detected_type_mismatch(files, document_type)
+        if mismatch is not None:
+            return _nonconformity_response(
+                files,
+                source,
+                "structured",
+                mismatch.category,
+                document_type,
+                [
+                    f"type mismatch: declared '{document_type}', recognized "
+                    f"'{mismatch.category}' (template {mismatch.template_id})"
+                ],
+                request_id,
+                expected_holder_name,
+                template_id=mismatch.template_id,
+                record_fields=mismatch.fields,
+            )
     if result.status == "complete" and result.record.verdict == "auto":
         record = result.record
         job_id = _save_job(
@@ -479,28 +512,21 @@ def _handle_ci_submission(
         wire.job_id = job_id
         return wire
     if result.status == "complete" and result.record.verdict == "reject":
-        # A recto/verso identity mismatch: proven invalid, auto-terminal. No escalation —
-        # a heavier OCR pass cannot rescue two sides that name different people.
+        # A recto/verso identity mismatch: PROVEN non conforme. No escalation — a
+        # heavier OCR pass cannot rescue two sides that name different people. The
+        # métier's conformity policy decides the reaction; the pair is retained.
         record = result.record
-        job_id = _save_job(
-            Job(
-                source=source,
-                category_lane="ci",
-                status=STATUS_REJECTED,
-                execution_lane="fast",
-                verdict="reject",
-                category=document_type,
-                template_id=record.template_id,
-                record_fields=record.fields,
-                reasons=record.reasons,
-                request_id=request_id,
-            )
-        )
-        return ValidateResponse(
-            status="rejected",
-            verdict="reject",
-            reasons=record.reasons,
-            job_id=job_id,
+        return _nonconformity_response(
+            files,
+            source,
+            "ci",
+            document_type,
+            document_type,
+            record.reasons,
+            request_id,
+            expected_holder_name,
+            template_id=record.template_id,
+            record_fields=record.fields,
         )
     if result.status == "complete":  # doubtful -> spool, the watchdog escalates
         job_id = _spool_and_enqueue(
@@ -544,6 +570,139 @@ _WIRE_STATUS_FOR_VERDICT = {
 }
 
 
+# --- Non-conformity handling: the métier-configured REACTION to a proven failure. ----
+
+
+def _conformity_action_for(category: str | None) -> str:
+    """The métier's configured reaction for this category ('*' fallback)."""
+    with _repository_lock:
+        policies = {
+            policy.category: policy
+            for policy in _ensure_conformity_policy_repository().all_policies()
+        }
+    return resolve_conformity_action(category, policies)
+
+
+def _holder_block_reason(expected_holder_name: str | None) -> str | None:
+    """The block_holder guard: an OPEN non-conformity (rejected row, no review decision
+    yet) for the same DECLARED holder, in a category whose policy blocks the dossier,
+    refuses subsequent uploads until the review clears it."""
+    if not expected_holder_name:
+        return None
+    with _repository_lock:
+        rejected_jobs = _ensure_repository().pending(STATUS_REJECTED)
+        review_repository = _ensure_review_repository()
+        conformity_policies = {
+            policy.category: policy
+            for policy in _ensure_conformity_policy_repository().all_policies()
+        }
+        for job in rejected_jobs:
+            if job.expected_holder_name != expected_holder_name:
+                continue
+            if job.document_ref is None:
+                # No retained evidence = a refused-while-blocked TRACE row, not an
+                # examined non-conformity — it must never keep the block alive itself.
+                continue
+            action = resolve_conformity_action(job.category, conformity_policies)
+            if action != CONFORMITY_ACTION_BLOCK_HOLDER:
+                continue
+            review = review_repository.by_job(job.job_id)
+            if review is None or review.decision is None:  # still OPEN
+                return (
+                    f"dossier blocked: open non-conformity (job #{job.job_id}) for "
+                    "this declared holder — clear it at the review to unblock"
+                )
+    return None
+
+
+def _detected_type_mismatch(
+    files: list[tuple[str, bytes]], declared_type: str
+) -> RoutedDocument | None:
+    """The declared-vs-recognized type check (e.g. a passport uploaded as a CI): when a
+    document matches NO template of its declared category, re-route it against EVERY
+    active template — a structured match under ANOTHER category is a proven
+    non-conformity (« attendu X, reçu Y »), not an unknown. Costs a second read
+    (maquette simplification, same trade as the worker re-run)."""
+    rerouted = _run_route_document(files, None)
+    if (
+        rerouted.lane == "structured"
+        and rerouted.category
+        and rerouted.category != declared_type
+    ):
+        return rerouted
+    return None
+
+
+def _nonconformity_response(
+    files: list[tuple[str, bytes]],
+    source: str,
+    category_lane: str,
+    document_category: str | None,
+    declared_type: str | None,
+    reasons: list[str],
+    request_id: str | None,
+    expected_holder_name: str | None,
+    *,
+    template_id: str | None = None,
+    record_fields: dict[str, str | None] | None = None,
+) -> ValidateResponse:
+    """Land a PROVEN non-conformity per the métier's configured action: block (and
+    block_holder) -> terminal `rejected` row WITH its bytes retained (the evidence goes
+    to the human review / compliance); flag_and_continue -> `needs_review`, flagged.
+
+    The action is resolved on the DECLARED type first (the dossier's expectation names
+    the case — e.g. a passport uploaded as a CI is a 'carte_identite' incident), falling
+    back to the document's own category when nothing was declared."""
+    action = _conformity_action_for(declared_type or document_category)
+    if action == CONFORMITY_ACTION_FLAG_AND_CONTINUE:
+        flagged_reasons = [
+            "non-conformity FLAGGED (policy: process continues)",
+            *reasons,
+        ]
+        job_id = _save_job(
+            Job(
+                source=source,
+                category_lane=category_lane,
+                status=STATUS_NEEDS_REVIEW,
+                execution_lane="fast",
+                verdict="human",
+                category=document_category or declared_type,
+                template_id=template_id,
+                record_fields=record_fields or {},
+                reasons=flagged_reasons,
+                request_id=request_id,
+                document_ref=_spool_files(files),
+                expected_holder_name=expected_holder_name,
+            )
+        )
+        return ValidateResponse(
+            status="needs_review",
+            verdict="human",
+            reasons=flagged_reasons,
+            job_id=job_id,
+        )
+    job_id = _save_job(
+        Job(
+            source=source,
+            category_lane=category_lane,
+            status=STATUS_REJECTED,
+            execution_lane="fast",
+            verdict="reject",
+            category=document_category or declared_type,
+            template_id=template_id,
+            record_fields=record_fields or {},
+            reasons=reasons,
+            request_id=request_id,
+            # The evidence pack for the human review / compliance: bytes retained.
+            document_ref=_spool_files(files),
+            expected_holder_name=expected_holder_name,
+        )
+    )
+    return ValidateResponse(
+        status="rejected", verdict="reject", reasons=reasons, job_id=job_id
+    )
+
+
 def _handle_single_document(
     files: list[tuple[str, bytes]],
     document_type: str | None,
@@ -560,6 +719,21 @@ def _handle_single_document(
     routed = _run_route_document(files, document_type, expected_holder_name)
     source = files[0][0]  # the original filename (routed.source is the temp name)
     if routed.lane == "structured":
+        if routed.verdict == "reject":
+            # A PROVEN non-conformity: the métier's policy decides the reaction
+            # (block / block dossier / flag and continue) — and the evidence is kept.
+            return _nonconformity_response(
+                files,
+                source,
+                "structured",
+                routed.category,
+                document_type,
+                routed.reasons,
+                request_id,
+                expected_holder_name,
+                template_id=routed.template_id,
+                record_fields=routed.fields,
+            )
         d1_status = _D1_STATUS_FOR_VERDICT.get(
             routed.verdict or "", STATUS_NEEDS_REVIEW
         )
@@ -590,6 +764,26 @@ def _handle_single_document(
             reasons=routed.reasons,
             job_id=job_id,
         )
+    if document_type is not None:
+        # No match under the DECLARED type: check for a declared-vs-recognized type
+        # mismatch (a passport uploaded as a CI) before settling for the RAG lane.
+        mismatch = _detected_type_mismatch(files, document_type)
+        if mismatch is not None:
+            return _nonconformity_response(
+                files,
+                source,
+                "structured",
+                mismatch.category,
+                document_type,
+                [
+                    f"type mismatch: declared '{document_type}', recognized "
+                    f"'{mismatch.category}' (template {mismatch.template_id})"
+                ],
+                request_id,
+                expected_holder_name,
+                template_id=mismatch.template_id,
+                record_fields=mismatch.fields,
+            )
     reasons = ["non-structured document — routed to retrieval / human review"]
     if routed.summary is not None and routed.summary.keywords:
         reasons.append("keywords: " + ", ".join(routed.summary.keywords))
@@ -634,6 +828,33 @@ def validate_document(request: ValidateRequest, response: Response) -> ValidateR
         return cached
 
     files = _decode_files(request)  # may raise 400
+
+    # The block_holder guard fires BEFORE any processing: an open non-conformity of a
+    # dossier whose policy blocks it refuses this upload outright (trace row, no spool
+    # — the document was never examined).
+    block_reason = _holder_block_reason(request.expected_holder_name)
+    if block_reason is not None:
+        job_id = _save_job(
+            Job(
+                source=", ".join(filename for filename, _ in files),
+                category_lane="unrouted",
+                status=STATUS_REJECTED,
+                execution_lane="fast",
+                verdict="reject",
+                category=request.document_type,
+                reasons=[block_reason],
+                request_id=request.request_id,
+                expected_holder_name=request.expected_holder_name,
+            )
+        )
+        wire = ValidateResponse(
+            status="rejected", verdict="reject", reasons=[block_reason], job_id=job_id
+        )
+        if request.request_id:
+            _idempotency_cache[request.request_id] = wire
+        response.status_code = _http_status_for(wire)
+        return wire
+
     with _repository_lock:
         policies = {
             policy.category: policy
@@ -662,7 +883,10 @@ def validate_document(request: ValidateRequest, response: Response) -> ValidateR
         )
     elif request.document_type == "carte_identite":
         wire = _handle_ci_submission(
-            files, request.document_type, request.request_id
+            files,
+            request.document_type,
+            request.request_id,
+            request.expected_holder_name,
         )  # may raise 500
     else:
         wire = _handle_single_document(
@@ -766,6 +990,18 @@ def _ensure_template_repository() -> TemplateRepository:
 
 _execution_policy_repository: ExecutionPolicyRepository | None = None
 _issuer_registry_repository: IssuerRegistryRepository | None = None
+_conformity_policy_repository: ConformityPolicyRepository | None = None
+
+
+def _ensure_conformity_policy_repository() -> ConformityPolicyRepository:
+    """Build the shared conformity-policy store once (lazy). Caller MUST hold `_repository_lock`."""
+    global _conformity_policy_repository
+    if _conformity_policy_repository is None:
+        _conformity_policy_repository = SqliteConformityPolicyRepository(
+            STORE_PATH, check_same_thread=False
+        )
+        _conformity_policy_repository.seed_defaults()
+    return _conformity_policy_repository
 
 
 def _ensure_issuer_registry_repository() -> IssuerRegistryRepository:
@@ -1182,3 +1418,94 @@ def delete_issuer_entry(identifier: str) -> dict:
             status_code=404, detail=f"unknown issuer identifier: {identifier!r}"
         )
     return {"identifier": identifier, "deleted": True}
+
+
+# --- Conformity-policy surface: WHAT a proven non-conformity does (métier config). ----
+
+
+def _conformity_policy_payload(policy: ConformityPolicy) -> dict:
+    return {
+        "category": policy.category,
+        "action": policy.action,
+        "updated_at": policy.updated_at,
+    }
+
+
+@app.get("/v1/conformity-policies")
+def conformity_policies() -> dict:
+    """Every conformity-policy row + the action vocabulary for the page's select."""
+    with _repository_lock:
+        policies = _ensure_conformity_policy_repository().all_policies()
+    return {
+        "policies": [_conformity_policy_payload(policy) for policy in policies],
+        "conformity_actions": list(CONFORMITY_ACTIONS),
+    }
+
+
+class ConformityPolicyRequest(BaseModel):
+    """One conformity-policy row as the /policies page writes it."""
+
+    action: Literal["block", "block_holder", "flag_and_continue"]
+
+
+@app.put("/v1/conformity-policies/{category}")
+def put_conformity_policy(category: str, request: ConformityPolicyRequest) -> dict:
+    """Create or update the reaction for a category ('*' = the default row). Takes
+    effect on the NEXT upload — the door resolves per request."""
+    policy = ConformityPolicy(category=category, action=request.action)
+    with _repository_lock:
+        _ensure_conformity_policy_repository().upsert(policy)
+        saved = _ensure_conformity_policy_repository().get(category)
+    return _conformity_policy_payload(saved) if saved else {"category": category}
+
+
+@app.delete("/v1/conformity-policies/{category}")
+def delete_conformity_policy(category: str) -> dict:
+    """Remove a category's row so it falls back to '*'. The default row is undeletable."""
+    if category == DEFAULT_CONFORMITY_CATEGORY:
+        raise HTTPException(
+            status_code=400,
+            detail="the '*' default conformity policy cannot be deleted",
+        )
+    with _repository_lock:
+        removed = _ensure_conformity_policy_repository().delete(category)
+    if not removed:
+        raise HTTPException(
+            status_code=404, detail=f"no conformity policy for category {category!r}"
+        )
+    return {"category": category, "deleted": True}
+
+
+@app.get("/v1/reviews/nonconformities")
+def nonconformity_queue() -> dict:
+    """The proven non-conforme documents (D1 `rejected`) awaiting the human review /
+    compliance handoff: evidence (template, computed checks, reasons) + retained bytes.
+    A decision on the row (« clore ») lets the watchdog purge its spool."""
+    with _repository_lock:
+        jobs = _ensure_repository().pending(STATUS_REJECTED)
+        review_repository = _ensure_review_repository()
+        payload = []
+        for job in jobs:
+            review = review_repository.by_job(job.job_id)
+            document_files = _spooled_document_files(job)
+            payload.append(
+                {
+                    "job_id": job.job_id,
+                    "source": job.source,
+                    "category": job.category,
+                    "template_id": job.template_id,
+                    "record_fields": job.record_fields,
+                    "reasons": job.reasons,
+                    "expected_holder_name": job.expected_holder_name,
+                    "decision": review.decision if review else None,
+                    "documents": [
+                        {
+                            "url": f"/v1/jobs/{job.job_id}/document?index={file_index}",
+                            "filename": file_path.name,
+                            "suffix": file_path.suffix.lower(),
+                        }
+                        for file_index, file_path in enumerate(document_files)
+                    ],
+                }
+            )
+    return {"jobs": payload}
