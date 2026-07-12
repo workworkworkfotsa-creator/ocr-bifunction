@@ -205,3 +205,25 @@ Source de vérité : `ocr_bifunction/conformity_policy.py` (table `ocr_conformit
 `_holder_block_reason`, `_detected_type_mismatch`) et `worker_watchdog.py` (lanes async, sweep
 « clore » = purge de la preuve). Prouvé : `conformity_smoke.py` 12/12 (2026-07-12).
 Voir [[verdict de routing (auto / humain / invalide)]].
+
+## sévérité par check (durcir / adoucir un contrôle)
+
+Le bouton métier qui règle CE QUE VAUT un échec DÉTERMINÉ d'un check donné : une règle du bloc
+`validation.required` peut porter `"severity": "reject"` (échec → document non conforme) ou
+`"severity": "review"` (échec → revue humaine), au lieu du défaut du check. Cas nommé par
+l'utilisateur (2026-07-12) : une fois le [[registre des organismes (de formation)]] de confiance,
+durcir `issuer_registry` — « émetteur ≠ Y → non valide » — sans redéploy, la règle voyage avec le
+template (assignable au cochage de la promotion, select « défaut / non conforme / revue »).
+
+**Garde-fou NON négociable (doctrine input-vs-preuve)** : la sévérité ne s'applique qu'aux échecs
+DÉTERMINÉS — le check a tourné avec tous ses inputs et la réponse est « non ». Un « je ne peux pas
+savoir » (registre absent, date illisible, contexte non câblé) part TOUJOURS en revue, quelle que
+soit la config : on ne durcit pas l'ignorance. Une valeur de sévérité inconnue (typo config) fait
+elle-même surface en raison de revue — jamais un pass silencieux.
+
+Source de vérité : `ocr_bifunction/template.py` (`CheckFailure.determined`, override dans
+`evaluate_validation`) ; promotion → `api_maquette.py` (cochage tolère `severity`, garde 400) +
+`ui/review.html` (selects). Prouvé : `severity_smoke.py` 8/8 (2026-07-12 — durcissement émetteur,
+registre vide invincible, adoucissement vocabulary, typo fail-loud, promotion).
+Voir [[politique de non-conformité (block / block_holder / flag_and_continue)]] (la RÉACTION par
+catégorie ; la sévérité règle la CLASSE par check — les deux se composent).

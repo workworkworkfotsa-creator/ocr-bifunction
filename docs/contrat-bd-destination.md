@@ -49,9 +49,11 @@ attente** (un worker les dépile ; mécanisme = adaptateur). Colonnes (esquisse)
 Ce que `templates/*.json` proxysent. Une ligne = un template **et ses critères de validation**
 (les critères **voyagent avec** le template — déjà le cas : bloc `validation` du JSON ; pas de table
 critères séparée). Colonnes : `template_id` (PK), `category`, `match` (anchors), `fields` (extraction),
-`validation` (checks requis), `reference_roles_json` (**config métier** : quels champs du record =
-titulaire / délivrance / expiration quand les docs de ce template CORROBORENT des titres —
-`corroborated_by` ; assigné par le reviewer à la promotion), `active`, `version`.
+`validation` (checks requis ; une règle peut porter **`severity: reject|review`** — le métier durcit
+ou adoucit la classe d'un échec DÉTERMINÉ de ce check, jamais un « je ne peux pas savoir »),
+`reference_roles_json` (**config métier** : quels champs du record = titulaire / délivrance /
+expiration quand les docs de ce template CORROBORENT des titres — `corroborated_by` ; assigné par le
+reviewer à la promotion), `active`, `version`.
 
 ## Domaine 3 — Revue / curation (reviewer humain écrit)
 

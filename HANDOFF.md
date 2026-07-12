@@ -204,6 +204,24 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   chemin absolu (`MSYS_NO_PATHCONV=1`) ; PowerShell bloqué par règle `deny` (pas dans `settings.json` global).
 
 ## Fait (2026-07-12)
+- **Sévérité PAR CHECK — le bouton métier « durcir / adoucir » construit + prouvé `severity_smoke.py`
+  8/8 (dette du bullet précédent SOLDÉE, demande utilisateur « à construire »).** Une règle du bloc
+  `validation.required` peut porter **`"severity": "reject" | "review"`** — la classe d'un échec
+  DÉTERMINÉ devient config métier, voyageant avec le template (cas nommé : registre de confiance →
+  `issuer_registry` durci, « émetteur ≠ Y → non valide »). **Le garde-fou input-vs-preuve SURVIT à la
+  config** : `CheckFailure` gagne `determined` (7 branches négatives marquées : sum, date_order ×2,
+  date_span, vocabulary, reconcile_ci, issuer_registry hors-registre, corroborated_by non-adossé) et
+  l'override ne s'applique QU'À elles — un « je ne peux pas savoir » (registre vide, input illisible)
+  part TOUJOURS en revue ; une valeur de sévérité inconnue fait surface en raison de revue (typo
+  fail-loud, même quand tout passe). Promotion : le cochage tolère une `severity` attachée à un
+  candidat (comparé hors-severity ; valeur inconnue → 400) + select « défaut / non conforme / revue »
+  par candidat sur la carte draft. **Prouvé 8/8** : durcissement émetteur → rejected ; registre vide
+  → needs_review MALGRÉ severity=reject ; émetteur reconnu → auto ; contrôle vocabulary → rejected
+  puis ADOUCI → needs_review ; typo → raison explicite ; promotion écrit la sévérité en D2 + garde
+  400. Régressions vertes : verdict_check 11/11, checks 12/12, context_checks 14/14, conformity
+  12/12, flow 14/14, holder 5/5, corroboration 7/7, verdict_flow 7/7, ui_smoke. **Se compose avec la
+  [politique de non-conformité]** : la sévérité règle la CLASSE (non conforme vs revue) par check ;
+  la politique D6 règle la RÉACTION (block/block_holder/flag) par catégorie.
 - **« Document NON CONFORME » — terminologie actée + politique de réaction configurable métier ;
   prouvé `conformity_smoke.py` 12/12.** Décisions utilisateur : la machine prouve une
   NON-CONFORMITÉ, la FRAUDE est le jugement de compliance (mot souvent exagéré) ; la preuve est
@@ -227,9 +245,8 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   file non-conformes ; clore→purge ; flag ; blocage titulaire + déblocage ; 2 type-mismatch ;
   async flaggé ; gardes 422/400 ; page). Régressions vertes : flow 14/14, holder 5/5,
   corroboration 7/7, policy 20/20, verdict_flow 7/7, review, ui_smoke (docs re-pointés),
-  `api_smoke_real recto_verso.pdf --expect validated`. **Dette notée** : sévérité PAR CHECK
-  (ex. durcir `issuer_registry` review→non conforme quand le registre sera de confiance) =
-  bouton métier futur, pas construit.
+  `api_smoke_real recto_verso.pdf --expect validated`. La dette « sévérité PAR CHECK » notée ici a
+  été **construite le jour même** (cf. bullet ci-dessus, `severity_smoke` 8/8).
 
 ## Fait (2026-07-08)
 - **Rôles d'attestation configurables par le MÉTIER — `corroborated_by` tire de bout en bout à
