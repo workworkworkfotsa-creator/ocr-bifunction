@@ -7,113 +7,53 @@
 
 > ⚠️ **Données sensibles** : `inputs/` (CI réelles, factures, photos terrain) et `outputs/` (extractions
 > avec PII) sont **gitignorés** et n'ont **jamais** été versionnés. Aucune PII / donnée entreprise dans le
-> repo ni l'historique (audité 2026-06-26). **Ce repo part sur GitHub** → ne jamais `git add -f` un doc,
+> repo ni l'historique (audité 2026-06-26). **Le repo EST sur GitHub (privé — le passage en public = décision utilisateur)** → ne jamais `git add -f` un doc,
 > ne jamais coller de valeur réelle (nom, n°doc, adresse) dans le code, les docs ou un message de commit.
 
-## État au 2026-07-12
+## État au 2026-07-12 (soir) — LIVRAISON PRÉPARÉE, l'échange IT commence
 
-**Porte d'entrée CI prouvée bout-en-bout + pipeline câblé + extraction factures multi-layout + lecture
-couverte (RapidOCR + Docling fallback) ; LightOnOCR-2 validé en moteur d'escalade ; maquette API avec
-escalade ASYNC câblée + prouvée sur vraies images (validated / pending→done) ; validation facture
-config-driven (value-check HT+TVA=TTC) ; POLITIQUES D'EXÉCUTION (sync / async_immediate / async_nightly
-par catégorie, hint API optionnel, UI `/policies`) 20/20 ; TERMINOLOGIE « document NON CONFORME »
-actée (fraude = jugement compliance) + POLITIQUE DE NON-CONFORMITÉ configurable métier
-(block / block_holder / flag_and_continue) + preuve retenue pour la revue/compliance + check « type
-déclaré ≠ type reconnu », `conformity_smoke` 12/12.** POC solo sur `master`, pas de remote.
-**Pas de tests pytest** — oracle = runs réels sur vrais docs + smokes structurels/logiques + KAT
-(composite MRZ), conforme à la discipline smoke-first.
+**Le flux COMPLET est prouvé depuis les surfaces** (upload → politique d'exécution → verdict 3 états →
+revue humaine avec doc visible → drafting nightly → cochage/promotion → re-match) **+ les 7 surfaces
+de config** (D1..D6 + leviers de capacité, chacune avec sa page) **+ la doctrine non-conformité**
+(terminologie, réaction configurable block/block_holder/flag, sévérité par check, preuve retenue)
+**+ la porte sous charge** (admission plafonnée, dégradation vers l'async, `load_smoke` 10/10).
+Oracle = smokes autonomes PII-free (~100 checks verts) + runs réels. **Pas de tests pytest** —
+discipline smoke-first.
 
-> ⚠️ **inputs/ nettoyé entre le 08 et le 12/07** : les photos CI (IMG_8391/8392) et les courriers
-> mise-en-demeure ont disparu. Régressions re-pointées : `ui_smoke` = facture 14a + docx ;
-> régression CI = `recto_verso.pdf --expect validated` (verte). Le cas LIVE « recto A + verso B »
-> n'est plus re-jouable avec le corpus actuel (le chemin est couvert par `reconcile_verdict_check`
-> 5/5 + la branche porte via `conformity_smoke`).
+**Livraison** : README architecture ; handoff IT → `0_Aller_retour_IT/…/LISEZMOI_HANDOFF.md`
+(gitignoré) ; **remote GitHub PRIVÉ** `workworkworkfotsa-creator/ocr-bifunction` (master poussé) ;
+zip 5,4 Go (repo + 4 GGUF + binaires dev) prêt à transmettre. Serving acté : llama.cpp + llama-swap
+sur Linux (checklist → `docs/deploiement-linux-serving-slm.md`).
 
-> ▶ **NEXT (reprise) — lane de DRAFTING de templates.** Spec → `docs/briefs/BRIEF-template-drafting.md`
-> (gitignoré). Boucle : UNKNOWN s'accumulent → cluster même-layout (TF-IDF, déterministe) → DRAFT
-> (invariance cross-docs = anchors PII-safe + champs) → SLM contraint nomme les champs / propose les
-> checks → re-test → **l'humain valide ET COCHE les checks requis** (compute-all/config-requires) →
-> promotion D2 → re-match déterministe.
+> ⚠️ **inputs/ nettoyé entre le 08 et le 12/07** : photos CI (IMG_8391/8392) et courriers disparus.
+> Régressions re-pointées : `ui_smoke` = facture 14a + docx ; CI = `recto_verso.pdf --expect
+> validated` (verte). Le cas live « recto A + verso B » n'est plus re-jouable (chemin couvert par
+> `reconcile_verdict_check` 5/5 + `conformity_smoke`).
+
+> ▶ **NEXT — l'ALLER-RETOUR IT.** L'ordre du jour de la première réunion = les 8 questions du
+> `LISEZMOI_HANDOFF.md` ; les 3 qui débloquent tout : **(1) porte option A (serveur Python temps
+> réel) vs B (PHP tout-async)**, **(2) version MariaDB réelle** (DDL à co-geler + dater),
+> **(3) qui héberge llama-swap et avec quelle RAM** (→ leviers). Après la réunion : figer les
+> décisions ICI + ouvrir le `plan_integration.md` dans `0_Aller_retour_IT/`.
 >
-> **DÉJÀ FAIT + PROUVÉ (session 2026-07-03, détail → « Fait 2026-07-03 » ci-dessous) :**
-> - **D-a + D-b v2** (moitié déterministe) : clustering + draft par invariance ; 2 familles de champs
->   (géométrie below/right ET colon-prefix `pattern`) ; gates : match cluster complet, valeur variante,
->   anti-dump. `drafting.py` + `draft_check.py` (CLI, gate OCR opt-in exit 2) + `draft_smoke.py` **12/12**.
->   **Run réel** sur 4 certificats couche-texte (zéro OCR) : clustering exact, anchors PII-safe, **nom +
->   prénom extraits** (matière du `reconcile_ci`).
-> - **D-d** : schéma D3 `suggested_template_json` (le draft complet voyage) + revue v2 (COCHAGE des checks
->   candidats) + promotion + re-match, prouvé en **navigateur réel** (Playwright) ; `ui_smoke.py` **15/15**.
->   L'API route depuis D2 → une catégorie promue apparaît seule dans la select box.
+> **EN ATTENTE (ne bloquent pas l'échange IT) :**
+> 1. **Preuve fraude réelle → `rejected`** : DIFFÉRÉE — l'utilisateur soupçonne une attestation,
+>    **attente de confirmation métier** (ne pas inventer de fraude de test à sa place).
+> 2. **D-c partie 2, part SLM** : `normalize`/`pattern` pour les zones hors-famille (dates « Le 12
+>    janvier 2024 », non-colon, tables) — le SLM propose, le déterministe dispose ; patron =
+>    `suggestion.py`. (Nommage + checks candidats déterministes : FAITS et branchés au flux.)
+> 3. **Upgrade liaison titulaire** (actée « plus tard ») : lire `ci_reference_name` depuis le
+>    record CI validé en D1 au lieu de la saisie manuelle.
+> 4. **`api_smoke_async` à re-pointer** : exige une paire CI genuinement douteuse, introuvable
+>    dans le corpus actuel (préexistant, vérifié par A/B sur master).
+> 5. **#RAG contrat — placement** (flux batch vs lane « store de contrats ») : indépendant.
+> 6. **GO explicite requis** avant tout `draft_check --ocr` sur le scan H0B0 (machine partagée VRP).
 >
-> **NEXT CONCRET (dans l'ordre) :**
-> 1. **D-c — le SLM contraint.** **PARTIE 1 (nommage) FAITE (`f578445`) + BRANCHÉE AU FLUX (2026-07-08,
->    `--slm-naming` de la passe DRAFT, fallback placeholders si serveur mort).** **PARTIE 2 : cœur
->    déterministe FAIT (2026-07-08)** — `seed_candidate_checks` propose `date_order`/`date_span`/
->    `vocabulary` + `normalize date_ddmmyyyy` depuis les extractions du cluster (garde PII par
->    récurrence), re-testé par la gate D-b. **Reste la part SLM** : `normalize`/`pattern` pour les
->    zones hors-famille (dates « Le 12 janvier 2024 », non-colon, tables). Le SLM **propose**, le
->    déterministe **dispose**. Patron = `suggestion.py`.
-> 2. **D-e — l'oracle en or : plomberie FAITE + réponses utilisateur ACTÉES (2026-07-08).**
->    (a) **Fraude : AUCUNE confirmée pour l'instant** — l'utilisateur en SOUPÇONNE une sur les
->    attestations, en attente de **confirmation métier** → la preuve « 2 vraies fraudes → rejected »
->    est DIFFÉRÉE jusqu'à cette confirmation (ne pas inventer de fraude de test à sa place).
->    (b) **Liaison doc↔titulaire : MANUELLE, implémentée** — champ optionnel `expected_holder_name`
->    à l'upload (saisi à la main, colonne D1, voyage avec les jobs async) → `ci_reference_name` de
->    `reconcile_ci` ; prouvé `holder_reference_smoke.py` 5/5. **Upgrade actée « pour plus tard »** :
->    lire le titulaire depuis le record CI validé en D1 au lieu de la saisie manuelle.
->    (c) **mapping AttestationReference : RÉPONDU + IMPLÉMENTÉ (2026-07-08)** — « configurable par
->    le métier » : bloc `attestation_reference_roles` {holder/issue_date/expiry_date}_field qui
->    VOYAGE avec le template (colonne D2 `reference_roles_json`), assigné par le reviewer à la
->    promotion (selects de la page revue) ou curé à la main ; `context_assembly.py` projette les
->    jobs D1 clos de ces templates en `AttestationReference`. Prouvé `corroboration_smoke.py` 7/7.
->    **→ Les 3 questions D-e sont soldées ; ne reste que la preuve fraude réelle (attente métier).**
-> 3. **Kit de checks anti-fraude — COMPLET (6 checks) + PROUVÉ (2026-07-03).** PURS (`7a67297`) :
->    `date_order`/`date_span`/`vocabulary` (`checks_check.py` **12/12**). CONTEXTUELS (`97075e2`) :
->    `reconcile_ci`/`issuer_registry`/`corroborated_by` via `ValidationContext` (dataclass, keyword-only
->    sur `validate_fields`, rétrocompatible ; un check contextuel SANS son contexte **fail-loud** →
->    `needs_review`, jamais un pass silencieux) ; `reconcile_ci` réutilise le `_normalize` strict de
->    `reconcile.py` (Ahmed≠Hamed) ; `context_checks_check.py` **14/14** (2 régimes d'émetteur bout-en-bout :
->    `attestation_formation` s'auto-prouve par le registre, `titre_habilitation` jamais auto sans
->    corroboration). **Tout config-driven, voyage avec le template (compute-all/config-requires).** Reste :
->    câbler le contexte réel (→ item 2 D-e) + proposer ces checks en candidats au drafting (→ D-c partie 2).
-> 4. **#4 — placement RAG contrat** (flux batch vs lane « store de contrats ») : indépendant, ne bloque rien.
->
-> **EN ATTENTE D'UN GO** : le scan H0B0 (seul certificat image-only, 0 char) exige RapidOCR CPU → run
-> `draft_check … --ocr` **après GO explicite** (machine partagée VRP). Les 4 autres certificats sont
-> born-digital → aucun OCR requis (déjà runnés).
->
-> **DÉCISION MÉTIER ACTÉE (2026-07-03) — 2 régimes d'émetteur** (le cœur anti-fraude, « ma mère peut me
-> faire une certif ») : `attestation_formation` = émise par un ORGANISME tiers (SIRET en texte →
-> `issuer_registry` contre registre curé, PAS encore implémenté) ≠ `titre_habilitation` = émis par
-> l'EMPLOYEUR, **auto-déclaré → jamais auto seul** (`corroborated_by` : adossé à une attestation
-> d'organisme validée du même titulaire, reconcile STRICT Ahmed≠Hamed). Concepts → `docs/dictionnaire-
-> metier.md` (créé, curé+confirmé). Détail → brief drafting § régimes d'émetteur.
->
-> **PIÈGE SOLDÉ (2026-07-08)** : « D1 ne retient ni chemin ni texte des unknowns » → résolu par la
-> **rétention du spool** : une row `needs_review` GARDE ses bytes (`document_ref`), purgés seulement à
-> la clôture (sweep) ou tout autre état terminal. La passe DRAFT nightly clusterise depuis D1 (plus de
-> CLI obligatoire) ; `draft_check.py` reste utilisable à la main. **Finding D-a toujours vrai** : la
-> similarité TF-IDF dépend du POOL (IDF) — une paire seule peut scorer <0.5 et ≥0.5 dans un pool plus
-> large ; `--threshold` = le bouton.
->
-> Contexte stable : mix local (uvicorn + watchdog + navigateur) LIVRÉ + prouvé (2026-07-02) ; D1/D2/D3
-> proxifiés + consolidés end-to-end ; lane SLM de suggestion (liste fermée) live dans le batch.
->
-> **PLAN ACTÉ (ordre convenu, même lecture — reprendre ICI en session fraîche) :**
-> 1. ✅ **FAIT (2026-07-02) — `_jobs` dict de l'API migré sur `repository`.** D1 unifié : API + batch écrivent
->    la MÊME table `ocr_jobs` (prouvé : 3 lignes, 2 producteurs coexistent, file ⑤ = 1 requête SQL). Détail
->    → Fait (2026-07-02) ci-dessous.
-> 2. ✅ **FAIT (2026-07-02) — D3 store + lane SLM de suggestion (GBNF prouvé actif, lane end-to-end).**
->    Store `ocr_reviews` (loop `pending`→`validated`) + lane deterministic-first (GBNF liste-fermée,
->    re-vérif anchors + fit test extract/validate, → stage D3). Détail → Fait (2026-07-02) ci-dessous.
-> 3. ✅ **FAIT (2026-07-02) — D2 émerge (`ocr_templates`) + seam de promotion D3→D2.** Boucle de croissance
->    organique prouvée déterministe : miss → curate → validate → promote → **match déterministe** + auto.
->    Détail → Fait (2026-07-02) ci-dessous. **→ Les 3 domaines D1/D2/D3 sont désormais tous proxifiés.**
-> 4. **#3 — placement RAG contrat** (flux batch vs lane « store de contrats ») : indépendant, ne bloque rien.
->    **← seul item restant du plan.**
->
-> **À co-geler avec l'IT** (le jour J, pas avant) : les COLONNES de `ocr_jobs` (MariaDB 5.5 : `NOW()` explicite,
-> InnoDB/utf8, index ≤767 o) — cf. `docs/contrat-bd-destination.md`. Détail → Fait (2026-07-02).
+> Décisions/concepts stables → `docs/dictionnaire-metier.md` (2 régimes d'émetteur, verdict 3 états,
+> non-conformité, politiques, capacité) ; contrat → `docs/contrat-bd-destination.md`. **Piège soldé
+> (2026-07-08)** : rétention du spool (une row `needs_review`/`rejected` garde ses bytes jusqu'à la
+> clôture). **Finding D-a toujours vrai** : la similarité TF-IDF dépend du POOL — `--threshold` = le
+> bouton.
 
 Historique : `3fcc7a8` baseline ①②③ · `3c3d055` HANDOFF+hook · `19e8041` slot Preprocessor ·
 `395e9e3` MRZ parse · `3680c87` rectifier + TD1.
