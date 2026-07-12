@@ -56,6 +56,24 @@
     <tbody id="conformity_rows"></tbody>
   </table>
 
+  <h2 style="font-size:1.1rem; margin-top:2rem">Capacité de la porte (infra — hardware du jour J)</h2>
+  <p class="muted">
+    Le sync est PLAFONNÉ (worst case assumé : pas de bêtes de guerre). Au-delà du plafond, la porte
+    ne fond pas : <code>defer</code> = l'upload bascule en asynchrone (202, lane
+    <code>deferred</code>, drainée par le watchdog) ; <code>reject_503</code> = refus avec
+    <code>Retry-After</code>. Effet immédiat, sans redémarrage.
+  </p>
+  <table>
+    <thead><tr><th>Plafond sync simultané</th><th>Débordement</th><th></th></tr></thead>
+    <tbody>
+      <tr>
+        <td><input type="number" id="capacity_limit" min="1" max="64" style="width:5rem" /></td>
+        <td><select id="capacity_overflow"></select></td>
+        <td><button id="capacity_save">Enregistrer</button></td>
+      </tr>
+    </tbody>
+  </table>
+
   <div id="message"></div>
 
   <script>
@@ -222,7 +240,35 @@
       }
     }
 
+    async function loadCapacity() {
+      const body = await (await fetch("/v1/capacity-settings")).json();
+      document.getElementById("capacity_limit").value = body.sync_concurrency_limit;
+      const overflowSelect = document.getElementById("capacity_overflow");
+      overflowSelect.innerHTML = "";
+      for (const action of body.overflow_actions) {
+        const option = document.createElement("option");
+        option.value = action;
+        option.textContent = action;
+        option.selected = action === body.sync_overflow_action;
+        overflowSelect.appendChild(option);
+      }
+    }
+
+    document.getElementById("capacity_save").addEventListener("click", async () => {
+      const response = await fetch("/v1/capacity-settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sync_concurrency_limit: Number(document.getElementById("capacity_limit").value),
+          sync_overflow_action: document.getElementById("capacity_overflow").value,
+        }),
+      });
+      if (response.ok) { say("ok", "Capacité enregistrée — effet immédiat."); loadCapacity(); }
+      else { say("warn", "Erreur " + response.status); }
+    });
+
     load();
+    loadCapacity();
   </script>
 </body>
 </html>

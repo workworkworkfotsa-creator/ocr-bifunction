@@ -57,6 +57,15 @@ from ocr_bifunction.execution_policy import (
     SqliteExecutionPolicyRepository,
     resolve_execution,
 )
+from ocr_bifunction.capacity_settings import (
+    CapacitySettings,
+    CapacitySettingsRepository,
+    DEFAULT_CAPACITY_SETTINGS,
+    OVERFLOW_ACTION_REJECT_503,
+    OVERFLOW_ACTIONS,
+    SqliteCapacitySettingsRepository,
+    load_capacity_settings,
+)
 from ocr_bifunction.conformity_policy import (
     CONFORMITY_ACTION_BLOCK_HOLDER,
     CONFORMITY_ACTION_FLAG_AND_CONTINUE,
@@ -131,7 +140,40 @@ _repository_lock = threading.Lock()
 
 # Idempotency cache keyed by request_id: a replay returns the same result (same job_id). Stays
 # in memory — it dedupes the whole response envelope, not just persisted jobs (out of D1 scope).
+# BOUNDED: an unbounded dict is a slow leak under load; beyond the cap the OLDEST entry is
+# evicted (dict preserves insertion order). A late replay of an evicted id simply reprocesses.
+_IDEMPOTENCY_CACHE_MAX_ENTRIES = 1024
 _idempotency_cache: dict[str, "ValidateResponse"] = {}
+
+
+def _cache_idempotent_response(request_id: str, wire: "ValidateResponse") -> None:
+    if request_id in _idempotency_cache:
+        return
+    while len(_idempotency_cache) >= _IDEMPOTENCY_CACHE_MAX_ENTRIES:
+        _idempotency_cache.pop(next(iter(_idempotency_cache)))
+    _idempotency_cache[request_id] = wire
+
+
+# --- Admission control: the sync lane is CAPPED (worst-case doctrine, modest servers). --
+# A counter under its own lock (not a Semaphore) so the LIMIT stays a live config value:
+# ops raises SYNC_CONCURRENCY_LIMIT on day-J hardware without restarting the door.
+_capacity_lock = threading.Lock()
+_active_sync_count = 0
+
+
+def _try_acquire_sync_slot(limit: int) -> bool:
+    global _active_sync_count
+    with _capacity_lock:
+        if _active_sync_count >= limit:
+            return False
+        _active_sync_count += 1
+        return True
+
+
+def _release_sync_slot() -> None:
+    global _active_sync_count
+    with _capacity_lock:
+        _active_sync_count -= 1
 
 
 def _ensure_repository() -> Repository:
@@ -851,7 +893,7 @@ def validate_document(request: ValidateRequest, response: Response) -> ValidateR
             status="rejected", verdict="reject", reasons=[block_reason], job_id=job_id
         )
         if request.request_id:
-            _idempotency_cache[request.request_id] = wire
+            _cache_idempotent_response(request.request_id, wire)
         response.status_code = _http_status_for(wire)
         return wire
 
@@ -881,28 +923,69 @@ def validate_document(request: ValidateRequest, response: Response) -> ValidateR
         wire = ValidateResponse(
             status="pending", verdict=None, reasons=resolved.reasons, job_id=job_id
         )
-    elif request.document_type == "carte_identite":
-        wire = _handle_ci_submission(
-            files,
-            request.document_type,
-            request.request_id,
-            request.expected_holder_name,
-        )  # may raise 500
     else:
-        wire = _handle_single_document(
-            files,
-            request.document_type,
-            request.request_id,
-            request.expected_holder_name,
-        )  # may raise 500
-    if resolved.execution_mode == EXECUTION_MODE_SYNC and resolved.reasons:
-        wire.reasons = [
-            *wire.reasons,
-            *resolved.reasons,
-        ]  # e.g. an ignored hint, traced
+        # ADMISSION CONTROL: the sync lane is capped (SYNC_CONCURRENCY_LIMIT, a live
+        # lever). A saturated door never melts — it applies the overflow action:
+        # defer (the bi-mode valve: 202 pending on the 'deferred' lane) or reject_503.
+        capacity = _load_capacity_settings()
+        if not _try_acquire_sync_slot(capacity.sync_concurrency_limit):
+            if capacity.sync_overflow_action == OVERFLOW_ACTION_REJECT_503:
+                raise HTTPException(
+                    status_code=503,
+                    detail=(
+                        "sync capacity saturated "
+                        f"({capacity.sync_concurrency_limit} in flight) — retry"
+                    ),
+                    headers={"Retry-After": "5"},
+                )
+            overflow_reasons = [
+                *resolved.reasons,
+                (
+                    "sync capacity saturated "
+                    f"({capacity.sync_concurrency_limit} in flight) — deferred per "
+                    "overflow policy"
+                ),
+            ]
+            job_id = _spool_and_enqueue(
+                files,
+                request.document_type,
+                overflow_reasons,
+                request.request_id,
+                category_lane=(
+                    "ci" if request.document_type == "carte_identite" else "unrouted"
+                ),
+                execution_lane="deferred",
+                expected_holder_name=request.expected_holder_name,
+            )
+            wire = ValidateResponse(
+                status="pending", verdict=None, reasons=overflow_reasons, job_id=job_id
+            )
+        else:
+            try:
+                if request.document_type == "carte_identite":
+                    wire = _handle_ci_submission(
+                        files,
+                        request.document_type,
+                        request.request_id,
+                        request.expected_holder_name,
+                    )  # may raise 500
+                else:
+                    wire = _handle_single_document(
+                        files,
+                        request.document_type,
+                        request.request_id,
+                        request.expected_holder_name,
+                    )  # may raise 500
+            finally:
+                _release_sync_slot()
+            if resolved.reasons:
+                wire.reasons = [
+                    *wire.reasons,
+                    *resolved.reasons,
+                ]  # e.g. an ignored hint, traced
 
     if request.request_id:
-        _idempotency_cache[request.request_id] = wire
+        _cache_idempotent_response(request.request_id, wire)
     response.status_code = _http_status_for(wire)
     return wire
 
@@ -991,6 +1074,24 @@ def _ensure_template_repository() -> TemplateRepository:
 _execution_policy_repository: ExecutionPolicyRepository | None = None
 _issuer_registry_repository: IssuerRegistryRepository | None = None
 _conformity_policy_repository: ConformityPolicyRepository | None = None
+_capacity_settings_repository: CapacitySettingsRepository | None = None
+
+
+def _ensure_capacity_settings_repository() -> CapacitySettingsRepository:
+    """Build the shared capacity-levers store once (lazy). Caller MUST hold `_repository_lock`."""
+    global _capacity_settings_repository
+    if _capacity_settings_repository is None:
+        _capacity_settings_repository = SqliteCapacitySettingsRepository(
+            STORE_PATH, check_same_thread=False
+        )
+        _capacity_settings_repository.seed_defaults()
+    return _capacity_settings_repository
+
+
+def _load_capacity_settings() -> CapacitySettings:
+    """The admission levers, read fresh per request — ops edits apply immediately."""
+    with _repository_lock:
+        return load_capacity_settings(_ensure_capacity_settings_repository())
 
 
 def _ensure_conformity_policy_repository() -> ConformityPolicyRepository:
@@ -1494,6 +1595,46 @@ def delete_conformity_policy(category: str) -> dict:
             status_code=404, detail=f"no conformity policy for category {category!r}"
         )
     return {"category": category, "deleted": True}
+
+
+# --- Capacity levers: the door's admission knobs (infra config, hardware day-J). ------
+
+
+@app.get("/v1/capacity-settings")
+def capacity_settings() -> dict:
+    """The admission levers as currently resolved (defaults folded in) + the raw store."""
+    with _repository_lock:
+        repository = _ensure_capacity_settings_repository()
+        resolved = load_capacity_settings(repository)
+        stored = repository.all_settings()
+    return {
+        "sync_concurrency_limit": resolved.sync_concurrency_limit,
+        "sync_overflow_action": resolved.sync_overflow_action,
+        "overflow_actions": list(OVERFLOW_ACTIONS),
+        "stored": stored,
+        "defaults": DEFAULT_CAPACITY_SETTINGS,
+    }
+
+
+class CapacitySettingsRequest(BaseModel):
+    """The two admission levers as the /policies page writes them."""
+
+    sync_concurrency_limit: int = Field(ge=1, le=64)
+    sync_overflow_action: Literal["defer", "reject_503"]
+
+
+@app.put("/v1/capacity-settings")
+def put_capacity_settings(request: CapacitySettingsRequest) -> dict:
+    """Update the admission levers — takes effect on the NEXT upload (no restart):
+    raise the cap on day-J hardware, or switch the overflow behavior."""
+    with _repository_lock:
+        repository = _ensure_capacity_settings_repository()
+        repository.upsert("SYNC_CONCURRENCY_LIMIT", str(request.sync_concurrency_limit))
+        repository.upsert("SYNC_OVERFLOW_ACTION", request.sync_overflow_action)
+    return {
+        "sync_concurrency_limit": request.sync_concurrency_limit,
+        "sync_overflow_action": request.sync_overflow_action,
+    }
 
 
 @app.get("/v1/reviews/nonconformities")
