@@ -204,6 +204,28 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   chemin absolu (`MSYS_NO_PATHCONV=1`) ; PowerShell bloqué par règle `deny` (pas dans `settings.json` global).
 
 ## Fait (2026-07-12)
+- **Porte sous charge — worst case assumé : admission PLAFONNÉE + débordement configurable ;
+  prouvé `load_smoke.py` 10/10.** Question utilisateur : « 1000 appels simultanés, la porte sync
+  tient ? » Analyse honnête (persistée au dictionnaire « capacité de la porte ») : NON — threadpool
+  FastAPI ~40 threads × OCR CPU-bound sur 4 cœurs = thrashing + OOM 8 Go, zéro admission control,
+  zéro timeout, cache d'idempotence non borné. Décision utilisateur : serveurs modestes (pas de
+  rack GPU) → prévoir le worst case ET rendre le plafond CONFIGURABLE (même gouvernance que
+  sync/async/SLM) pour s'adapter au hardware du jour J. Livré : **leviers infra**
+  `ocr_capacity_settings` (`capacity_settings.py`, table clé/valeur générique, patron VRP —
+  `SYNC_CONCURRENCY_LIMIT` défaut 2, `SYNC_OVERFLOW_ACTION` défaut `defer`) ; **soupape
+  d'admission** dans `validate_document` (compteur+lock à limite VIVANTE — pas un Semaphore figé) :
+  saturée → `defer` = bascule async (202 pending, lane `deferred`, trace « capacity saturated »)
+  ou `reject_503` (+ `Retry-After`) — **la porte ne fond jamais, elle dégrade vers le bi-mode** ;
+  **cache d'idempotence borné** (LRU 1024, éviction du plus ancien) ; endpoints GET/PUT
+  `/v1/capacity-settings` (gardes 422) + section « Capacité » sur `/policies`. **Prouvé 10/10**
+  (12 uploads concurrents via threads + sonde de pic : pic mesuré = 2 ≤ plafond ; zéro 5xx ;
+  validated+deferred = total ; rows `received/deferred` spoolées puis TOUTES drainées done/auto
+  par le watchdog ; mode 503 avec Retry-After ; cap<1 → 422 ; flood de request_id → cache ≤ cap).
+  Régressions vertes : flow 14/14, policy 20/20, conformity 12/12, holder 5/5, corroboration 7/7,
+  severity 8/8, ui_smoke. **Limites assumées, notées au contrat (section « Leviers infra ») pour
+  l'IT** : timeout dur mi-OCR = gateway IT (on ne tue pas un thread Python proprement) ; verrou
+  global + connexion SQLite unique = artefacts du proxy (MariaDB + index les remplacent) ;
+  idempotence cross-process re-dérivable de D1 ; concurrence watchdog = levier futur.
 - **Sévérité PAR CHECK — le bouton métier « durcir / adoucir » construit + prouvé `severity_smoke.py`
   8/8 (dette du bullet précédent SOLDÉE, demande utilisateur « à construire »).** Une règle du bloc
   `validation.required` peut porter **`"severity": "reject" | "review"`** — la classe d'un échec

@@ -227,3 +227,26 @@ Source de vérité : `ocr_bifunction/template.py` (`CheckFailure.determined`, ov
 registre vide invincible, adoucissement vocabulary, typo fail-loud, promotion).
 Voir [[politique de non-conformité (block / block_holder / flag_and_continue)]] (la RÉACTION par
 catégorie ; la sévérité règle la CLASSE par check — les deux se composent).
+
+## capacité de la porte (admission / débordement)
+
+Le plafond de traitements SYNCHRONES simultanés et ce que fait la porte au-delà — la réponse au
+« et si j'ai 1000 appels en même temps ? » (analyse 2026-07-12 : sans plafond, ~40 OCR concurrents
+sur 4 cœurs = thrashing + OOM à 8 Go ; les clients partent, le serveur brûle du CPU pour rien).
+Doctrine : **la porte ne fond jamais, elle dégrade** — le bi-mode est la soupape de pression.
+
+- `SYNC_CONCURRENCY_LIMIT` (défaut 2 sur la machine de référence 4 cœurs/8 Go) — levier VIVANT,
+  à monter sur le hardware du jour J, sans redéploy (édition `/policies`, effet à l'upload suivant).
+- `SYNC_OVERFLOW_ACTION` : `defer` (défaut) = l'upload excédentaire bascule en asynchrone
+  (202 pending, lane `deferred`, drainée par le watchdog — rien n'est perdu) ; `reject_503` =
+  refus avec `Retry-After` (rien n'est mis en file chez nous).
+
+Se compose avec la [[politique d'exécution (sync / async immédiat / async nuit)]] : elle dit le
+régime VOULU par catégorie ; la capacité dit ce que le hardware PEUT — la saturation dégrade vers
+l'async quelle que soit la politique (y compris `carte_identite` verrouillée sync : sous
+saturation, il n'y a de temps réel pour personne).
+
+Source de vérité : `ocr_bifunction/capacity_settings.py` (table `ocr_capacity_settings`, patron
+leviers) ; admission → `api_maquette.py` (`_try_acquire_sync_slot`, branche débordement de
+`validate_document`) ; cache d'idempotence borné (LRU). Prouvé : `load_smoke.py` 10/10
+(2026-07-12 — 12 uploads concurrents, pic mesuré ≤ plafond, zéro 5xx, débordement drainé).

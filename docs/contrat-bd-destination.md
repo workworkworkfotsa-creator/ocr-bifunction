@@ -100,6 +100,26 @@ machine prouve la non-conformité, la fraude est le jugement de compliance). Par
 La preuve (row `rejected` + bytes retenus) est visible dans la section « Documents non conformes »
 de la revue ; « clore » = vu / transmis compliance → le worker purge la preuve au sweep.
 
+## Leviers infra — `ocr_capacity_settings` (l'admission de la porte)
+
+Worst-case assumé (2026-07-12 : serveurs modestes, pas de rack GPU) : le sync est **plafonné** et
+le plafond est un **levier vivant** (patron VRP : défaut en code, seed clé/valeur, override lu à
+chaque requête — s'adapte au hardware du jour J sans redéploy). Table générique clé/valeur
+(`setting_key` PK, `setting_value`) pour accueillir les futurs leviers sans changement de schéma :
+
+- `SYNC_CONCURRENCY_LIMIT` (défaut 2) — traitements sync simultanés max.
+- `SYNC_OVERFLOW_ACTION` (défaut `defer`) — porte saturée : `defer` = bascule async (202, lane
+  `deferred` — le bi-mode EST la soupape de pression) | `reject_503` = refus + `Retry-After`.
+
+**Notes worst-case pour l'IT (limites assumées du proxy, à traiter à l'intégration)** :
+- pas de kill mi-OCR d'un thread Python → le timeout dur par requête = **gateway/reverse-proxy IT** ;
+- le verrou global + la connexion SQLite unique sont des artefacts du proxy → MariaDB apporte la
+  vraie concurrence ; les scans par requête (`attestations validées`, `rejected` par titulaire)
+  deviennent des **requêtes indexées** (index `status`, `expected_holder_name`, `template_id`) ;
+- multi-process : la porte est stateless SAUF le cache d'idempotence en mémoire (borné LRU) — le
+  `request_id` étant en D1, une idempotence cross-process peut se re-dériver de la table ;
+- le watchdog reste volontairement mono-job (8 Go) ; sa concurrence = levier futur si le hardware suit.
+
 ## Contrat de colonnes — QUI écrit QUOI (non négociable)
 
 | Écrivain | Écrit | Lit seulement |
@@ -107,7 +127,7 @@ de la revue ; « clore » = vu / transmis compliance → le worker purge la preu
 | **Worker async (Python)** | D1 (status, verdict, record) | D2 (templates actifs) |
 | **UI de revue (humain / PHP)** | D3 (comment, decision, suggestions) | D1 (`needs_review`) |
 | **Promotion (transaction)** | D2 (template activé) | D3 (suggestion validée) |
-| **UI politiques (opérateur + métier / PHP)** | D4 (`ocr_execution_policies`), D6 (`ocr_conformity_policies`) | — |
+| **UI politiques (opérateur + métier / PHP)** | D4 (`ocr_execution_policies`), D6 (`ocr_conformity_policies`), leviers (`ocr_capacity_settings`) | — |
 | **UI registre (expert métier / PHP)** | D5 (`ocr_issuer_registry`) | — |
 | **Porte API (Python)** | D1 (insertion des jobs) | D4 (résolution sync/async), D2, D5 (contexte de conformité), D6 (réaction) |
 | **Passe DRAFT nightly (Python)** | D3 (suggestions stagées) | D1 (`needs_review` + spool), D2 (ids libres) |
