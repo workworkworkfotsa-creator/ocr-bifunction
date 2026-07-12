@@ -204,6 +204,20 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   chemin absolu (`MSYS_NO_PATHCONV=1`) ; PowerShell bloqué par règle `deny` (pas dans `settings.json` global).
 
 ## Fait (2026-07-12)
+- **LIVRAISON PRÉPARÉE — le premier échange IT peut commencer.** (1) **README.md** écrit
+  (architecture complète porte/router/watchdog + D1..D6 + leviers, 3 modes, verdicts/non-conformité,
+  smokes — public-safe, zéro détail de stack interne). (2) **Handoff IT spécifique** →
+  `0_Aller_retour_IT/ocr_bifunction_handoff_2026-07-12/LISEZMOI_HANDOFF.md` (GITIGNORÉ — détails de
+  stack interne) : décision n°1 à trancher (porte Python option A vs PHP tout-async option B),
+  garder/réécrire/jeter, checklist Windows→Linux, PII/rétention, **8 questions ouvertes pour la
+  première réunion**, brief « Pour le Claude de l'IT ». (3) **GitHub** : repo **PRIVÉ**
+  `workworkworkfotsa-creator/ocr-bifunction` créé via API (gh absent ; credentials GCM) + master
+  poussé — passer en public = décision utilisateur, réversible dans un seul sens. (4) **Zip de
+  livraison** `0_Aller_retour_IT/ocr_bifunction_livraison_2026-07-12.zip` (5,73 Go, 156 entrées) :
+  repo tracké + 4 GGUF + binaires dev Windows + LISEZMOI à la racine ; **garde PII vérifiée dans
+  l'archive : aucune trace d'inputs/outputs/store/spool/briefs**. (5) **Skill handoff-it → v3**
+  (leçons : N surfaces, leviers jusqu'à l'infra, serving=endpoint, checklist OS, porte qui dégrade,
+  vocabulaire livrable).
 - **Serving SLM sur Linux — décision ACTÉE + note de livraison écrite.** llama.cpp (`llama-server`)
   supervisé par **llama-swap** retenu (« le plus rapide et contrôlable ») ; **Ollama écarté** (« no
   way, trop peu de contrôle » + re-validation GBNF/multimodal à payer), **LocalAI écarté**, vLLM/TGI
