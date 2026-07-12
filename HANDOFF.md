@@ -204,6 +204,16 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   chemin absolu (`MSYS_NO_PATHCONV=1`) ; PowerShell bloqué par règle `deny` (pas dans `settings.json` global).
 
 ## Fait (2026-07-12)
+- **Serving SLM sur Linux — décision ACTÉE + note de livraison écrite.** llama.cpp (`llama-server`)
+  supervisé par **llama-swap** retenu (« le plus rapide et contrôlable ») ; **Ollama écarté** (« no
+  way, trop peu de contrôle » + re-validation GBNF/multimodal à payer), **LocalAI écarté**, vLLM/TGI
+  hors sujet (GPU). Le code ne dépend que de l'endpoint compatible OpenAI (`LLAMA_SWAP_URL`) — le
+  serving est un adaptateur. **Checklist « sur Linux changer X et Y » →
+  `docs/deploiement-linux-serving-slm.md`** (binaires linux-x64 pin b9542 ou re-valider, 4
+  occurrences `.exe` du config.yaml, `-t` = cœurs physiques cible, models/ à provisionner avec le
+  mmproj, systemd + bind 127.0.0.1 SEULEMENT — llama-server sans auth, validation à froid des 3
+  slots dont le test GBNF « BANANE », pièges Windows-only à ne pas porter). Pointeur ajouté au
+  contrat de destination.
 - **Porte sous charge — worst case assumé : admission PLAFONNÉE + débordement configurable ;
   prouvé `load_smoke.py` 10/10.** Question utilisateur : « 1000 appels simultanés, la porte sync
   tient ? » Analyse honnête (persistée au dictionnaire « capacité de la porte ») : NON — threadpool

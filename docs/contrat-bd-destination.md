@@ -143,6 +143,12 @@ redéploy), pas une table métier. Leviers connus à ce stade :
   affaiblit la détection « recto A + verso B ») ; **quels checks requis par défaut** par catégorie ;
   concurrence de la file d'escalade (1-2).
 
+## Serving SLM (décision actée 2026-07-12)
+
+**llama.cpp supervisé par llama-swap, sur Linux** — Ollama/LocalAI/vLLM écartés. Le code ne dépend
+que d'un endpoint HTTP compatible OpenAI (`LLAMA_SWAP_URL`) : le serving est un adaptateur.
+Checklist « changer X et Y sur Linux » → **[deploiement-linux-serving-slm.md](deploiement-linux-serving-slm.md)**.
+
 ## À co-geler avec l'IT (le jour J)
 
 - Geler le schéma **conjointement + daté** ; négocier toute évolution de forme (leçon `partner_sources`).
