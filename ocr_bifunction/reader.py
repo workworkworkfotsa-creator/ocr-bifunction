@@ -33,14 +33,65 @@ IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"}
 class TextLine:
     """One text region with its geometry — the spatial anchor templates rely on.
 
-    bbox is axis-aligned (x0, y0, x1, y1) in the page/image coordinate system.
-    confidence is None for a native text-layer region (exact) or a float for OCR.
+    `bbox` is axis-aligned `(x0, y0, x1, y1)` in a TOP-LEFT-origin page/image coordinate
+    system, with `x0 <= x1` and `y0 <= y1`: every engine normalizes to this (RapidOCR/Docling
+    via min/max, the PDF text layer via PyMuPDF, the VLM via a synthetic top-to-bottom box) so
+    the template "value below / value to the right" geometry has ONE orientation. `confidence`
+    is None for a native text-layer region (exact — trust it) or a float in `[0, 1]` for an OCR
+    score (the "douteux → humain" signal).
+
+    The invariants are enforced at construction (fail-loud): a malformed engine output — a
+    wrong-length box, a bottom-left origin left un-flipped, a score outside [0, 1] — surfaces
+    HERE with a clear error, not as silent geometry garbage in `_value_below` downstream. That
+    is the hardening of the jettisonable-engine contract: the slot may be swapped, its OUTPUT
+    shape may not drift. Read the geometry through the named accessors (`x0`/`y0`/`x1`/`y1`/
+    `width`/`height`), not by indexing `bbox` — the box is the contract, the tuple is storage.
     """
 
     text: str
     bbox: tuple[float, float, float, float]
     confidence: float | None = None
     page_index: int = 0
+
+    def __post_init__(self) -> None:
+        if len(self.bbox) != 4:
+            raise ValueError(
+                f"TextLine.bbox must be (x0, y0, x1, y1), got {self.bbox!r}"
+            )
+        x0, y0, x1, y1 = self.bbox
+        if x1 < x0 or y1 < y0:
+            raise ValueError(
+                "TextLine.bbox must be axis-aligned, top-left origin (x0<=x1, y0<=y1), "
+                f"got {self.bbox!r}"
+            )
+        if self.confidence is not None and not 0.0 <= self.confidence <= 1.0:
+            raise ValueError(
+                f"TextLine.confidence must be None or within [0, 1], got {self.confidence!r}"
+            )
+
+    @property
+    def x0(self) -> float:
+        return self.bbox[0]
+
+    @property
+    def y0(self) -> float:
+        return self.bbox[1]
+
+    @property
+    def x1(self) -> float:
+        return self.bbox[2]
+
+    @property
+    def y1(self) -> float:
+        return self.bbox[3]
+
+    @property
+    def width(self) -> float:
+        return self.bbox[2] - self.bbox[0]
+
+    @property
+    def height(self) -> float:
+        return self.bbox[3] - self.bbox[1]
 
 
 @dataclass
@@ -69,12 +120,18 @@ class ReadResult:
 
 @runtime_checkable
 class OcrEngine(Protocol):
-    """The jettisonable OCR slot. Any engine that turns an image into lines fits."""
+    """The jettisonable OCR slot. Any engine that turns a rendered image into lines fits.
+
+    Output contract (enforced by `TextLine`, so a violating engine fails loud): `recognize`
+    returns `TextLine`s whose `bbox` is axis-aligned, top-left origin (x0<=x1, y0<=y1) and
+    whose `confidence` is None (no per-line score) or a float in `[0, 1]`. The engine may be
+    swapped freely (RapidOCR / Docling / a VLM); its output SHAPE may not drift.
+    """
 
     name: str
 
     def recognize(self, image_png_bytes: bytes) -> list[TextLine]:
-        """Return the recognized text lines (with geometry) for one rendered image."""
+        """Return the recognized text lines (with geometry) for one rendered PNG image."""
         ...
 
 
