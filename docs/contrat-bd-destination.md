@@ -12,6 +12,13 @@
 moteurs OCR, worker, UI — est un **adaptateur jetable**. Physiquement côté IT : **1 MariaDB `tools`,
 tables préfixées** (pas 3 bases). « 3 BD » = **3 domaines** = 3 lifecycles + 3 propriétaires distincts.
 
+> **Mécanisme de connexion (proxy)** : depuis 2026-07-13 la connexion + le schéma + la migration
+> du proxy SQLite vivent dans **UN** `ocr_bifunction/store.py` (`class Store`) ; les 7 repos le
+> reçoivent (`Store | chemin`) au lieu d'ouvrir chacun leur connexion. C'est le **point de swap IT** :
+> un adaptateur MariaDB remplace `Store` derrière les 7 mêmes interfaces de repo. `Store(":memory:")`
+> = la même SQL en mémoire pour les tests (repos partageant une connexion). Chaque repo garde SON
+> `CREATE TABLE` (locality) ; le Store ne fait que l'exécuter.
+
 ## Les 3 domaines (qui possède quoi)
 
 | Domaine | Préfixe proposé | Surface (handoff-it) | Propriétaire | Lifecycle | Proxy actuel |
@@ -39,7 +46,8 @@ attente** (un worker les dépile ; mécanisme = adaptateur). Colonnes (esquisse)
   `async_immediate`, drainée en continu) | `nightly` (politique `async_nightly`, drainée
   par la passe de nuit `--nightly` — le cron IT)
 - `status` : `received` | `processing` | `needs_review` | `done` | `rejected` | `failed`
-- `verdict` : `auto` | `human` | null ; `reasons` (texte/JSON)
+- `verdict` : `auto` | `review` | `reject` | null (= `Verdict.value` ; l'ancien `human` retiré
+  2026-07-12, vocabulaire unifié — **à re-signaler au gel IT**) ; `reasons` (texte/JSON)
 - `verso_read_path` : `raw` | `enhance` | `escalation` | `none`
 - **le RECORD extrait** (champs consolidés) = **ici, source de vérité unique**
 - `created_at`, `updated_at` (**`NOW()` explicite** — MariaDB 5.5 n'a pas `DEFAULT CURRENT_TIMESTAMP`)

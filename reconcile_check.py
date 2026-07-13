@@ -56,7 +56,7 @@ def main(recto_path: Path, verso_path: Path) -> None:
 
     result = reconcile(recto_fields, mrz)
     print(f"\nkey_matches: {result.key_matches}")
-    print(f"VERDICT: {result.verdict.upper()}")
+    print(f"VERDICT: {result.verdict.value.upper()}")
     for reason in result.reasons:
         print("  -", reason)
 

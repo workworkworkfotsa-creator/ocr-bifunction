@@ -27,26 +27,22 @@ from __future__ import annotations
 import json
 import sqlite3
 from abc import ABC, abstractmethod
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 
-# The async-coordination states. A doc "waiting for async" = received/escalation; the worker
-# drives received -> processing -> a TERMINAL state:
-#   done         — validated (auto) or a human accepted it.
-#   needs_review — doubtful/unknown -> the human queue (the ⑤ pile).
-#   rejected     — PROVEN invalid (bad date maths, MRZ recto/verso mismatch, invented code):
-#                  the anti-fraud verdict is `reject`, auto-terminal, NO human review. Distinct
-#                  from `failed`, which is a PROCESSING failure (crash/poison-pill), not a
-#                  verdict on the document's validity.
-#   failed       — processing gave up (lease/attempts cap).
-STATUS_RECEIVED = "received"
-STATUS_PROCESSING = "processing"
-STATUS_NEEDS_REVIEW = "needs_review"
-STATUS_DONE = "done"
-STATUS_REJECTED = "rejected"
-STATUS_FAILED = "failed"
+# The D1 status vocabulary now lives in its own leaf module (ocr_bifunction/status.py) so the
+# core Verdict value object can import it without a core->adapter dependency. It is re-exported
+# here — its historical home — via the `X as X` convention, so existing importers keep working.
+from ocr_bifunction.store import Store
+from ocr_bifunction.status import (
+    STATUS_DONE as STATUS_DONE,
+    STATUS_FAILED as STATUS_FAILED,
+    STATUS_NEEDS_REVIEW as STATUS_NEEDS_REVIEW,
+    STATUS_PROCESSING as STATUS_PROCESSING,
+    STATUS_RECEIVED as STATUS_RECEIVED,
+    STATUS_REJECTED as STATUS_REJECTED,
+)
 
 
 @dataclass
@@ -66,7 +62,9 @@ class Job:
     # policy async_immediate (continuous watchdog); 'nightly' = policy async_nightly
     # (drained only by a `--nightly` pass — the cron seam).
     execution_lane: str = "fast"
-    verdict: str | None = None  # 'auto' | 'human'
+    verdict: str | None = (
+        None  # 'auto' | 'review' | 'reject' (Verdict.value; None for a trace row)
+    )
     category: str | None = None
     template_id: str | None = None
     record_fields: dict[str, str | None] = field(default_factory=dict)
@@ -179,31 +177,18 @@ class SqliteRepository(Repository):
     CURRENT_TIMESTAMP); the clock is injectable for tests. The DB file holds extracted fields
     (PII) and is gitignored."""
 
-    def __init__(
-        self,
-        database_path: str | Path = "ocr_store.sqlite",
-        *,
-        clock: Callable[[], str] | None = None,
-        check_same_thread: bool = True,
-    ) -> None:
-        self._clock = clock or (lambda: datetime.now().isoformat(timespec="seconds"))
-        # check_same_thread=False lets the async escalation worker and the request threads
-        # share ONE connection — D1's documented role (a worker writes `status`, readers poll
-        # it). The caller must then serialize access with a lock (the API does), which covers
-        # the dropped per-thread guard. Batch stays single-threaded, so the default is True.
-        self._connection = sqlite3.connect(
-            str(database_path), check_same_thread=check_same_thread
+    def __init__(self, store: Store | str | Path = "ocr_store.sqlite") -> None:
+        # A shared Store owns the connection, clock and migration mechanism; given a path we
+        # wrap our own (file-backed, one connection per repo — the historical default). Passing
+        # a shared Store (e.g. Store(":memory:")) is what lets tests hold every table in one
+        # in-memory DB, and is where the async worker + request threads share one connection
+        # (Store(..., check_same_thread=False), serialized by the caller's lock).
+        self._store = store if isinstance(store, Store) else Store(store)
+        self._connection = self._store.connection
+        self._clock = self._store.clock
+        self._store.ensure_schema(
+            _SCHEMA, table="ocr_jobs", migrations=_MIGRATION_COLUMNS
         )
-        self._connection.row_factory = sqlite3.Row
-        self._connection.executescript(_SCHEMA)
-        existing_columns = {
-            row["name"]
-            for row in self._connection.execute("PRAGMA table_info(ocr_jobs)")
-        }
-        for column_name, alter_statement in _MIGRATION_COLUMNS.items():
-            if column_name not in existing_columns:
-                self._connection.execute(alter_statement)
-        self._connection.commit()
 
     def save(self, job: Job) -> int:
         now = self._clock()

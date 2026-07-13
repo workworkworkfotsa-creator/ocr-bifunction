@@ -78,11 +78,20 @@ les surfaces disent « document non validé car Y » et la PREUVE (template, che
 retenu) part à la revue / compliance. La réaction est configurable →
 [[politique de non-conformité (block / block_holder / flag_and_continue)]].
 
-Source de vérité : `ocr_bifunction/template.py` (`class CheckFailure`, `class ValidationOutcome`,
-`evaluate_validation`) pour la lane structurée ; `ocr_bifunction/reconcile.py` (verdict 3-états) pour
-CI/MRZ ; `STATUS_REJECTED` (`repository.py`), mapping `router`/`orchestrator`/`api_maquette`/`batch_check`.
-Confirmation utilisateur 2026-07-03. Prouvé : `verdict_check.py` (11/11), `verdict_flow_check.py` (7/7,
-bout-en-bout), `reconcile_verdict_check.py` (5/5). **Câblé de bout en bout** (structuré + CI/MRZ).
+Vocabulaire canonique : **`auto` / `review` / `reject`** (le glossaire, `verdict.value`, la colonne
+D1 `verdict` et le champ wire disent tous les trois mêmes littéraux — l'ancien `human` est retiré).
+
+Source de vérité (unifiée 2026-07-12) : **`ocr_bifunction/verdict.py` (`class Verdict`)** = LE domicile
+unique du verdict 3-états. `Verdict.from_reasons(reject_reasons, review_reasons)` porte l'UNIQUE
+précédence `reject > review > auto` ; `Verdict.d1_status` / `Verdict.wire_status` sont les SEULES
+sérialisations vers un statut D1 (`ocr_bifunction/status.py`, `STATUS_*`) ou HTTP. Les deux lanes
+alimentent ce domicile : la lane structurée via `template.ValidationOutcome.verdict` (`evaluate_validation`,
+`class CheckFailure`), la lane CI/MRZ via `reconcile.py` (buckets reject/review). Les ~6 tables de remap
+(`router`/`orchestrator`/`api_maquette`/`batch_check`/`worker_watchdog`) sont SUPPRIMÉES — chaque sink lit
+les propriétés de l'enum. Confirmation utilisateur 2026-07-03 (3 états) + 2026-07-12 (vocabulaire `review`,
+domicile unique). Prouvé : `verdict_check.py` (11/11), `verdict_flow_check.py` (7/7, bout-en-bout),
+`reconcile_verdict_check.py` (5/5), `escalation_reject_smoke.py` (5/5 — le trou reject→needs_review du
+bridge d'escalade fermé). **Câblé de bout en bout** (structuré + CI/MRZ).
 
 ## politique d'exécution (sync / async immédiat / async nuit)
 

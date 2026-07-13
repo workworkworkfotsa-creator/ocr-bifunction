@@ -39,11 +39,7 @@ from ocr_bifunction.template import (
     load_templates,
     match_template,
 )
-
-# RoutedDocument.verdict for the structured lane maps the 3-state validation verdict onto the
-# router's vocabulary: auto (valid) / human (review — unknown or pending) / reject (proven
-# invalid, auto-terminal). "review" keeps the historical name "human" the record layer reads.
-_VERDICT_FROM_VALIDATION = {"auto": "auto", "review": "human", "reject": "reject"}
+from ocr_bifunction.verdict import Verdict
 
 # The suggestion hook: called ONLY on a no-match (the brief's "downstream of pas de match"),
 # with the already-read text + lines so the doc is never read/OCR'd twice. (text, lines,
@@ -60,7 +56,7 @@ class RoutedDocument:
     lane: str  # "structured" | "rag"
     template_id: str | None = None
     category: str | None = None
-    verdict: str | None = None  # structured only: "auto" | "human" | "reject"
+    verdict: Verdict | None = None  # structured only; None for the RAG lane
     reasons: list[str] = field(default_factory=list)
     fields: dict[str, str | None] = field(default_factory=dict)
     summary: Summary | None = None  # rag only
@@ -130,7 +126,7 @@ def _structured_result(
     validation = template.get("validation") or {}
     if validation.get("required"):
         outcome = evaluate_validation(fields, validation, today=today, context=context)
-        verdict = _VERDICT_FROM_VALIDATION[outcome.verdict]
+        verdict = outcome.verdict
         reasons = outcome.reject_reasons + outcome.review_reasons
     else:
         # Matched a structured layout with no single-doc rules (e.g. an ID card): its
@@ -139,7 +135,7 @@ def _structured_result(
             "structured template matched but has no single-doc validation rules "
             "(e.g. ID card uses the recto+verso pair flow, process_ci_pair)"
         ]
-        verdict = "human"
+        verdict = Verdict.REVIEW
     return RoutedDocument(
         source=source,
         lane="structured",

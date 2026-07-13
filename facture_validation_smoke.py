@@ -75,7 +75,7 @@ def main() -> int:
         got_pass = not reasons
         ok = got_pass == expect_pass
         all_passed &= ok
-        verdict = "auto" if got_pass else "human"
+        verdict = "auto" if got_pass else "review"
         print(f"[{'PASS' if ok else 'FAIL'}] {label:28} -> {verdict}")
         for reason in reasons:
             print(f"            - {reason}")

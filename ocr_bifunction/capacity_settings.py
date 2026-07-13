@@ -27,12 +27,11 @@ so bad values cannot enter through the API.
 
 from __future__ import annotations
 
-import sqlite3
 from abc import ABC, abstractmethod
-from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
+
+from ocr_bifunction.store import Store
 
 OVERFLOW_ACTION_DEFER = "defer"
 OVERFLOW_ACTION_REJECT_503 = "reject_503"
@@ -103,20 +102,11 @@ CREATE TABLE IF NOT EXISTS ocr_capacity_settings (
 class SqliteCapacitySettingsRepository(CapacitySettingsRepository):
     """The jettisonable SQLite proxy — same table shape IT will build in MariaDB 5.5."""
 
-    def __init__(
-        self,
-        database_path: str | Path = "ocr_store.sqlite",
-        *,
-        clock: Callable[[], str] | None = None,
-        check_same_thread: bool = True,
-    ) -> None:
-        self._clock = clock or (lambda: datetime.now().isoformat(timespec="seconds"))
-        self._connection = sqlite3.connect(
-            str(database_path), check_same_thread=check_same_thread
-        )
-        self._connection.row_factory = sqlite3.Row
-        self._connection.executescript(_SCHEMA)
-        self._connection.commit()
+    def __init__(self, store: Store | str | Path = "ocr_store.sqlite") -> None:
+        self._store = store if isinstance(store, Store) else Store(store)
+        self._connection = self._store.connection
+        self._clock = self._store.clock
+        self._store.ensure_schema(_SCHEMA)
 
     def get(self, setting_key: str) -> str | None:
         row = self._connection.execute(

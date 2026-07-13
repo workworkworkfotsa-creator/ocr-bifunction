@@ -24,9 +24,9 @@ from __future__ import annotations
 import json
 import sqlite3
 from abc import ABC, abstractmethod
-from collections.abc import Callable
-from datetime import datetime
 from pathlib import Path
+
+from ocr_bifunction.store import Store
 
 
 class TemplateRepository(ABC):
@@ -86,27 +86,13 @@ class SqliteTemplateRepository(TemplateRepository):
     deterministic read path (match_template/extract_fields) is unchanged. Timestamps are explicit
     (MariaDB 5.5 has no DEFAULT CURRENT_TIMESTAMP); the clock is injectable for tests."""
 
-    def __init__(
-        self,
-        database_path: str | Path = "ocr_store.sqlite",
-        *,
-        clock: Callable[[], str] | None = None,
-        check_same_thread: bool = True,
-    ) -> None:
-        self._clock = clock or (lambda: datetime.now().isoformat(timespec="seconds"))
-        self._connection = sqlite3.connect(
-            str(database_path), check_same_thread=check_same_thread
+    def __init__(self, store: Store | str | Path = "ocr_store.sqlite") -> None:
+        self._store = store if isinstance(store, Store) else Store(store)
+        self._connection = self._store.connection
+        self._clock = self._store.clock
+        self._store.ensure_schema(
+            _SCHEMA, table="ocr_templates", migrations=_MIGRATION_COLUMNS
         )
-        self._connection.row_factory = sqlite3.Row
-        self._connection.executescript(_SCHEMA)
-        existing_columns = {
-            row["name"]
-            for row in self._connection.execute("PRAGMA table_info(ocr_templates)")
-        }
-        for column_name, alter_statement in _MIGRATION_COLUMNS.items():
-            if column_name not in existing_columns:
-                self._connection.execute(alter_statement)
-        self._connection.commit()
 
     def upsert(self, template: dict, *, active: bool = True) -> None:
         template_id = template["template_id"]

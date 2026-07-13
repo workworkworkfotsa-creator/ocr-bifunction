@@ -26,6 +26,7 @@ from ocr_bifunction.preprocess import EnhancePreprocessor
 from ocr_bifunction.reader import OcrEngine, read_document
 from ocr_bifunction.reconcile import KEY_MAP, reconcile
 from ocr_bifunction.template import extract_fields, load_templates, match_template
+from ocr_bifunction.verdict import Verdict
 
 
 @dataclass
@@ -33,7 +34,7 @@ class CiRecord:
     """The data product (consolidated identity) plus its verdict envelope."""
 
     fields: dict[str, str | None]  # merged recto + MRZ identity — the data product
-    verdict: str  # "auto" | "human"
+    verdict: Verdict
     reasons: list[str] = field(default_factory=list)
     template_id: str | None = None
     mrz_format: str | None = None
@@ -199,7 +200,7 @@ def process_ci_pair(
             reasons.append("verso: no MRZ parsed (raw and enhance both failed)")
         return CiRecord(
             fields=_consolidate(recto_fields, mrz),
-            verdict="human",
+            verdict=Verdict.REVIEW,
             reasons=reasons,
             template_id=template_id,
             mrz_format=mrz.mrz_format if mrz else None,

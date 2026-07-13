@@ -37,7 +37,7 @@ def _verdict(
 ) -> str:
     return evaluate_validation(
         fields, {"required": required}, today=_TODAY, context=context
-    ).verdict
+    ).verdict.value
 
 
 def main() -> None:
@@ -144,10 +144,10 @@ def main() -> None:
     )
     _check(
         "a proven-invalid doc that also has a pending check -> reject",
-        outcome.verdict == "reject"
+        outcome.verdict.value == "reject"
         and bool(outcome.reject_reasons)
         and bool(outcome.review_reasons),
-        f"(verdict={outcome.verdict}, reject={outcome.reject_reasons}, "
+        f"(verdict={outcome.verdict.value}, reject={outcome.reject_reasons}, "
         f"review={outcome.review_reasons})",
     )
 

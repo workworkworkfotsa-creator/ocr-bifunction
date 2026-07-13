@@ -34,6 +34,7 @@ import json
 from pathlib import Path
 
 from ocr_bifunction.orchestrator import BatchItem, DocumentRecord, process_batch
+from ocr_bifunction.verdict import Verdict
 from ocr_bifunction.promotion import promote_suggestion
 from ocr_bifunction.repository import (
     STATUS_DONE,
@@ -77,7 +78,7 @@ def _job_from_record(record: DocumentRecord) -> Job:
         status, verdict = STATUS_DONE, "auto"
     else:
         status = STATUS_NEEDS_REVIEW
-        verdict = "human" if record.detail in ("human", "complete") else None
+        verdict = "review" if record.detail in ("review", "complete") else None
     return Job(
         source=record.source,
         category_lane=record.lane,
@@ -204,10 +205,10 @@ def run(document_paths: list[Path], held_out: str, store_path: str) -> int:
             templates=d2.active_templates(),
         )
         print(
-            f"  re-match: {routed.lane}/{routed.verdict} "
+            f"  re-match: {routed.lane}/{routed.verdict.value if routed.verdict else '?'} "
             f"(template: {routed.template_id})"
         )
-        if routed.template_id != held_out or routed.verdict != "auto":
+        if routed.template_id != held_out or routed.verdict is not Verdict.AUTO:
             print(
                 "FAIL: expected a deterministic STRUCTURED/auto match after promotion."
             )

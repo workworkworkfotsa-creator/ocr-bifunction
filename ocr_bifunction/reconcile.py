@@ -14,6 +14,7 @@ import unicodedata
 from dataclasses import dataclass, field
 
 from ocr_bifunction.mrz import MrzFields
+from ocr_bifunction.verdict import Verdict
 
 # recto template field name -> MrzFields attribute. Public: the pipeline reuses it to
 # backfill a missing recto field from the MRZ (same recto<->MRZ correspondence).
@@ -28,7 +29,7 @@ KEY_MAP = {
 
 @dataclass
 class ReconcileResult:
-    verdict: str  # "auto" | "human" | "reject"
+    verdict: Verdict
     key_matches: dict[str, bool]  # recto field -> recto value == mrz value
     failed_checks: list[str]  # MRZ check digits that did not pass
     reasons: list[str] = field(default_factory=list)
@@ -53,7 +54,15 @@ def _normalize(value: str | None) -> str:
 def reconcile(recto_fields: dict[str, str | None], mrz: MrzFields) -> ReconcileResult:
     """Compare the recto's fields against the MRZ on every shared key."""
     key_matches: dict[str, bool] = {}
-    reasons: list[str] = []
+    # Classified reason-buckets fed to the ONE precedence (Verdict.from_reasons):
+    #   reject — a shared key DIVERGES: recto and MRZ (two independent reads) name different
+    #     identities. That is proven invalid ("recto of A + verso of B"), auto-terminal.
+    #   review — the MRZ integrity is off (failed check digits) or nothing could be compared:
+    #     an UNRELIABLE read, not a proven fraud (a single OCR-misread digit fails a checksum)
+    #     -> a person looks, it is never auto-rejected on OCR noise alone.
+    #   auto  — comparable keys, all agree, and every check digit passes (both buckets empty).
+    reject_reasons: list[str] = []
+    review_reasons: list[str] = []
 
     for recto_key, mrz_attribute in KEY_MAP.items():
         recto_value = recto_fields.get(recto_key)
@@ -63,32 +72,19 @@ def reconcile(recto_fields: dict[str, str | None], mrz: MrzFields) -> ReconcileR
         matches = _normalize(recto_value) == _normalize(mrz_value)
         key_matches[recto_key] = matches
         if not matches:
-            reasons.append(f"{recto_key}: recto={recto_value!r} != mrz={mrz_value!r}")
+            reject_reasons.append(
+                f"{recto_key}: recto={recto_value!r} != mrz={mrz_value!r}"
+            )
 
     failed_checks = [name for name, passed in mrz.checks.items() if not passed]
     if failed_checks:
-        reasons.append(f"MRZ check digits failed: {failed_checks}")
-
-    has_mismatch = any(not matched for matched in key_matches.values())
+        review_reasons.append(f"MRZ check digits failed: {failed_checks}")
     if not key_matches:
-        reasons.append("no shared key could be compared")
+        review_reasons.append("no shared key could be compared")
 
-    # Three-state verdict (2026-07-03):
-    #   reject — a shared key DIVERGES: recto and MRZ (two independent reads) name different
-    #     identities. That is proven invalid ("recto of A + verso of B"), auto-terminal.
-    #   human — the MRZ integrity is off (failed check digits) or nothing could be compared:
-    #     an UNRELIABLE read, not a proven fraud (a single OCR-misread digit fails a checksum)
-    #     -> a person looks, it is never auto-rejected on OCR noise alone.
-    #   auto  — comparable keys, all agree, and every check digit passes.
-    if has_mismatch:
-        verdict = "reject"
-    elif failed_checks or not key_matches:
-        verdict = "human"
-    else:
-        verdict = "auto"
     return ReconcileResult(
-        verdict=verdict,
+        verdict=Verdict.from_reasons(reject_reasons, review_reasons),
         key_matches=key_matches,
         failed_checks=failed_checks,
-        reasons=reasons,
+        reasons=reject_reasons + review_reasons,
     )

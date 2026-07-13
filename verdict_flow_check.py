@@ -99,21 +99,25 @@ def main() -> None:
 
         print("=== route_document (single doc) ===")
         clean_routed = _route(clean)
-        print(f"  clean:      verdict={clean_routed.verdict}")
-        _check("clean attestation -> verdict auto", clean_routed.verdict == "auto")
+        print(f"  clean:      verdict={clean_routed.verdict.value}")
+        _check(
+            "clean attestation -> verdict auto", clean_routed.verdict.value == "auto"
+        )
 
         lengthened_routed = _route(lengthened)
         print(
-            f"  lengthened: verdict={lengthened_routed.verdict} "
+            f"  lengthened: verdict={lengthened_routed.verdict.value} "
             f"reasons={lengthened_routed.reasons}"
         )
         _check(
             "pen-lengthened validity -> verdict reject",
-            lengthened_routed.verdict == "reject",
+            lengthened_routed.verdict.value == "reject",
         )
         invented_routed = _route(invented)
-        print(f"  invented:   verdict={invented_routed.verdict}")
-        _check("invented code -> verdict reject", invented_routed.verdict == "reject")
+        print(f"  invented:   verdict={invented_routed.verdict.value}")
+        _check(
+            "invented code -> verdict reject", invented_routed.verdict.value == "reject"
+        )
 
         print("\n=== process_batch (the auto/review/reject split) ===")
         engine = None  # born-digital: text layer, no OCR engine needed

@@ -111,16 +111,15 @@ def _suggestion_reason(suggestion: SuggestionOutcome) -> str:
     )
 
 
-# Structured verdict -> record outcome. A RAG-lane doc is unidentified by construction, so
-# it never maps here — it is always "review".
-_OUTCOME_FROM_VERDICT = {"auto": "auto", "human": "review", "reject": "reject"}
-
-
 def _record_from_routed(routed: RoutedDocument) -> DocumentRecord:
-    if routed.lane == "structured":
-        outcome = _OUTCOME_FROM_VERDICT.get(routed.verdict or "", "review")
+    # The verdict's own value IS the record outcome (auto/review/reject) — no mapping. A RAG
+    # doc is unidentified by construction (verdict None) -> always the human review queue.
+    if routed.lane == "structured" and routed.verdict is not None:
+        outcome = routed.verdict.value
+        detail = routed.verdict.value
     else:
-        outcome = "review"  # RAG lane: unidentified -> always the human queue
+        outcome = "review"
+        detail = "rag"
     reasons = list(routed.reasons)
     if routed.suggestion is not None:
         reasons.append(_suggestion_reason(routed.suggestion))
@@ -128,7 +127,7 @@ def _record_from_routed(routed: RoutedDocument) -> DocumentRecord:
         source=routed.source,
         lane=routed.lane,
         outcome=outcome,
-        detail=routed.verdict if routed.lane == "structured" else "rag",
+        detail=detail,
         category=routed.category,
         template_id=routed.template_id,
         fields=routed.fields,
@@ -147,8 +146,9 @@ def _record_from_ci(result: CiSubmissionResult, item: BatchItem) -> DocumentReco
             source=source,
             lane="ci",
             # A recto/verso identity mismatch is a reject (proven invalid); auto passes; an
-            # unreliable read (failed checksums, nothing to compare) is human review.
-            outcome=_OUTCOME_FROM_VERDICT.get(record.verdict or "", "review"),
+            # unreliable read (failed checksums, nothing to compare) is review. The verdict's
+            # own value IS the outcome (auto/review/reject).
+            outcome=record.verdict.value,
             detail="complete",
             category=item.document_type,
             template_id=record.template_id,

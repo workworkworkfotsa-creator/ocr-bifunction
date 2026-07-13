@@ -62,7 +62,7 @@ def main(source_paths: list[Path], escalate: bool) -> int:
         if record.key_matches:
             agree = sum(record.key_matches.values())
             print(f"  key matches: {agree}/{len(record.key_matches)} agree")
-        print(f"  VERDICT: {record.verdict.upper()}")
+        print(f"  VERDICT: {record.verdict.value.upper()}")
         for reason in record.reasons:
             print(f"    - {reason}")
     print("=" * 64)

@@ -145,7 +145,7 @@ def run(document_path: Path, held_out: str, store_path: str) -> int:
         reasons = validate_fields(
             extract_fields(result.lines, after), after.get("validation", {})
         )
-        verdict = "auto" if not reasons else "human"
+        verdict = "auto" if not reasons else "review"
         print(f"extract + validate -> {verdict}")
         for reason in reasons:
             print(f"  - {reason}")

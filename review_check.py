@@ -42,7 +42,7 @@ def _seed_needs_review_jobs(store_path: str) -> None:
                 source="doc_structured_unmatched.pdf",
                 category_lane="structured",
                 status=STATUS_NEEDS_REVIEW,
-                verdict="human",
+                verdict="review",
                 category="facture",
                 record_fields={"total_ht": "100.00"},
                 reasons=["no template matched the signature"],

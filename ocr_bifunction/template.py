@@ -25,6 +25,7 @@ from ocr_bifunction.reader import TextLine
 # fuzzy tolerance — "Ahmed" and "Hamed" must not collide (the sibling-fraud core), accent
 # folding is the only allowance (cf. memory reconcile-name-match-strict).
 from ocr_bifunction.reconcile import _normalize as _strict_identity_key
+from ocr_bifunction.verdict import Verdict
 
 # Horizontal tolerance (pixels) for "same column": a value counts as below a label
 # when their left edges line up within this band. Tuned on ~1100px-wide CI scans.
@@ -554,12 +555,8 @@ class ValidationOutcome:
     review_reasons: list[str]
 
     @property
-    def verdict(self) -> str:
-        if self.reject_reasons:
-            return "reject"
-        if self.review_reasons:
-            return "review"
-        return "auto"
+    def verdict(self) -> Verdict:
+        return Verdict.from_reasons(self.reject_reasons, self.review_reasons)
 
 
 def _evaluate_rule(

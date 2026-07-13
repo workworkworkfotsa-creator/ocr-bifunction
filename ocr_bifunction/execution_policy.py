@@ -29,10 +29,10 @@ from __future__ import annotations
 
 import sqlite3
 from abc import ABC, abstractmethod
-from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
+
+from ocr_bifunction.store import Store
 
 EXECUTION_MODE_SYNC = "sync"
 EXECUTION_MODE_ASYNC_IMMEDIATE = "async_immediate"
@@ -174,20 +174,11 @@ class SqliteExecutionPolicyRepository(ExecutionPolicyRepository):
     """The jettisonable SQLite proxy — same table shape IT will build in MariaDB 5.5
     (explicit timestamps, TINYINT-like flag, short PK)."""
 
-    def __init__(
-        self,
-        database_path: str | Path = "ocr_store.sqlite",
-        *,
-        clock: Callable[[], str] | None = None,
-        check_same_thread: bool = True,
-    ) -> None:
-        self._clock = clock or (lambda: datetime.now().isoformat(timespec="seconds"))
-        self._connection = sqlite3.connect(
-            str(database_path), check_same_thread=check_same_thread
-        )
-        self._connection.row_factory = sqlite3.Row
-        self._connection.executescript(_SCHEMA)
-        self._connection.commit()
+    def __init__(self, store: Store | str | Path = "ocr_store.sqlite") -> None:
+        self._store = store if isinstance(store, Store) else Store(store)
+        self._connection = self._store.connection
+        self._clock = self._store.clock
+        self._store.ensure_schema(_SCHEMA)
 
     def upsert(self, policy: ExecutionPolicy) -> None:
         if policy.execution_mode not in EXECUTION_MODES:

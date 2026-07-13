@@ -54,25 +54,26 @@ def main() -> None:
     print("=== reconcile verdict ===")
     _check(
         "recto == MRZ, all check digits pass -> auto",
-        reconcile(_RECTO, _mrz("DUPONT")).verdict == "auto",
+        reconcile(_RECTO, _mrz("DUPONT")).verdict.value == "auto",
     )
     mismatch = reconcile({**_RECTO, "nom": "MARTIN"}, _mrz("DUPONT"))
     print(f"  mismatch reasons: {mismatch.reasons}")
     _check(
         "recto surname != MRZ surname (recto A + verso B) -> reject",
-        mismatch.verdict == "reject",
+        mismatch.verdict.value == "reject",
     )
     _check(
-        "keys agree but a check digit FAILED -> human (unreliable read, not proven fraud)",
-        reconcile(_RECTO, _mrz("DUPONT", all_checks_pass=False)).verdict == "human",
+        "keys agree but a check digit FAILED -> review (unreliable read, not proven fraud)",
+        reconcile(_RECTO, _mrz("DUPONT", all_checks_pass=False)).verdict.value
+        == "review",
     )
     _check(
-        "nothing to compare (empty recto) -> human",
-        reconcile({}, _mrz("DUPONT")).verdict == "human",
+        "nothing to compare (empty recto) -> review",
+        reconcile({}, _mrz("DUPONT")).verdict.value == "review",
     )
     _check(
         "accent fold only: recto 'DUPONT' vs MRZ 'DUPONT' stays auto (sanity)",
-        reconcile(_RECTO, _mrz("DUPONT")).verdict == "auto",
+        reconcile(_RECTO, _mrz("DUPONT")).verdict.value == "auto",
     )
 
     print(f"\nRECONCILE VERDICT SMOKE PASS {_checks_passed}/{_checks_passed}")

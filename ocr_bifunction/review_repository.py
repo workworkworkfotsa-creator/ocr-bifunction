@@ -28,10 +28,10 @@ from __future__ import annotations
 import json
 import sqlite3
 from abc import ABC, abstractmethod
-from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
+
+from ocr_bifunction.store import Store
 
 # The suggestion loop signal (mirrors D1's status column). A suggestion "waiting for the human"
 # = pending; the human drives pending -> validated (promote to D2) | rejected (hallucinated).
@@ -173,27 +173,13 @@ class SqliteReviewRepository(ReviewRepository):
     the clock is injectable for tests. The DB file may hold projected fields (PII) and is gitignored.
     """
 
-    def __init__(
-        self,
-        database_path: str | Path = "ocr_store.sqlite",
-        *,
-        clock: Callable[[], str] | None = None,
-        check_same_thread: bool = True,
-    ) -> None:
-        self._clock = clock or (lambda: datetime.now().isoformat(timespec="seconds"))
-        self._connection = sqlite3.connect(
-            str(database_path), check_same_thread=check_same_thread
+    def __init__(self, store: Store | str | Path = "ocr_store.sqlite") -> None:
+        self._store = store if isinstance(store, Store) else Store(store)
+        self._connection = self._store.connection
+        self._clock = self._store.clock
+        self._store.ensure_schema(
+            _SCHEMA, table="ocr_reviews", migrations=_MIGRATION_COLUMNS
         )
-        self._connection.row_factory = sqlite3.Row
-        self._connection.executescript(_SCHEMA)
-        existing_columns = {
-            row["name"]
-            for row in self._connection.execute("PRAGMA table_info(ocr_reviews)")
-        }
-        for column_name, alter_statement in _MIGRATION_COLUMNS.items():
-            if column_name not in existing_columns:
-                self._connection.execute(alter_statement)
-        self._connection.commit()
 
     def open_review(self, review: Review) -> int:
         now = self._clock()

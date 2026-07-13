@@ -62,6 +62,7 @@ from ocr_bifunction.issuer_registry import SqliteIssuerRegistryRepository
 from ocr_bifunction.router import route_document
 from ocr_bifunction.template import ValidationContext
 from ocr_bifunction.template_repository import SqliteTemplateRepository
+from ocr_bifunction.verdict import Verdict
 
 PROJECT_ROOT = Path(__file__).parent
 TEMPLATES_DIRECTORY = PROJECT_ROOT / "templates"
@@ -105,23 +106,14 @@ def _build_escalation_engine(fake: bool) -> OcrEngine:
 def _terminal_from_record(
     record: CiRecord | None,
 ) -> tuple[str, str | None, dict[str, str | None] | None, list[str]]:
-    """Map an escalated result to a D1 terminal state (same bridge as the batch): auto ->
-    done/auto; doubtful -> needs_review/human. Verso-read provenance folds into reasons."""
+    """Map an escalated CI result to its D1 terminal state via the shared Verdict mapping:
+    auto -> done, review -> needs_review, reject -> rejected. The anti-fraud verdict is
+    honoured here too — an identity mismatch surfaced by the heavier read is terminal, never
+    softened to review. Verso-read provenance folds into reasons."""
     if record is None:
         return STATUS_NEEDS_REVIEW, None, None, ["escalation produced no record"]
     reasons = [*record.reasons, f"verso read via: {record.verso_read_path}"]
-    if record.verdict == "auto":
-        return STATUS_DONE, "auto", record.fields, reasons
-    return STATUS_NEEDS_REVIEW, "human", record.fields, reasons
-
-
-# Routed-document verdict -> D1 terminal status (mirrors the API/batch bridge): auto ->
-# done; human -> needs_review; reject -> rejected (proven invalid, anti-fraud, terminal).
-_D1_STATUS_FOR_ROUTED_VERDICT = {
-    "auto": STATUS_DONE,
-    "human": STATUS_NEEDS_REVIEW,
-    "reject": STATUS_REJECTED,
-}
+    return record.verdict.d1_status, record.verdict.value, record.fields, reasons
 
 
 def _spooled_files(job: Job) -> list[Path]:
@@ -157,21 +149,19 @@ def _process_routed_job(
         context=job_context,
         today=date.today(),
     )
-    if routed.lane == "structured":
-        status_value = _D1_STATUS_FOR_ROUTED_VERDICT.get(
-            routed.verdict or "", STATUS_NEEDS_REVIEW
-        )
-        verdict = routed.verdict
+    if routed.lane == "structured" and routed.verdict is not None:
+        status_value = routed.verdict.d1_status
+        verdict = routed.verdict.value
         reasons = [*job.reasons, *routed.reasons]
-        if status_value == STATUS_REJECTED:
+        if routed.verdict is Verdict.REJECT:
             # A proven non-conformity in an async lane obeys the same métier policy
-            # as the door: flag_and_continue downgrades to human review, flagged.
+            # as the door: flag_and_continue downgrades to review, flagged.
             action = resolve_conformity_action(
                 job.category or routed.category, conformity_policies
             )
             if action == CONFORMITY_ACTION_FLAG_AND_CONTINUE:
                 status_value = STATUS_NEEDS_REVIEW
-                verdict = "human"
+                verdict = Verdict.REVIEW.value
                 reasons = [
                     "non-conformity FLAGGED (policy: process continues)",
                     *reasons,

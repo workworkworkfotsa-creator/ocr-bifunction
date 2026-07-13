@@ -54,7 +54,7 @@ def _print_routed(routed: RoutedDocument) -> None:
         print(f"  template: {routed.template_id}  (category: {routed.category})")
         for field_name, field_value in routed.fields.items():
             print(f"    {field_name}: {field_value}")
-        print(f"  VERDICT: {routed.verdict.upper() if routed.verdict else '?'}")
+        print(f"  VERDICT: {routed.verdict.value.upper() if routed.verdict else '?'}")
         for reason in routed.reasons:
             print(f"    - {reason}")
     else:  # rag

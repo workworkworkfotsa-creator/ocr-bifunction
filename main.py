@@ -35,7 +35,7 @@ def main(recto_path: Path, verso_path: Path) -> None:
     for key, value in record.fields.items():
         print(f"  {key}: {value}")
     print(f"\nkey_matches: {record.key_matches}")
-    print(f"VERDICT: {record.verdict.upper()}")
+    print(f"VERDICT: {record.verdict.value.upper()}")
     for reason in record.reasons:
         print("  -", reason)
 

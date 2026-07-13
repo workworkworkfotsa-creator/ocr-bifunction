@@ -116,7 +116,7 @@ def _job_from_record(record: DocumentRecord) -> Job:
         status, verdict = STATUS_REJECTED, "reject"
     else:
         status = STATUS_NEEDS_REVIEW
-        verdict = "human" if record.detail in ("human", "complete") else None
+        verdict = "review" if record.detail in ("review", "complete") else None
     return Job(
         source=record.source,
         category_lane=record.lane,

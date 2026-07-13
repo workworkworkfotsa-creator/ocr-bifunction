@@ -15,7 +15,7 @@ The upload-facing contract has four outcomes (the upload UI acts on `status`):
 Two lanes, one DOOR — the API never processes async work itself:
   - FAST PATH (in the request) — process_ci_submission with NO escalation engine; EVERY
     outcome leaves a D1 row (done/auto, needs_review, …) so D1 is the single source (④).
-  - ESCALATION (off the request path) — a complete-but-doubtful (`human`) submission is
+  - ESCALATION (off the request path) — a complete-but-doubtful (`review`) submission is
     SPOOLED to disk (`spool/<sub>/`, the row's `document_ref`) and written as a D1 row
     `status='received'`, answered `202 pending`. The row IS the queue entry: the SEPARATE
     watchdog worker process (worker_watchdog.py) claims it, re-runs WITH the VLM, and flips
@@ -89,6 +89,7 @@ from ocr_bifunction.issuer_registry import (
 from ocr_bifunction.pipeline import CiSubmissionResult, process_ci_submission
 from ocr_bifunction.promotion import promote_suggestion
 from ocr_bifunction.reader import OcrEngine
+from ocr_bifunction.store import Store
 from ocr_bifunction.repository import (
     STATUS_DONE,
     STATUS_FAILED,
@@ -108,6 +109,7 @@ from ocr_bifunction.review_repository import (
 )
 from ocr_bifunction.router import RoutedDocument, route_document
 from ocr_bifunction.template import ValidationContext, load_templates
+from ocr_bifunction.verdict import Verdict
 from ocr_bifunction.template_repository import (
     SqliteTemplateRepository,
     TemplateRepository,
@@ -176,11 +178,19 @@ def _release_sync_slot() -> None:
         _active_sync_count -= 1
 
 
+def _new_store() -> Store:
+    """One file-backed Store connection for an API repo. check_same_thread=False lets the
+    request threads and the async worker share it; the caller serializes with _repository_lock.
+    One Store per repo (as before) keeps the current per-connection concurrency semantics —
+    consolidating to a single shared connection is a separate, lock-audited change."""
+    return Store(STORE_PATH, check_same_thread=False)
+
+
 def _ensure_repository() -> Repository:
     """Build the shared D1 store once (lazy). Caller MUST hold `_repository_lock`."""
     global _repository
     if _repository is None:
-        _repository = SqliteRepository(STORE_PATH, check_same_thread=False)
+        _repository = SqliteRepository(_new_store())
     return _repository
 
 
@@ -299,7 +309,7 @@ class ValidateResponse(BaseModel):
     status: Literal[
         "validated", "pending", "needs_review", "rejected", "incomplete", "unrecognized"
     ]
-    verdict: Literal["auto", "human", "reject"] | None
+    verdict: Literal["auto", "review", "reject"] | None
     reasons: list[str] = Field(default_factory=list)
     missing: list[str] = Field(default_factory=list)  # subset of ["recto", "verso"]
     # The D1 row id (ocr_jobs.job_id). EVERY submission now leaves a row (single source,
@@ -309,11 +319,11 @@ class ValidateResponse(BaseModel):
 
 class JobResponse(BaseModel):
     """The async follow-up. The worker advances a job to a terminal D1 state; `verdict`/`reasons`
-    carry the final escalated outcome (which may still be `human`). The verso-read provenance —
+    carry the final escalated outcome (which may still be `review`). The verso-read provenance —
     a CI-only diagnostic with no D1 column — is folded into `reasons` ('verso read via: …')."""
 
     status: Literal["pending", "done"]
-    verdict: Literal["auto", "human", "reject"] | None = None
+    verdict: Literal["auto", "review", "reject"] | None = None
     reasons: list[str] = Field(default_factory=list)
 
 
@@ -329,7 +339,7 @@ def _http_status_for(response: ValidateResponse) -> int:
 
 def _map_complete_auto(result: CiSubmissionResult) -> ValidateResponse:
     """A complete + confident submission. Only `auto` reaches here synchronously; the
-    `human` (doubtful) case is routed to the escalation lane by the endpoint."""
+    `review` (doubtful) case is routed to the escalation lane by the endpoint."""
     return ValidateResponse(
         status="validated", verdict="auto", reasons=result.record.reasons
     )
@@ -534,7 +544,7 @@ def _handle_ci_submission(
                 template_id=mismatch.template_id,
                 record_fields=mismatch.fields,
             )
-    if result.status == "complete" and result.record.verdict == "auto":
+    if result.status == "complete" and result.record.verdict is Verdict.AUTO:
         record = result.record
         job_id = _save_job(
             Job(
@@ -542,7 +552,7 @@ def _handle_ci_submission(
                 category_lane="ci",
                 status=STATUS_DONE,
                 execution_lane="fast",
-                verdict="auto",
+                verdict=Verdict.AUTO.value,
                 category=document_type,
                 template_id=record.template_id,
                 record_fields=record.fields,
@@ -553,7 +563,7 @@ def _handle_ci_submission(
         wire = _map_complete_auto(result)
         wire.job_id = job_id
         return wire
-    if result.status == "complete" and result.record.verdict == "reject":
+    if result.status == "complete" and result.record.verdict is Verdict.REJECT:
         # A recto/verso identity mismatch: PROVEN non conforme. No escalation — a
         # heavier OCR pass cannot rescue two sides that name different people. The
         # métier's conformity policy decides the reaction; the pair is retained.
@@ -596,20 +606,6 @@ def _handle_ci_submission(
     wire = _map_incomplete_or_unrecognized(result)
     wire.job_id = job_id
     return wire
-
-
-# Structured router verdict -> D1 status and the upload-facing wire status. reject is the
-# anti-fraud verdict: proven invalid, auto-terminal, no human review.
-_D1_STATUS_FOR_VERDICT = {
-    "auto": STATUS_DONE,
-    "human": STATUS_NEEDS_REVIEW,
-    "reject": STATUS_REJECTED,
-}
-_WIRE_STATUS_FOR_VERDICT = {
-    "auto": "validated",
-    "human": "needs_review",
-    "reject": "rejected",
-}
 
 
 # --- Non-conformity handling: the métier-configured REACTION to a proven failure. ----
@@ -707,7 +703,7 @@ def _nonconformity_response(
                 category_lane=category_lane,
                 status=STATUS_NEEDS_REVIEW,
                 execution_lane="fast",
-                verdict="human",
+                verdict=Verdict.REVIEW.value,
                 category=document_category or declared_type,
                 template_id=template_id,
                 record_fields=record_fields or {},
@@ -719,7 +715,7 @@ def _nonconformity_response(
         )
         return ValidateResponse(
             status="needs_review",
-            verdict="human",
+            verdict=Verdict.REVIEW.value,
             reasons=flagged_reasons,
             job_id=job_id,
         )
@@ -753,15 +749,15 @@ def _handle_single_document(
 ) -> ValidateResponse:
     """Non-CI document types: validate ONE doc via the 2-lane router (no VLM escalation).
 
-    Structured verdict -> outcome: auto -> validated; human -> needs_review; reject ->
+    Structured verdict -> outcome: auto -> validated; review -> needs_review; reject ->
     rejected (proven invalid, anti-fraud verdict, terminal). Non-structured (RAG lane) ->
     needs_review (a human handles it). Multiple files: only the first is used. EVERY outcome
     leaves a D1 row; the sync needs_review rows are what the review UI lists.
     """
     routed = _run_route_document(files, document_type, expected_holder_name)
     source = files[0][0]  # the original filename (routed.source is the temp name)
-    if routed.lane == "structured":
-        if routed.verdict == "reject":
+    if routed.lane == "structured" and routed.verdict is not None:
+        if routed.verdict is Verdict.REJECT:
             # A PROVEN non-conformity: the métier's policy decides the reaction
             # (block / block dossier / flag and continue) — and the evidence is kept.
             return _nonconformity_response(
@@ -776,17 +772,14 @@ def _handle_single_document(
                 template_id=routed.template_id,
                 record_fields=routed.fields,
             )
-        d1_status = _D1_STATUS_FOR_VERDICT.get(
-            routed.verdict or "", STATUS_NEEDS_REVIEW
-        )
-        wire_status = _WIRE_STATUS_FOR_VERDICT.get(routed.verdict or "", "needs_review")
+        d1_status = routed.verdict.d1_status
         job_id = _save_job(
             Job(
                 source=source,
                 category_lane="structured",
                 status=d1_status,
                 execution_lane="fast",
-                verdict=routed.verdict,
+                verdict=routed.verdict.value,
                 category=routed.category,
                 template_id=routed.template_id,
                 record_fields=routed.fields,
@@ -801,8 +794,8 @@ def _handle_single_document(
             )
         )
         return ValidateResponse(
-            status=wire_status,  # type: ignore[arg-type]
-            verdict=routed.verdict,  # type: ignore[arg-type]
+            status=routed.verdict.wire_status,  # type: ignore[arg-type]
+            verdict=routed.verdict.value,  # type: ignore[arg-type]
             reasons=routed.reasons,
             job_id=job_id,
         )
@@ -1053,7 +1046,7 @@ def _ensure_review_repository() -> ReviewRepository:
     """Build the shared D3 store once (lazy). Caller MUST hold `_repository_lock`."""
     global _review_repository
     if _review_repository is None:
-        _review_repository = SqliteReviewRepository(STORE_PATH, check_same_thread=False)
+        _review_repository = SqliteReviewRepository(_new_store())
     return _review_repository
 
 
@@ -1064,9 +1057,7 @@ def _ensure_template_repository() -> TemplateRepository:
     the files stay the anonymized SEED, D2 is the runtime source the router reads."""
     global _template_repository
     if _template_repository is None:
-        _template_repository = SqliteTemplateRepository(
-            STORE_PATH, check_same_thread=False
-        )
+        _template_repository = SqliteTemplateRepository(_new_store())
         _template_repository.seed_from_directory(TEMPLATES_DIRECTORY)
     return _template_repository
 
@@ -1081,9 +1072,7 @@ def _ensure_capacity_settings_repository() -> CapacitySettingsRepository:
     """Build the shared capacity-levers store once (lazy). Caller MUST hold `_repository_lock`."""
     global _capacity_settings_repository
     if _capacity_settings_repository is None:
-        _capacity_settings_repository = SqliteCapacitySettingsRepository(
-            STORE_PATH, check_same_thread=False
-        )
+        _capacity_settings_repository = SqliteCapacitySettingsRepository(_new_store())
         _capacity_settings_repository.seed_defaults()
     return _capacity_settings_repository
 
@@ -1098,9 +1087,7 @@ def _ensure_conformity_policy_repository() -> ConformityPolicyRepository:
     """Build the shared conformity-policy store once (lazy). Caller MUST hold `_repository_lock`."""
     global _conformity_policy_repository
     if _conformity_policy_repository is None:
-        _conformity_policy_repository = SqliteConformityPolicyRepository(
-            STORE_PATH, check_same_thread=False
-        )
+        _conformity_policy_repository = SqliteConformityPolicyRepository(_new_store())
         _conformity_policy_repository.seed_defaults()
     return _conformity_policy_repository
 
@@ -1109,9 +1096,7 @@ def _ensure_issuer_registry_repository() -> IssuerRegistryRepository:
     """Build the shared issuer-registry store once (lazy). Caller MUST hold `_repository_lock`."""
     global _issuer_registry_repository
     if _issuer_registry_repository is None:
-        _issuer_registry_repository = SqliteIssuerRegistryRepository(
-            STORE_PATH, check_same_thread=False
-        )
+        _issuer_registry_repository = SqliteIssuerRegistryRepository(_new_store())
     return _issuer_registry_repository
 
 
@@ -1122,9 +1107,7 @@ def _ensure_execution_policy_repository() -> ExecutionPolicyRepository:
     through /policies survives restarts, the doctrine of the config surface."""
     global _execution_policy_repository
     if _execution_policy_repository is None:
-        _execution_policy_repository = SqliteExecutionPolicyRepository(
-            STORE_PATH, check_same_thread=False
-        )
+        _execution_policy_repository = SqliteExecutionPolicyRepository(_new_store())
         _execution_policy_repository.seed_defaults()
     return _execution_policy_repository
 

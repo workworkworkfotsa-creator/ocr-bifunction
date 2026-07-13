@@ -38,14 +38,14 @@ def validate_preuve_test(
     )
     if template is None:
         return (
-            "human",
+            "review",
             ["not a recognized HP test page (intruder or unreadable signature)"],
             None,
             {},
         )
     fields = extract_fields(result.lines, template)
     reasons = validate_fields(fields, template.get("validation", {}))
-    verdict = "human" if reasons else "auto"
+    verdict = "review" if reasons else "auto"
     return verdict, reasons, template["template_id"], fields
 
 
