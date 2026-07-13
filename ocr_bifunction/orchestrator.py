@@ -69,6 +69,9 @@ class DocumentRecord:
     summary: Summary | None = None  # rag lane only
     chunk_count: int = 0  # rag lane only
     suggestion: SuggestionOutcome | None = None  # rag lane only, when a suggester fired
+    missing: list[str] = field(
+        default_factory=list
+    )  # ci lane only: the side(s) an incomplete/unrecognized submission is missing
 
 
 @dataclass
@@ -111,16 +114,31 @@ def _suggestion_reason(suggestion: SuggestionOutcome) -> str:
     )
 
 
-def _record_from_routed(routed: RoutedDocument) -> DocumentRecord:
-    # The verdict's own value IS the record outcome (auto/review/reject) — no mapping. A RAG
-    # doc is unidentified by construction (verdict None) -> always the human review queue.
+def _record_from_routed(
+    routed: RoutedDocument, declared_type: str | None = None
+) -> DocumentRecord:
+    # The verdict's own value IS the record outcome (auto/review/reject) — no mapping.
     if routed.lane == "structured" and routed.verdict is not None:
         outcome = routed.verdict.value
         detail = routed.verdict.value
+        category = routed.category
+        reasons = list(routed.reasons)
     else:
+        # RAG lane: unidentified by construction -> the human review queue. Carry the
+        # human-readable line + retrieval keywords BOTH entry points used to build by hand
+        # (the API door, the async worker), so the shared intake layer reproduces them
+        # instead of dropping them. `routed.category` is None on this lane -> keep the
+        # caller's DECLARED type as the category so the nightly draft pass knows which
+        # future category to cluster this unknown under.
         outcome = "review"
         detail = "rag"
-    reasons = list(routed.reasons)
+        category = routed.category or declared_type
+        reasons = [
+            *routed.reasons,
+            "non-structured document — routed to retrieval / human review",
+        ]
+        if routed.summary is not None and routed.summary.keywords:
+            reasons.append("keywords: " + ", ".join(routed.summary.keywords))
     if routed.suggestion is not None:
         reasons.append(_suggestion_reason(routed.suggestion))
     return DocumentRecord(
@@ -128,7 +146,7 @@ def _record_from_routed(routed: RoutedDocument) -> DocumentRecord:
         lane=routed.lane,
         outcome=outcome,
         detail=detail,
-        category=routed.category,
+        category=category,
         template_id=routed.template_id,
         fields=routed.fields,
         reasons=reasons,
@@ -155,7 +173,8 @@ def _record_from_ci(result: CiSubmissionResult, item: BatchItem) -> DocumentReco
             fields=record.fields,
             reasons=record.reasons,
         )
-    # incomplete (a side missing) or unrecognized -> the human queue.
+    # incomplete (a side missing) or unrecognized -> the human queue. `missing` names the
+    # side(s) to ask the uploader for (the wire contract's `missing`, kept on the record).
     return DocumentRecord(
         source=source,
         lane="ci",
@@ -163,6 +182,7 @@ def _record_from_ci(result: CiSubmissionResult, item: BatchItem) -> DocumentReco
         detail=result.status,
         category=item.document_type,
         reasons=result.reasons,
+        missing=result.missing,
     )
 
 
@@ -202,7 +222,7 @@ def process_document(
         context=context,
         today=today,
     )
-    return _record_from_routed(routed)
+    return _record_from_routed(routed, declared_type=item.document_type)
 
 
 def process_batch(

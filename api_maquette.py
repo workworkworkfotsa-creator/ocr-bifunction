@@ -68,7 +68,6 @@ from ocr_bifunction.capacity_settings import (
 )
 from ocr_bifunction.conformity_policy import (
     CONFORMITY_ACTION_BLOCK_HOLDER,
-    CONFORMITY_ACTION_FLAG_AND_CONTINUE,
     CONFORMITY_ACTIONS,
     ConformityPolicy,
     ConformityPolicyRepository,
@@ -86,7 +85,8 @@ from ocr_bifunction.issuer_registry import (
     IssuerRegistryRepository,
     SqliteIssuerRegistryRepository,
 )
-from ocr_bifunction.pipeline import CiSubmissionResult, process_ci_submission
+from ocr_bifunction.intake import handle_document, job_from_outcome
+from ocr_bifunction.orchestrator import BatchItem
 from ocr_bifunction.promotion import promote_suggestion
 from ocr_bifunction.reader import OcrEngine
 from ocr_bifunction.store import Store
@@ -107,7 +107,6 @@ from ocr_bifunction.review_repository import (
     ReviewRepository,
     SqliteReviewRepository,
 )
-from ocr_bifunction.router import RoutedDocument, route_document
 from ocr_bifunction.template import ValidationContext, load_templates
 from ocr_bifunction.verdict import Verdict
 from ocr_bifunction.template_repository import (
@@ -334,25 +333,6 @@ def _http_status_for(response: ValidateResponse) -> int:
     )
 
 
-# --- Mapping: a CiSubmissionResult -> the wire contract. ------------------------------
-
-
-def _map_complete_auto(result: CiSubmissionResult) -> ValidateResponse:
-    """A complete + confident submission. Only `auto` reaches here synchronously; the
-    `review` (doubtful) case is routed to the escalation lane by the endpoint."""
-    return ValidateResponse(
-        status="validated", verdict="auto", reasons=result.record.reasons
-    )
-
-
-def _map_incomplete_or_unrecognized(result: CiSubmissionResult) -> ValidateResponse:
-    """A submission with a missing side, or not a CI at all — no async work, the UI acts."""
-    wire_status = "incomplete" if result.status == "incomplete" else "unrecognized"
-    return ValidateResponse(
-        status=wire_status, verdict=None, reasons=result.reasons, missing=result.missing
-    )
-
-
 # --- Escalation lane: spool the bytes, write a `received` row — the watchdog does the rest.
 
 
@@ -437,27 +417,7 @@ def _decode_files(request: ValidateRequest) -> list[tuple[str, bytes]]:
     return decoded
 
 
-def _run_fast_submission(
-    files: list[tuple[str, bytes]], category: str | None
-) -> CiSubmissionResult:
-    """Run process_ci_submission on temp files with NO escalation engine (the fast path).
-
-    Temp files live under the system temp dir and the directory is removed on exit, so the
-    PII does not linger. Raises HTTPException(500) on a pipeline/engine crash.
-    """
-    with tempfile.TemporaryDirectory(prefix="ocr_bifunction_api_") as temp_directory:
-        paths = _write_files(files, Path(temp_directory))
-        try:
-            return process_ci_submission(
-                paths, _get_engine(), TEMPLATES_DIRECTORY, category=category
-            )
-        except Exception as error:  # surface a pipeline/engine crash as 5xx, don't hide
-            raise HTTPException(
-                status_code=500, detail=f"pipeline failure: {type(error).__name__}"
-            )
-
-
-# --- Dispatch by document_type: route the upload to the flow it declares. -------------
+# --- Validation context + holder block: what the shared handler and the door edges read. --
 
 
 def _build_validation_context(
@@ -478,147 +438,6 @@ def _build_validation_context(
         issuer_registry=identifiers,
         validated_attestations=attestations,
     )
-
-
-def _run_route_document(
-    files: list[tuple[str, bytes]],
-    category: str | None,
-    expected_holder_name: str | None = None,
-) -> RoutedDocument:
-    """Route the first uploaded file through the 2-lane router (non-CI document types).
-
-    Templates are read from D2 (`ocr_templates`, seeded from the committed JSON files),
-    NOT from the files directly — so a template promoted through the review page matches
-    on the very next upload (the growth loop closes through the API too). The CI flow
-    keeps the directory (its templates are outside the suggestion loop, documented)."""
-    filename, data = files[0]
-    suffix = Path(filename).suffix or DEFAULT_SUFFIX
-    with _repository_lock:
-        active_templates = _ensure_template_repository().active_templates()
-    with tempfile.TemporaryDirectory(prefix="ocr_bifunction_doc_") as temp_directory:
-        file_path = Path(temp_directory) / f"file{suffix}"
-        file_path.write_bytes(data)
-        try:
-            return route_document(
-                file_path,
-                TEMPLATES_DIRECTORY,
-                _get_engine(),
-                category=category,
-                templates=active_templates,
-                context=_build_validation_context(expected_holder_name),
-                today=date.today(),
-            )
-        except Exception as error:  # surface a pipeline/engine crash as 5xx, don't hide
-            raise HTTPException(
-                status_code=500, detail=f"pipeline failure: {type(error).__name__}"
-            )
-
-
-def _handle_ci_submission(
-    files: list[tuple[str, bytes]],
-    document_type: str | None,
-    request_id: str | None,
-    expected_holder_name: str | None = None,
-) -> ValidateResponse:
-    """The CI lane: complete -> validated / pending(spool for the watchdog); else
-    incomplete / unrecognized. EVERY outcome leaves a D1 row (single source, stage ④).
-    An 'unrecognized' upload that actually matches ANOTHER category's template is a
-    declared-vs-recognized type mismatch (a passport sent as a CI) -> non conforme."""
-    result = _run_fast_submission(files, document_type)
-    source = ", ".join(filename for filename, _ in files)
-    if result.status == "unrecognized" and document_type is not None:
-        mismatch = _detected_type_mismatch(files, document_type)
-        if mismatch is not None:
-            return _nonconformity_response(
-                files,
-                source,
-                "structured",
-                mismatch.category,
-                document_type,
-                [
-                    f"type mismatch: declared '{document_type}', recognized "
-                    f"'{mismatch.category}' (template {mismatch.template_id})"
-                ],
-                request_id,
-                expected_holder_name,
-                template_id=mismatch.template_id,
-                record_fields=mismatch.fields,
-            )
-    if result.status == "complete" and result.record.verdict is Verdict.AUTO:
-        record = result.record
-        job_id = _save_job(
-            Job(
-                source=source,
-                category_lane="ci",
-                status=STATUS_DONE,
-                execution_lane="fast",
-                verdict=Verdict.AUTO.value,
-                category=document_type,
-                template_id=record.template_id,
-                record_fields=record.fields,
-                reasons=record.reasons,
-                request_id=request_id,
-            )
-        )
-        wire = _map_complete_auto(result)
-        wire.job_id = job_id
-        return wire
-    if result.status == "complete" and result.record.verdict is Verdict.REJECT:
-        # A recto/verso identity mismatch: PROVEN non conforme. No escalation — a
-        # heavier OCR pass cannot rescue two sides that name different people. The
-        # métier's conformity policy decides the reaction; the pair is retained.
-        record = result.record
-        return _nonconformity_response(
-            files,
-            source,
-            "ci",
-            document_type,
-            document_type,
-            record.reasons,
-            request_id,
-            expected_holder_name,
-            template_id=record.template_id,
-            record_fields=record.fields,
-        )
-    if result.status == "complete":  # doubtful -> spool, the watchdog escalates
-        job_id = _spool_and_enqueue(
-            files, document_type, result.record.reasons, request_id
-        )
-        return ValidateResponse(
-            status="pending", verdict=None, reasons=result.record.reasons, job_id=job_id
-        )
-    # incomplete / unrecognized: terminal, no async or human work pends on OUR side (the
-    # uploader must act) -> persisted `done` with the story in reasons, verdict None.
-    trace_reasons = list(result.reasons)
-    if result.missing:
-        trace_reasons.append(f"missing side(s): {', '.join(result.missing)}")
-    job_id = _save_job(
-        Job(
-            source=source,
-            category_lane="ci",
-            status=STATUS_DONE,
-            execution_lane="fast",
-            category=document_type,
-            reasons=trace_reasons,
-            request_id=request_id,
-        )
-    )
-    wire = _map_incomplete_or_unrecognized(result)
-    wire.job_id = job_id
-    return wire
-
-
-# --- Non-conformity handling: the métier-configured REACTION to a proven failure. ----
-
-
-def _conformity_action_for(category: str | None) -> str:
-    """The métier's configured reaction for this category ('*' fallback)."""
-    with _repository_lock:
-        policies = {
-            policy.category: policy
-            for policy in _ensure_conformity_policy_repository().all_policies()
-        }
-    return resolve_conformity_action(category, policies)
 
 
 def _holder_block_reason(expected_holder_name: str | None) -> str | None:
@@ -653,193 +472,107 @@ def _holder_block_reason(expected_holder_name: str | None) -> str | None:
     return None
 
 
-def _detected_type_mismatch(
-    files: list[tuple[str, bytes]], declared_type: str
-) -> RoutedDocument | None:
-    """The declared-vs-recognized type check (e.g. a passport uploaded as a CI): when a
-    document matches NO template of its declared category, re-route it against EVERY
-    active template — a structured match under ANOTHER category is a proven
-    non-conformity (« attendu X, reçu Y »), not an unknown. Costs a second read
-    (maquette simplification, same trade as the worker re-run)."""
-    rerouted = _run_route_document(files, None)
-    if (
-        rerouted.lane == "structured"
-        and rerouted.category
-        and rerouted.category != declared_type
-    ):
-        return rerouted
-    return None
-
-
-def _nonconformity_response(
-    files: list[tuple[str, bytes]],
-    source: str,
-    category_lane: str,
-    document_category: str | None,
-    declared_type: str | None,
-    reasons: list[str],
-    request_id: str | None,
-    expected_holder_name: str | None,
-    *,
-    template_id: str | None = None,
-    record_fields: dict[str, str | None] | None = None,
-) -> ValidateResponse:
-    """Land a PROVEN non-conformity per the métier's configured action: block (and
-    block_holder) -> terminal `rejected` row WITH its bytes retained (the evidence goes
-    to the human review / compliance); flag_and_continue -> `needs_review`, flagged.
-
-    The action is resolved on the DECLARED type first (the dossier's expectation names
-    the case — e.g. a passport uploaded as a CI is a 'carte_identite' incident), falling
-    back to the document's own category when nothing was declared."""
-    action = _conformity_action_for(declared_type or document_category)
-    if action == CONFORMITY_ACTION_FLAG_AND_CONTINUE:
-        flagged_reasons = [
-            "non-conformity FLAGGED (policy: process continues)",
-            *reasons,
-        ]
-        job_id = _save_job(
-            Job(
-                source=source,
-                category_lane=category_lane,
-                status=STATUS_NEEDS_REVIEW,
-                execution_lane="fast",
-                verdict=Verdict.REVIEW.value,
-                category=document_category or declared_type,
-                template_id=template_id,
-                record_fields=record_fields or {},
-                reasons=flagged_reasons,
-                request_id=request_id,
-                document_ref=_spool_files(files),
-                expected_holder_name=expected_holder_name,
-            )
-        )
-        return ValidateResponse(
-            status="needs_review",
-            verdict=Verdict.REVIEW.value,
-            reasons=flagged_reasons,
-            job_id=job_id,
-        )
-    job_id = _save_job(
-        Job(
-            source=source,
-            category_lane=category_lane,
-            status=STATUS_REJECTED,
-            execution_lane="fast",
-            verdict="reject",
-            category=document_category or declared_type,
-            template_id=template_id,
-            record_fields=record_fields or {},
-            reasons=reasons,
-            request_id=request_id,
-            # The evidence pack for the human review / compliance: bytes retained.
-            document_ref=_spool_files(files),
-            expected_holder_name=expected_holder_name,
-        )
-    )
-    return ValidateResponse(
-        status="rejected", verdict="reject", reasons=reasons, job_id=job_id
-    )
-
-
-def _handle_single_document(
+def _handle_validated_document(
     files: list[tuple[str, bytes]],
     document_type: str | None,
     request_id: str | None,
     expected_holder_name: str | None = None,
 ) -> ValidateResponse:
-    """Non-CI document types: validate ONE doc via the 2-lane router (no VLM escalation).
+    """The single SYNC processing path — the shared intake handler + the door's two edges.
 
-    Structured verdict -> outcome: auto -> validated; review -> needs_review; reject ->
-    rejected (proven invalid, anti-fraud verdict, terminal). Non-structured (RAG lane) ->
-    needs_review (a human handles it). Multiple files: only the first is used. EVERY outcome
-    leaves a D1 row; the sync needs_review rows are what the review UI lists.
+    `intake.handle_document` runs the pure core (CI submission or 2-lane router), the
+    type-mismatch check and the non-conformity reaction, returning a persist-ready
+    `DocumentOutcome`. The door then applies its two entry-point-specific edges (real
+    policy, not duplication) and persists:
+
+      (b) a CI with a side missing / not a CI at all -> a terminal `done` TRACE row
+          (verdict None, no spool): the uploader must resubmit — no reviewer can fix a
+          side that never arrived. `missing` names the side(s) to ask for.
+      (a) a COMPLETE but doubtful CI -> the fast lane DEFERS it to the escalation worker
+          (a heavier VLM verso re-read off the request path), answered 202 pending.
+
+    Everything else (auto, a structured/rag review, a proven non-conformity) is persisted
+    from the outcome via the single `job_from_outcome` mapping, its bytes retained iff the
+    outcome says so (a needs_review doc the reviewer sees, a non-conformity's evidence).
     """
-    routed = _run_route_document(files, document_type, expected_holder_name)
-    source = files[0][0]  # the original filename (routed.source is the temp name)
-    if routed.lane == "structured" and routed.verdict is not None:
-        if routed.verdict is Verdict.REJECT:
-            # A PROVEN non-conformity: the métier's policy decides the reaction
-            # (block / block dossier / flag and continue) — and the evidence is kept.
-            return _nonconformity_response(
-                files,
-                source,
-                "structured",
-                routed.category,
-                document_type,
-                routed.reasons,
-                request_id,
-                expected_holder_name,
-                template_id=routed.template_id,
-                record_fields=routed.fields,
+    with tempfile.TemporaryDirectory(prefix="ocr_bifunction_api_") as temp_directory:
+        item = BatchItem(
+            paths=_write_files(files, Path(temp_directory)),
+            document_type=document_type,
+        )
+        with _repository_lock:
+            active_templates = _ensure_template_repository().active_templates()
+            conformity_policies = {
+                policy.category: policy
+                for policy in _ensure_conformity_policy_repository().all_policies()
+            }
+        context = _build_validation_context(expected_holder_name)
+        try:
+            outcome = handle_document(
+                item,
+                TEMPLATES_DIRECTORY,
+                _get_engine(),
+                escalation_engine=None,  # the door defers a doubtful CI (edge a) itself
+                templates=active_templates,
+                context=context,
+                today=date.today(),
+                conformity_policies=conformity_policies,
             )
-        d1_status = routed.verdict.d1_status
+        except Exception as error:  # surface a pipeline/engine crash as 5xx, don't hide
+            raise HTTPException(
+                status_code=500, detail=f"pipeline failure: {type(error).__name__}"
+            )
+
+    # `item.paths` are TEMP files (removed above) — the row must carry the upload's REAL
+    # names, so `source` overrides the record's temp-file name in every branch below.
+    source = ", ".join(filename for filename, _ in files)
+    record = outcome.record
+
+    # EDGE (b): a missing CI side / not-a-CI upload -> a done trace, no spool.
+    if record.detail in ("incomplete", "unrecognized"):
+        trace_reasons = list(record.reasons)
+        if record.missing:
+            trace_reasons.append(f"missing side(s): {', '.join(record.missing)}")
         job_id = _save_job(
             Job(
                 source=source,
-                category_lane="structured",
-                status=d1_status,
+                category_lane="ci",
+                status=STATUS_DONE,
                 execution_lane="fast",
-                verdict=routed.verdict.value,
-                category=routed.category,
-                template_id=routed.template_id,
-                record_fields=routed.fields,
-                reasons=routed.reasons,
+                category=document_type,
+                reasons=trace_reasons,
                 request_id=request_id,
-                # A doubtful doc keeps its bytes: the reviewer sees the document next to
-                # the extraction, and the nightly draft pass clusters the unknowns.
-                document_ref=(
-                    _spool_files(files) if d1_status == STATUS_NEEDS_REVIEW else None
-                ),
-                expected_holder_name=expected_holder_name,
             )
         )
         return ValidateResponse(
-            status=routed.verdict.wire_status,  # type: ignore[arg-type]
-            verdict=routed.verdict.value,  # type: ignore[arg-type]
-            reasons=routed.reasons,
+            status=record.detail,  # type: ignore[arg-type]  ("incomplete" | "unrecognized")
+            verdict=None,
+            reasons=record.reasons,
+            missing=record.missing,
             job_id=job_id,
         )
-    if document_type is not None:
-        # No match under the DECLARED type: check for a declared-vs-recognized type
-        # mismatch (a passport uploaded as a CI) before settling for the RAG lane.
-        mismatch = _detected_type_mismatch(files, document_type)
-        if mismatch is not None:
-            return _nonconformity_response(
-                files,
-                source,
-                "structured",
-                mismatch.category,
-                document_type,
-                [
-                    f"type mismatch: declared '{document_type}', recognized "
-                    f"'{mismatch.category}' (template {mismatch.template_id})"
-                ],
-                request_id,
-                expected_holder_name,
-                template_id=mismatch.template_id,
-                record_fields=mismatch.fields,
-            )
-    reasons = ["non-structured document — routed to retrieval / human review"]
-    if routed.summary is not None and routed.summary.keywords:
-        reasons.append("keywords: " + ", ".join(routed.summary.keywords))
-    job_id = _save_job(
-        Job(
-            source=source,
-            category_lane="rag",
-            status=STATUS_NEEDS_REVIEW,
-            execution_lane="fast",
-            # The rag lane matches no template, so routed.category is always None —
-            # keep the CALLER's declared type (real information: it names the future
-            # category when the nightly draft pass clusters these unknowns).
-            category=routed.category or document_type,
-            reasons=reasons,
-            request_id=request_id,
-            document_ref=_spool_files(files),
-            expected_holder_name=expected_holder_name,
+
+    # EDGE (a): a complete but doubtful CI -> spool the bytes, enqueue for the watchdog.
+    if record.lane == "ci" and outcome.verdict == Verdict.REVIEW.value:
+        job_id = _spool_and_enqueue(files, document_type, outcome.reasons, request_id)
+        return ValidateResponse(
+            status="pending", verdict=None, reasons=outcome.reasons, job_id=job_id
         )
+
+    # General case: persist the outcome as a new D1 row (single record->Job mapping).
+    job = job_from_outcome(
+        outcome,
+        source=source,
+        request_id=request_id,
+        document_ref=_spool_files(files) if outcome.retain_bytes else None,
+        expected_holder_name=expected_holder_name,
     )
+    job_id = _save_job(job)
     return ValidateResponse(
-        status="needs_review", verdict=None, reasons=reasons, job_id=job_id
+        status=Verdict(outcome.verdict).wire_status,  # type: ignore[arg-type]
+        verdict=outcome.verdict,  # type: ignore[arg-type]
+        reasons=outcome.reasons,
+        job_id=job_id,
     )
 
 
@@ -955,20 +688,14 @@ def validate_document(request: ValidateRequest, response: Response) -> ValidateR
             )
         else:
             try:
-                if request.document_type == "carte_identite":
-                    wire = _handle_ci_submission(
-                        files,
-                        request.document_type,
-                        request.request_id,
-                        request.expected_holder_name,
-                    )  # may raise 500
-                else:
-                    wire = _handle_single_document(
-                        files,
-                        request.document_type,
-                        request.request_id,
-                        request.expected_holder_name,
-                    )  # may raise 500
+                # ONE sync path — the shared intake handler dispatches CI vs single doc
+                # INSIDE handle_document; the door only applies its two edges afterward.
+                wire = _handle_validated_document(
+                    files,
+                    request.document_type,
+                    request.request_id,
+                    request.expected_holder_name,
+                )  # may raise 500
             finally:
                 _release_sync_slot()
             if resolved.reasons:

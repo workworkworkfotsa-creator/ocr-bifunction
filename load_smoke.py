@@ -5,8 +5,8 @@ no llama).
 
 Worst-case doctrine (user, 2026-07-12): modest servers, so the sync lane is CAPPED and
 the cap is a live lever. This smoke hammers the door with CONCURRENT uploads (threads,
-same TestClient app) while the sync processing is artificially slowed (a patched router
-wrapper — declared test scaffolding), and proves:
+same TestClient app) while the sync processing is artificially slowed (a patched
+sync-handler wrapper — declared test scaffolding), and proves:
 
   1. the observed PEAK sync concurrency never exceeds SYNC_CONCURRENCY_LIMIT;
   2. overflow action `defer`: every upload beyond capacity gets 202 pending on the
@@ -99,7 +99,7 @@ def _stage_attestation_template(attestation_paths: list[Path]) -> None:
 
 
 class _ConcurrencyProbe:
-    """Wrap the sync router call with a sleep + a peak-concurrency counter — the test
+    """Wrap the sync processing call with a sleep + a peak-concurrency counter — the test
     scaffolding that makes saturation deterministic and MEASURABLE."""
 
     def __init__(self, original) -> None:
@@ -169,8 +169,8 @@ def run() -> int:
         attestation_paths.append(path)
     _stage_attestation_template(attestation_paths)
 
-    probe = _ConcurrencyProbe(api_maquette._run_route_document)
-    api_maquette._run_route_document = probe
+    probe = _ConcurrencyProbe(api_maquette._handle_validated_document)
+    api_maquette._handle_validated_document = probe
 
     with TestClient(api_maquette.app) as client:
         # 0. Levers live: set the cap + defer overflow.
@@ -267,7 +267,7 @@ def run() -> int:
         # 5. Idempotency cache stays bounded under a flood of distinct request_ids.
         # The slow probe is removed (we test the EVICTION mechanism, not throughput)
         # and the cap is patched small so the flood stays cheap.
-        api_maquette._run_route_document = probe._original
+        api_maquette._handle_validated_document = probe._original
         api_maquette._IDEMPOTENCY_CACHE_MAX_ENTRIES = 20
         client.put(
             "/v1/capacity-settings",
