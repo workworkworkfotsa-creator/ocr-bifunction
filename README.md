@@ -36,6 +36,12 @@ adaptateur interchangeable).
                          revue humaine)   preuve RETENUE)
 ```
 
+**Une seule couche de traitement, deux régimes.** La porte ET le watchdog font passer un document
+par la MÊME fonction pure `intake.handle_document` (`ocr_bifunction/intake.py`) : cœur de routing +
+extraction + verdict, check « type déclaré ≠ type reconnu », réaction de non-conformité, et l'unique
+mapping record→row. Elle ne persiste rien — chaque régime (porte / worker) est l'adaptateur qui écrit
+la row D1. Résultat : la logique métier n'existe qu'une fois, et se teste sur un store en mémoire.
+
 **Les stores (proxies SQLite d'une future BD interne)** — un domaine = un propriétaire :
 
 | Domaine | Table | Rôle |
@@ -108,8 +114,21 @@ les vrais documents (`inputs/`, gitignoré) ne quittent jamais la machine.
 ```
 api_maquette.py           # la porte HTTP (adaptateur) + endpoints des surfaces
 worker_watchdog.py        # le worker async (recover → drain → sweep → draft)
-ocr_bifunction/           # le cœur : reader, router, template(+checks), reconcile/MRZ,
-                          # drafting(+flow), stores D1..D6 + leviers, moteurs OCR (slots)
+ocr_bifunction/
+  intake.py               # LA couche de traitement unique (handle_document, pure)
+  orchestrator.py         # dispatch document → DocumentRecord (CI submission vs router)
+  reader.py               # stage ① LIRE (couche texte / OCR) — contrat OcrEngine/TextLine
+  router.py               # les 2 lanes (structuré → template ; sinon → RAG)
+  template.py             # extraction : match + rebuild des champs par géométrie/pattern
+  validation.py           # moteur de verdict : checks anti-fraude + registre + 3 états
+  reconcile.py, mrz.py    # cross-validation CI recto↔verso + MRZ (checksums ICAO)
+  drafting.py, drafting_flow.py, suggestion.py, field_naming.py   # croissance des templates
+  llama_transport.py      # transport llama-swap unique (SLM/VLM/embeddings)
+  repository.py, review_repository.py, template_repository.py,
+  execution_policy.py, issuer_registry.py, conformity_policy.py,
+  capacity_settings.py, store.py   # les stores D1..D6 + leviers (ABC + proxy SQLite)
+  rapidocr_engine.py, docling_engine.py, lightonocr_engine.py    # moteurs OCR (slots jetables)
+  verdict.py, status.py, context_assembly.py, rag.py, preprocess.py, generation.py
 templates/*.json          # seed anonymisé des templates (D2 = la source runtime)
 ui/*.html                 # pages locales (peaux sur le contrat HTTP)
 docs/                     # contrat de destination, dictionnaire métier, notes de déploiement
