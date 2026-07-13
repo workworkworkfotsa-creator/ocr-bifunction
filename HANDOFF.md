@@ -10,6 +10,133 @@
 > repo ni l'historique (audité 2026-06-26). **Le repo EST sur GitHub (privé — le passage en public = décision utilisateur)** → ne jamais `git add -f` un doc,
 > ne jamais coller de valeur réelle (nom, n°doc, adresse) dans le code, les docs ou un message de commit.
 
+## État au 2026-07-13 — REFACTOR ARCHITECTURE en cours (A + D faits, B à finir)
+
+> Issu de `/improve-codebase-architecture` (rapport HTML généré en temp, non versionné — les 6
+> candidats A–F sont résumés ici). Chaîne de deepenings via `/grilling`. **TOUT EST NON COMMITÉ**
+> (working tree). Oracle = smokes autonomes (pas de pytest). Avant de reprendre : `uv run ruff
+> check .` + relancer les smokes listés. **Reco** : committer A puis D (validés, autonomes) en 2
+> commits avant d'attaquer la suite de B, pour isoler les diffs.
+
+### Les 6 candidats (rapport d'archi 2026-07-13)
+- **A — Verdict value object** — FAIT (non commité).
+- **B — un module de traitement unique** — EN COURS : step 1 fait, **steps 2-3 à faire** (le crux ci-dessous).
+- **C — transport llama-swap unique** — À FAIRE (risque le plus faible).
+- **D — Store + adaptateur in-memory** — FAIT (non commité).
+- **E — scinder `template.py`** au seam ~L202 (extraction vs moteur de verdict) + registre de checks — À FAIRE.
+- **F — durcir le contrat `OcrEngine`/`TextLine`** (confidence/geometry) — À FAIRE.
+
+### A — Verdict value object (FAIT)
+- **`ocr_bifunction/verdict.py`** : `Verdict(AUTO/REVIEW/REJECT)`, `from_reasons(reject, review)` =
+  l'UNIQUE précédence `reject>review>auto`, `.d1_status`/`.wire_status` = les seules sérialisations.
+- **`ocr_bifunction/status.py`** : leaf des `STATUS_*` (`repository.py` les ré-exporte via `X as X`).
+- Vocabulaire canonique **auto/review/reject** (`human` retiré partout, colonne D1 + wire compris).
+- **Bug fermé** : `worker_watchdog._terminal_from_record` ne collapse plus `reject`→needs_review.
+- Oracle vert : `verdict_check` 11/11, `reconcile_verdict_check` 5/5, `verdict_flow_check` 7/7,
+  `escalation_reject_smoke` 5/5, `context_checks_check` 14/14, `checks_check` 12/12 + smokes FastAPI.
+
+### D — Store + adaptateur in-memory (FAIT)
+- **`ocr_bifunction/store.py`** : `Store(database=":memory:"|chemin, *, clock, check_same_thread)` =
+  une connexion + `clock()` + `ensure_schema(ddl, *, table, migrations)` (le connect/executescript/
+  PRAGMA-migrate/commit, une seule fois). `Store(":memory:")` = la même SQL en mémoire (repos
+  partageant UNE connexion — des `:memory:` séparés = bases vides distinctes).
+- Les **7 repos** : `__init__(store: Store | chemin)` → aliase `self._connection`/`self._clock`
+  (corps de méthodes inchangés), appelle `store.ensure_schema(...)`. `clock`/`check_same_thread`
+  remontés sur le Store.
+- **`api_maquette._new_store()`** aux 7 sites (iso-concurrence : 7 connexions, comme avant).
+- Oracle vert : `store_check.py` 7/7 (connexion partagée, round-trip, isolation, migration, path-accept).
+
+### B — un module de traitement unique (EN COURS — step 1 FAIT, steps 2-3 À FAIRE)
+
+**Step 1 FAIT** : **`ocr_bifunction/intake.py`** — `handle_document(item, templates_directory, engine, *,
+escalation_engine=None, templates=None, context=None, today=None, conformity_policies=None) ->
+DocumentOutcome` (PUR, ne touche AUCUN store) : compose `orchestrator.process_document` (pur, inchangé)
++ type-mismatch + réaction non-conformité. Plus `job_from_outcome(outcome, *, source, request_id,
+document_ref, expected_holder_name, execution_lane)` = l'UNIQUE mapping record→Job. `DocumentOutcome`
+= (record, status, verdict, reasons, retain_bytes, nonconformity). Prouvé : **`handler_check.py` 6/6**
+sur `Store(":memory:")`.
+
+**Décisions de conception (grilling — ne PAS re-litiger sans raison forte)** :
+1. Handler **PUR → DocumentOutcome** ; les adaptateurs persistent (porte `save`, worker `update_status`).
+   Crash-safety **inchangée** : les checkpoints durables restent aux adaptateurs (worker : row `processing`
+   + `recover_stale` ; porte : `save` unique ou retry idempotent). Le handler est ré-exécutable.
+2. **Nouvelle couche intake AU-DESSUS d'`orchestrator`** (qui reste pur `document→DocumentRecord`).
+3. **Doubtful-CI → escalade = PORTE seulement** (adaptateur décide escalate-vs-finalize sur l'outcome).
+4. **detected-type-mismatch DANS le handler** (unifie porte+worker). **Changement de comportement
+   délibéré côté async** : un type-mismatch poussé async devient non-conforme (avant : RAG/needs_review)
+   → couvrir par un nouveau smoke. Iso pour la porte sync.
+5. **Rollout incrémental** (handler → porte → worker), un GATE vert à chaque étape.
+
+**Deux edges restent dans les ADAPTATEURS (policy réelle par point d'entrée, PAS de la duplication)** :
+- **Doubtful-CI escalate** : porte seulement.
+- **Incomplete/unrecognized CI status** : la PORTE done-trace (l'uploader resoumet, aucun reviewer ne
+  corrige un côté manquant) ; le WORKER/batch → needs_review (pas d'uploader à qui renvoyer).
+
+#### STEP 2 — cutover PORTE (`api_maquette.py`) — À FAIRE
+`validate_document` : **ADMISSION inchangée** (idempotence l.860, holder-block l.870, exec-policy l.893,
+spool+enqueue async l.905, sync-slot/overflow l.923). Remplacer les DEUX appels
+`_handle_ci_submission`/`_handle_single_document` (l.~958-971) par **UN seul chemin** :
+- `item = BatchItem(paths=<temp files>, document_type=request.document_type)` (la dispatch CI-vs-routed
+  passe DANS le handler) ; `ctx = _build_validation_context(request.expected_holder_name)` ;
+  `policies = {p.category: p for p in _ensure_conformity_policy_repository().all_policies()}` ;
+  `active = _ensure_template_repository().active_templates()`.
+- `o = intake.handle_document(item, TEMPLATES_DIRECTORY, _get_engine(), escalation_engine=None,
+  templates=active, context=ctx, today=date.today(), conformity_policies=policies)`.
+- **EDGE (a)** `o.record.lane=="ci" and o.verdict=="review"` → `_spool_and_enqueue(...)` en lane
+  `escalation`, wire `pending` (l'actuel comportement doubtful-CI, ancien l.573).
+- **EDGE (b)** `o.record.detail in ("incomplete","unrecognized")` → `_save_job` d'un trace `done`
+  (verdict None, PAS de spool) + wire `status` = `"incomplete"|"unrecognized"` (ancien l.580-598).
+- **SINON** : `job = intake.job_from_outcome(o, source=<orig filenames>, request_id=...,
+  document_ref=_spool_files(files) if o.retain_bytes else None, expected_holder_name=...)` ;
+  `_save_job(job)` ; wire = `ValidateResponse(status=Verdict(o.verdict).wire_status, verdict=o.verdict,
+  reasons=o.reasons, job_id=...)`.
+- **PIÈGE source** : `item.paths` sont des fichiers TEMP (`file{suffix}`) → **passer `source=", ".join(
+  filename for filename,_ in files)`** à `job_from_outcome`, sinon la row porte le nom temp.
+- **SUPPRIMER après cutover** : `_handle_ci_submission`, `_handle_single_document`,
+  `_nonconformity_response`, `_detected_type_mismatch`, `_run_fast_submission`, `_map_complete_auto`,
+  `_map_incomplete_or_unrecognized`. `_run_route_document` : ne survit que si un autre caller l'utilise
+  (le type-mismatch qui l'appelait part dans le handler) → sinon supprimer. **GARDER** (admission) :
+  `_build_validation_context`, `_spool_files`, `_spool_and_enqueue`, `_holder_block_reason`,
+  `_conformity_action_for`, `_new_store`, tous les `_ensure_*`.
+- **GATE step 2** : `uv run python` de `verdict_flow_check`, `severity_smoke`, `holder_reference_smoke`,
+  `conformity_smoke`, `flow_smoke`, `load_smoke` → tous verts (iso) ; + `ruff check .`.
+
+#### STEP 3 — cutover WORKER (`worker_watchdog.py`) — À FAIRE
+`_process_claimed_job` : remplacer la branche `ci`/`routed` (`_process_ci_job`/`_process_routed_job`)
+par **UN seul chemin** :
+- `item = BatchItem(paths=_spooled_files(job), document_type=("carte_identite" if job.category_lane==
+  "ci" else job.category))` (⚠ pour CI il FAUT `document_type="carte_identite"` pour que le handler
+  dispatche la soumission CI).
+- `job_context = replace(validation_context, ci_reference_name=job.expected_holder_name)` ;
+  `escalation = escalation_engine if job.category_lane=="ci" else None`.
+- `o = intake.handle_document(item, TEMPLATES_DIRECTORY, fast_engine, escalation_engine=escalation,
+  templates=active_templates, context=job_context, today=date.today(), conformity_policies=conformity_policies)`.
+- `repository.update_status(job.job_id, o.status, verdict=o.verdict, record_fields=o.record.fields,
+  reasons=[*job.reasons, *o.reasons], category_lane=o.record.lane, category=o.record.category,
+  template_id=o.record.template_id)`.
+- **SUPPRIMER** : `_process_ci_job`, `_process_routed_job`, `_terminal_from_record`. **GARDER** :
+  `_one_pass` (recover/claim/loop), le sweep de clôture, la passe DRAFT nightly, `_spooled_files`.
+- **NOUVEAU smoke** (le seul changement de comportement, décision B-4) : un doc déclaré type A poussé
+  en `async_immediate`, qui matche un template de type B → le worker le classe **non-conforme**
+  (avant : RAG/needs_review). Patron = `conformity_smoke` (TestClient + subprocess watchdog).
+- **GATE step 3** : `conformity_smoke`, `policy_smoke`, `holder_reference_smoke`, `load_smoke`
+  (subprocess watchdog) + le nouveau smoke + `verdict_flow_check` + `handler_check` + `store_check` ;
+  + `ruff check .`.
+
+#### Après B
+- Doc : note `intake.handle_document` comme point d'entrée unique de traitement (dictionnaire ou
+  contrat-bd) ; mettre à jour CE HANDOFF (B fait).
+
+### Oracle global (pas de pytest — 2026-07-13)
+- **Autonomes légers** : `checks_check`, `verdict_check`, `reconcile_verdict_check`,
+  `context_checks_check`, `verdict_flow_check`, `escalation_reject_smoke`, `store_check`, `handler_check`.
+- **FastAPI / subprocess** : `severity_smoke`, `holder_reference_smoke`, `conformity_smoke`,
+  `policy_smoke`, `flow_smoke`, `load_smoke`, `corroboration_smoke`.
+- **Exigent des args (docs `inputs/`, ne tournent pas seuls)** : `ui_smoke`, `promotion_check`,
+  `suggestion_check`, `consolidation_check`, `batch_check`, `draft_check` — NON régressions si absents.
+
+---
+
 ## État au 2026-07-12 (soir) — LIVRAISON PRÉPARÉE, l'échange IT commence
 
 **Le flux COMPLET est prouvé depuis les surfaces** (upload → politique d'exécution → verdict 3 états →
