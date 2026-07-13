@@ -116,6 +116,7 @@ def main() -> None:
     store.close()
     other.close()
     migrated.close()
+    wrapped.close()
     print(f"\nSTORE SMOKE PASS {_checks_passed}/{_checks_passed}")
 
 
