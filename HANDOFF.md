@@ -7,8 +7,11 @@
 
 > ⚠️ **Données sensibles** : `inputs/` (CI réelles, factures, photos terrain) et `outputs/` (extractions
 > avec PII) sont **gitignorés** et n'ont **jamais** été versionnés. Aucune PII / donnée entreprise dans le
-> repo ni l'historique (audité 2026-06-26). **Le repo EST sur GitHub (privé — le passage en public = décision utilisateur)** → ne jamais `git add -f` un doc,
-> ne jamais coller de valeur réelle (nom, n°doc, adresse) dans le code, les docs ou un message de commit.
+> repo ni l'historique (audité 2026-06-26). **⚠️ Le repo est désormais PUBLIC sur GitHub (2026-07-13,
+> décision utilisateur, licence MIT — `workworkworkfotsa-creator/ocr-bifunction`, `master` à jour avec le
+> refactor A–F).** La discipline anti-PII est donc CRITIQUE → ne jamais `git add -f` un doc, ne jamais
+> coller de valeur réelle (nom, n°doc, adresse) dans le code, les docs ou un message de commit ; `0_Aller_retour_IT/`,
+> `inputs/`, `outputs/`, `models/`, `spool/` restent gitignorés (vérifié absent du tree poussé).
 
 ## État au 2026-07-13 — REFACTOR ARCHITECTURE TERMINÉ (A/B/C/D/E/F faits)
 
