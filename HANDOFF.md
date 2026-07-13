@@ -13,16 +13,26 @@
 ## État au 2026-07-13 — REFACTOR ARCHITECTURE en cours (A + D faits, B à finir)
 
 > Issu de `/improve-codebase-architecture` (rapport HTML généré en temp, non versionné — les 6
-> candidats A–F sont résumés ici). Chaîne de deepenings via `/grilling`. **TOUT EST NON COMMITÉ**
-> (working tree). Oracle = smokes autonomes (pas de pytest). Avant de reprendre : `uv run ruff
-> check .` + relancer les smokes listés. **Reco** : committer A puis D (validés, autonomes) en 2
-> commits avant d'attaquer la suite de B, pour isoler les diffs.
+> candidats A–F sont résumés ici). Chaîne de deepenings via `/grilling`. **A + D commités (`8392afb`),
+> B step 1 commité (`1ebd164`)** ; steps 2-3 de B restent (working tree propre à part `CLAUDE.md`).
+> Oracle = smokes autonomes (pas de pytest). Avant de reprendre : `uv run ruff check .` + relancer les
+> smokes listés.
+>
+> **Self-healing review de `HEAD~9..HEAD` passée (2026-07-13, commit `931c4cd`).** 5 agents (sécu /
+> fuites DB / code mort / magic-values / régression). Verdict : refactor **propre** — 0 code mort, 0
+> fuite de connexion en prod (les 7 connexions API sont des singletons process-lifetime délibérés),
+> `Verdict.d1_status`/`.wire_status`/`.from_reasons` **byte-équivalents** aux dicts de mapping
+> supprimés, migration `human`→`review` complète. **1 seul durcissement appliqué** : `store_check.py`
+> ferme le repo in-memory `wrapped` (cohérence close-everything du fichier, test-only). Advisory
+> **laissés car mi-refactor** (décision utilisateur) : endpoints leviers `/v1/capacity-settings` sans
+> auth (aucun endpoint de la maquette n'a d'auth) ; magic-values = vocabulaire cross-file (`"deferred"`,
+> clés `SYNC_*`) ou surface config `capacity_settings.py`.
 
 ### Les 6 candidats (rapport d'archi 2026-07-13)
-- **A — Verdict value object** — FAIT (non commité).
-- **B — un module de traitement unique** — EN COURS : step 1 fait, **steps 2-3 à faire** (le crux ci-dessous).
+- **A — Verdict value object** — FAIT (commité `8392afb`).
+- **B — un module de traitement unique** — EN COURS : step 1 fait (commité `1ebd164`), **steps 2-3 à faire** (le crux ci-dessous).
 - **C — transport llama-swap unique** — À FAIRE (risque le plus faible).
-- **D — Store + adaptateur in-memory** — FAIT (non commité).
+- **D — Store + adaptateur in-memory** — FAIT (commité `8392afb`).
 - **E — scinder `template.py`** au seam ~L202 (extraction vs moteur de verdict) + registre de checks — À FAIRE.
 - **F — durcir le contrat `OcrEngine`/`TextLine`** (confidence/geometry) — À FAIRE.
 
