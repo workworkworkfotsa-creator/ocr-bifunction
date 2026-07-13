@@ -19,11 +19,10 @@ from __future__ import annotations
 
 import json
 import os
-import urllib.error
-import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ocr_bifunction.llama_transport import post_json, resolve_base_url
 from ocr_bifunction.reader import TextLine
 from ocr_bifunction.template import (
     extract_fields,
@@ -31,8 +30,7 @@ from ocr_bifunction.template import (
     validate_fields,
 )
 
-# Shared llama-swap (same convention as generation.py). Model key = an entry in the config.yaml.
-_DEFAULT_LLAMA_SWAP_URL = "http://127.0.0.1:8080"
+# Shared llama-swap transport lives in llama_transport. Model key = an entry in the config.yaml.
 _DEFAULT_SUGGESTION_MODEL_KEY = "granite-4.0-h-tiny-Q4_K_M"
 
 # The reserved id the model must return when no known template fits (part of the closed list).
@@ -119,13 +117,13 @@ def request_suggestion(
     The `json_schema` body field makes llama-server derive a GBNF grammar from the enum+array
     schema, so the reply is always valid JSON of that shape (no free-text parsing). Uses
     /completion (a one-shot router, no jinja) per the brief."""
-    base = (
-        base_url or os.environ.get("LLAMA_SWAP_URL", _DEFAULT_LLAMA_SWAP_URL)
-    ).rstrip("/")
+    base = resolve_base_url(base_url)
     model = model_key or os.environ.get(
         "SUGGESTION_MODEL_KEY", _DEFAULT_SUGGESTION_MODEL_KEY
     )
-    body = json.dumps(
+    payload = post_json(
+        base,
+        "/completion",
         {
             "model": model,
             "prompt": _build_prompt(ocr_text, template_ids),
@@ -133,24 +131,10 @@ def request_suggestion(
             "temperature": 0.0,
             "n_predict": 256,
             "cache_prompt": True,
-        }
-    ).encode("utf-8")
-    request = urllib.request.Request(
-        f"{base}/completion",
-        data=body,
-        headers={"Content-Type": "application/json"},
-        method="POST",
+        },
+        timeout=timeout,
+        server_label="suggestion",
     )
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            payload = json.loads(response.read())
-    except urllib.error.HTTPError as error:
-        detail = error.read().decode("utf-8", "replace")[:300]
-        raise RuntimeError(f"suggestion server HTTP {error.code}: {detail}") from error
-    except urllib.error.URLError as error:
-        raise RuntimeError(
-            f"shared llama-swap unreachable at {base} (is it running?): {error.reason}"
-        ) from error
     return json.loads(payload.get("content", "{}"))
 
 

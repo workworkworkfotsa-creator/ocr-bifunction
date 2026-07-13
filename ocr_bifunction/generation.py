@@ -20,15 +20,13 @@ from __future__ import annotations
 
 import json
 import os
-import urllib.error
-import urllib.request
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
-# The shared llama-swap proxy this project talks to (OpenAI-compatible). Base URL WITHOUT the
-# /v1 suffix, matching the sibling projects' LLAMA_SWAP_URL convention; the model KEY is the
-# entry in llama-swap's config.yaml. IT / other projects override via env.
-_DEFAULT_LLAMA_SWAP_URL = "http://127.0.0.1:8080"
+from ocr_bifunction.llama_transport import post_json, resolve_base_url
+
+# The model KEY is the entry in llama-swap's config.yaml; the shared base URL + POST transport
+# live in llama_transport. IT / other projects override the model via env (GENERATION_MODEL_KEY).
 _DEFAULT_GENERATION_MODEL_KEY = "granite-4.0-h-tiny-Q4_K_M"
 
 # The set of relations the model may emit (kept in sync with the enum in the prompt).
@@ -104,9 +102,7 @@ class LlamaSwapGenerator:
         max_output_tokens: int = 800,
         request_timeout_seconds: float = 420.0,
     ) -> None:
-        self._base_url = (
-            base_url or os.environ.get("LLAMA_SWAP_URL", _DEFAULT_LLAMA_SWAP_URL)
-        ).rstrip("/")
+        self._base_url = resolve_base_url(base_url)
         self._model_key = model_key or os.environ.get(
             "GENERATION_MODEL_KEY", _DEFAULT_GENERATION_MODEL_KEY
         )
@@ -120,7 +116,9 @@ class LlamaSwapGenerator:
         self.close()
 
     def complete(self, system_prompt: str, user_prompt: str) -> str:
-        payload = json.dumps(
+        body = post_json(
+            self._base_url,
+            "/v1/chat/completions",
             {
                 "model": self._model_key,
                 "messages": [
@@ -132,29 +130,10 @@ class LlamaSwapGenerator:
                 # is what times a call out. A reference list rarely needs more than this.
                 "max_tokens": self._max_output_tokens,
                 "stream": False,
-            }
-        ).encode("utf-8")
-        request = urllib.request.Request(
-            f"{self._base_url}/v1/chat/completions",
-            data=payload,
-            headers={"Content-Type": "application/json"},
-            method="POST",
+            },
+            timeout=self._request_timeout_seconds,
+            server_label="generation",
         )
-        try:
-            with urllib.request.urlopen(
-                request, timeout=self._request_timeout_seconds
-            ) as response:
-                body = json.loads(response.read())
-        except urllib.error.HTTPError as error:
-            detail = error.read().decode("utf-8", "replace")[:300]
-            raise RuntimeError(
-                f"generation server HTTP {error.code}: {detail}"
-            ) from error
-        except urllib.error.URLError as error:
-            raise RuntimeError(
-                f"shared llama-swap unreachable at {self._base_url} "
-                f"(is it running?): {error.reason}"
-            ) from error
         return body["choices"][0]["message"]["content"]
 
     def close(self) -> None:

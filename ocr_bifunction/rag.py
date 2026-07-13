@@ -18,16 +18,14 @@ top-weighted terms + sentences for the extractive summary. No LLM, no download.
 
 from __future__ import annotations
 
-import json
 import math
 import os
 import re
-import urllib.error
-import urllib.request
 from collections import Counter
 from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
+from ocr_bifunction.llama_transport import post_json, resolve_base_url
 from ocr_bifunction.reader import TextLine
 
 # Keep accented Latin letters and digits; everything else splits tokens.
@@ -348,7 +346,6 @@ def summarize_extractive(
 # come from llama-swap's OpenAI-compatible /v1/embeddings endpoint; override the endpoint /
 # model via env (LLAMA_SWAP_URL / RAG_EMBEDDING_MODEL_KEY).
 
-_DEFAULT_LLAMA_SWAP_URL = "http://127.0.0.1:8080"
 _DEFAULT_EMBEDDING_MODEL_KEY = "granite-embedding-r2"
 # granite-embedding-r2 has a 32K window but the llama-swap config runs it at 8192 (-b/-ub
 # aligned). The server REJECTS any input past -c (it does not truncate an embedding), so the
@@ -390,9 +387,7 @@ class GgufEmbeddingRetriever:
         model_key: str | None = None,
         request_timeout_seconds: float = 300.0,
     ) -> None:
-        self._base_url = (
-            base_url or os.environ.get("LLAMA_SWAP_URL", _DEFAULT_LLAMA_SWAP_URL)
-        ).rstrip("/")
+        self._base_url = resolve_base_url(base_url)
         self._model_key = model_key or os.environ.get(
             "RAG_EMBEDDING_MODEL_KEY", _DEFAULT_EMBEDDING_MODEL_KEY
         )
@@ -408,30 +403,13 @@ class GgufEmbeddingRetriever:
 
     def _embed(self, texts: list[str]) -> list[list[float]]:
         capped = [text[:_EMBEDDING_CHARACTER_BUDGET] for text in texts]
-        payload = json.dumps({"model": self._model_key, "input": capped}).encode(
-            "utf-8"
-        )
-        request = urllib.request.Request(
-            f"{self._base_url}/v1/embeddings",
-            data=payload,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(
-                request, timeout=self._request_timeout_seconds
-            ) as response:
-                data = json.loads(response.read())["data"]
-        except urllib.error.HTTPError as error:
-            detail = error.read().decode("utf-8", "replace")[:300]
-            raise RuntimeError(
-                f"embedding server HTTP {error.code}: {detail}"
-            ) from error
-        except urllib.error.URLError as error:
-            raise RuntimeError(
-                f"shared llama-swap unreachable at {self._base_url} "
-                f"(is it running?): {error.reason}"
-            ) from error
+        data = post_json(
+            self._base_url,
+            "/v1/embeddings",
+            {"model": self._model_key, "input": capped},
+            timeout=self._request_timeout_seconds,
+            server_label="embedding",
+        )["data"]
         # llama-server returns one item per input; order by "index" to be safe.
         data.sort(key=lambda item: item.get("index", 0))
         return [_l2_normalize_dense(item["embedding"]) for item in data]

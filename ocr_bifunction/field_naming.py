@@ -26,19 +26,17 @@ import json
 import os
 import re
 import unicodedata
-import urllib.error
-import urllib.request
 from dataclasses import dataclass, field
 
 from ocr_bifunction.drafting import DraftingDocument
+from ocr_bifunction.llama_transport import post_json, resolve_base_url
 from ocr_bifunction.template import (
     extract_fields,
     match_template,
     validate_fields,
 )
 
-# Shared llama-swap (same convention as generation.py / suggestion.py).
-_DEFAULT_LLAMA_SWAP_URL = "http://127.0.0.1:8080"
+# Shared llama-swap transport lives in llama_transport (same convention as suggestion.py).
 _DEFAULT_NAMING_MODEL_KEY = "granite-4.0-h-tiny-Q4_K_M"
 # First call may lazy-load the model on CPU (~100 s for granite); later calls are seconds.
 _REQUEST_TIMEOUT_SECONDS = 300.0
@@ -129,11 +127,11 @@ def request_field_names(
     placeholder_names = draft_placeholder_names(draft)
     if not placeholder_names:
         return {}
-    base = (
-        base_url or os.environ.get("LLAMA_SWAP_URL", _DEFAULT_LLAMA_SWAP_URL)
-    ).rstrip("/")
+    base = resolve_base_url(base_url)
     model = model_key or os.environ.get("NAMING_MODEL_KEY", _DEFAULT_NAMING_MODEL_KEY)
-    body = json.dumps(
+    payload = post_json(
+        base,
+        "/completion",
         {
             "model": model,
             "prompt": _build_prompt(draft),
@@ -141,24 +139,10 @@ def request_field_names(
             "temperature": 0.0,
             "n_predict": 256,
             "cache_prompt": True,
-        }
-    ).encode("utf-8")
-    request = urllib.request.Request(
-        f"{base}/completion",
-        data=body,
-        headers={"Content-Type": "application/json"},
-        method="POST",
+        },
+        timeout=timeout,
+        server_label="naming",
     )
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            payload = json.loads(response.read())
-    except urllib.error.HTTPError as error:
-        detail = error.read().decode("utf-8", "replace")[:300]
-        raise RuntimeError(f"naming server HTTP {error.code}: {detail}") from error
-    except urllib.error.URLError as error:
-        raise RuntimeError(
-            f"shared llama-swap unreachable at {base} (is it running?): {error.reason}"
-        ) from error
     reply = json.loads(payload.get("content", "{}"))
     proposed: dict[str, str] = {}
     for entry in reply.get("field_names", []):
