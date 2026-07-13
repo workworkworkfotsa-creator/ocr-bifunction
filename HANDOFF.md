@@ -10,13 +10,24 @@
 > repo ni l'historique (audité 2026-06-26). **Le repo EST sur GitHub (privé — le passage en public = décision utilisateur)** → ne jamais `git add -f` un doc,
 > ne jamais coller de valeur réelle (nom, n°doc, adresse) dans le code, les docs ou un message de commit.
 
-## État au 2026-07-13 — REFACTOR ARCHITECTURE en cours (A + D faits, B à finir)
+## État au 2026-07-13 — REFACTOR ARCHITECTURE TERMINÉ (A/B/C/D/E/F faits)
 
 > Issu de `/improve-codebase-architecture` (rapport HTML généré en temp, non versionné — les 6
-> candidats A–F sont résumés ici). Chaîne de deepenings via `/grilling`. **A + D commités (`8392afb`),
-> B step 1 commité (`1ebd164`)** ; steps 2-3 de B restent (working tree propre à part `CLAUDE.md`).
-> Oracle = smokes autonomes (pas de pytest). Avant de reprendre : `uv run ruff check .` + relancer les
-> smokes listés.
+> candidats A–F sont résumés ici). Chaîne de deepenings via `/grilling`. **Les 6 candidats sont
+> commités** : A+D `8392afb`, B step 1 `1ebd164`, B step 2 (porte) `13a9738`, B step 3 (worker)
+> `4fe9a70`, C `2524abd`, E `12fd457`, F `65eb695`. Oracle = smokes autonomes (pas de pytest) :
+> **18/18 verts** après le refactor complet (`ruff check .` propre). Working tree propre à part
+> `CLAUDE.md` (modif pré-existante, non touchée). **NEXT redevient l'ALLER-RETOUR IT** (bas de page).
+>
+> **Changements de comportement délibérés (grillés, à connaître) :**
+> - Porte : un doc RAG/inconnu remonte désormais `verdict:"review"` sur le wire au lieu de `null`
+>   (status reste `needs_review` — vocabulaire canonique auto/review/reject qu'intake verrouille).
+> - Worker : un doc déclaré type A poussé en async qui matche un template type B est désormais
+>   **non-conforme** (avant : RAG/needs_review) — décision B-4, couvert par `async_type_mismatch_smoke`.
+> - CI escalation reject obéit maintenant à la politique de conformité (iso avec le block par défaut).
+>
+> **Nouveaux fichiers** : `ocr_bifunction/llama_transport.py` (C), `ocr_bifunction/validation.py` (E),
+> `async_type_mismatch_smoke.py` (B-3). `escalation_reject_smoke.py` ré-ancré sur le nouveau seam.
 >
 > **Self-healing review de `HEAD~9..HEAD` passée (2026-07-13, commit `931c4cd`).** 5 agents (sécu /
 > fuites DB / code mort / magic-values / régression). Verdict : refactor **propre** — 0 code mort, 0
@@ -29,12 +40,12 @@
 > clés `SYNC_*`) ou surface config `capacity_settings.py`.
 
 ### Les 6 candidats (rapport d'archi 2026-07-13)
-- **A — Verdict value object** — FAIT (commité `8392afb`).
-- **B — un module de traitement unique** — EN COURS : step 1 fait (commité `1ebd164`), **steps 2-3 à faire** (le crux ci-dessous).
-- **C — transport llama-swap unique** — À FAIRE (risque le plus faible).
-- **D — Store + adaptateur in-memory** — FAIT (commité `8392afb`).
-- **E — scinder `template.py`** au seam ~L202 (extraction vs moteur de verdict) + registre de checks — À FAIRE.
-- **F — durcir le contrat `OcrEngine`/`TextLine`** (confidence/geometry) — À FAIRE.
+- **A — Verdict value object** — FAIT (`8392afb`).
+- **B — un module de traitement unique** — FAIT : step 1 `1ebd164`, step 2 porte `13a9738`, step 3 worker `4fe9a70`. Porte + worker passent par `intake.handle_document` ; helpers dupliqués supprimés (~324 l. dans la porte).
+- **C — transport llama-swap unique** — FAIT (`2524abd`) : `llama_transport.py` (`resolve_base_url` + `post_json`), 5 clients unifiés (generation/lightonocr/suggestion/field_naming/rag).
+- **D — Store + adaptateur in-memory** — FAIT (`8392afb`).
+- **E — scinder `template.py`** — FAIT (`12fd457`) : `validation.py` = moteur de verdict + **registre de checks** (`_CHECK_REGISTRY`) ; `template.py` = extraction + re-export `X as X` (zéro importateur cassé).
+- **F — durcir le contrat `OcrEngine`/`TextLine`** — FAIT (`65eb695`) : `TextLine.__post_init__` fail-loud (bbox len-4 + ordonné, confidence∈[0,1]) + accesseurs `x0/y0/x1/y1/width/height` (fin de l'accès `bbox[0..3]`).
 
 ### A — Verdict value object (FAIT)
 - **`ocr_bifunction/verdict.py`** : `Verdict(AUTO/REVIEW/REJECT)`, `from_reasons(reject, review)` =
@@ -56,7 +67,13 @@
 - **`api_maquette._new_store()`** aux 7 sites (iso-concurrence : 7 connexions, comme avant).
 - Oracle vert : `store_check.py` 7/7 (connexion partagée, round-trip, isolation, migration, path-accept).
 
-### B — un module de traitement unique (EN COURS — step 1 FAIT, steps 2-3 À FAIRE)
+### B — un module de traitement unique (FAIT — step 1/2/3 commités ; plans ci-dessous = archive)
+
+> ✅ **TERMINÉ** (2026-07-13) : step 1 `1ebd164`, step 2 porte `13a9738`, step 3 worker `4fe9a70`.
+> Les plans STEP 2 / STEP 3 ci-dessous ont été exécutés (+ un correctif de fidélité RAG dans
+> `orchestrator._record_from_routed` : reasons « non-structured… » + keywords + fallback catégorie
+> type-déclaré, et champs ci-native `missing` / `verso_read_path` sur `DocumentRecord`). Gardés comme
+> archive du raisonnement, ne pas ré-exécuter.
 
 **Step 1 FAIT** : **`ocr_bifunction/intake.py`** — `handle_document(item, templates_directory, engine, *,
 escalation_engine=None, templates=None, context=None, today=None, conformity_policies=None) ->
