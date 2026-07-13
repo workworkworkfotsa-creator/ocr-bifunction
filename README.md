@@ -136,3 +136,7 @@ docs/                     # contrat de destination, dictionnaire métier, notes 
 ```
 
 Toolchain : `uv`, `ruff`, Python 3.12. Code et commentaires en anglais ; docs métier en français.
+
+## Licence
+
+[MIT](LICENSE) © 2026 Filipe Parente.

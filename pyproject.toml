@@ -1,8 +1,10 @@
 [project]
 name = "ocr-bifunction"
 version = "0.1.0"
-description = "Add your description here"
+description = "Bi-mode document intake — read, categorise, auto-validate the confident, escalate the doubtful"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.12"
 dependencies = [
     "docling>=2.107.0",
