@@ -2,6 +2,14 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## NOT SKIPPABLE CONVENTIONS ##
+
+Don't assume. Don't hide confusion. Surface tradeoffs.
+Minimum code that solves the problem. Nothing speculative.
+Touch only what you must. Clean up only your own mess.
+Define success criteria. Loop until verified.
+When searching for functions or hierarchies in the module, use CodeGraph first (`codegraph_explore` MCP tool, or `codegraph explore "..."` in the shell) then fall back to grep if it fails.
+
 > Cadrage complet + rationale : **[CADRAGE.md](CADRAGE.md)** (doc self-porteur). Ce fichier = guidage
 > opérationnel stable + garde-fous.
 
@@ -46,7 +54,14 @@ tenir **les secondes**. → **petits modèles, faisabilité d'abord**. Un VLM 3B
 (mesuré). Machine partagée entre projets → **demander avant toute exécution lourde** si une autre tâche
 tourne.
 
-## Hors scope (tant que ①② pas verts)
+## Hors scope (tant que ①② pas verts) — LARGEMENT LEVÉ (①② prouvés)
+
+> ⚠️ Section historique : ①② sont prouvés depuis 2026-06, donc ce hors-scope est **levé**. Sont désormais
+> construits (déduits des principes, pas spéculatifs) : stage ③, l'API temps réel maquettée + le worker
+> async, l'UI de revue, la gouvernance (verdict 3 états, non-conformité, politiques, leviers). Détail →
+> [HANDOFF.md](HANDOFF.md). Reste hors-scope réel : le choix FIGÉ du moteur OCR (RapidOCR acté API,
+> LightOnOCR acté escalade) et les décisions IT (cf. aller-retour IT). Le garde-fou anti-cimetière ci-dessous
+> tient toujours : rien de spéculatif au-delà de ce que les principes déduisent.
 
 Stages ③④⑤, les 2 modes complets, UI de revue, gouvernance/trace, choix figé du moteur OCR. Réintroduits
 **après** que la porte d'entrée soit prouvée sur de vrais documents.
@@ -69,11 +84,18 @@ uv run pytest path/to/test_x.py::test_name   # un seul test
 uv run pytest -k "expr" -x    # filtre par nom, stop au 1er échec
 ```
 
-> **État actuel du repo** (2026-06-28) : la porte d'entrée **①②③ est implémentée et prouvée sur de vrais
-> docs** — plus un squelette. Tournent : pipeline CI `process_ci_pair` (recto↔verso, raw-first→enhance-retry,
-> verdict auto/human), MRZ TD1+legacy (4 checksums ICAO dont composite), extraction factures born-digital
-> (mode regex, 4 templates), moteur OCR RapidOCR + **Docling fallback**. Oracle = **runs réels** (pas de
-> pytest). Détail vivant → [HANDOFF.md](HANDOFF.md) ; vision + état du moteur OCR « API » → section ci-dessous.
+> **État actuel du repo** (2026-07-13) : bien au-delà de la porte d'entrée. **①②③ prouvés sur de vrais
+> docs** (pipeline CI `process_ci_pair` recto↔verso raw-first→enhance-retry ; MRZ TD1+legacy, 4 checksums
+> ICAO ; extraction factures born-digital regex ; **verdict 3 états** auto/review/reject) **+ le flux complet
+> maquetté** : porte API (`api_maquette.py`) → politique d'exécution 3 modes → verdict → revue humaine →
+> drafting nightly → promotion → re-match ; worker asynchrone (`worker_watchdog.py`) ; 6 surfaces de config
+> (D1..D6 + leviers). **Architecture approfondie 2026-07-13** (candidats A–F) : `intake.handle_document` =
+> couche de traitement unique que les 2 régimes traversent, `validation.py` = moteur de verdict + registre
+> de checks (scindé de `template.py`), `llama_transport.py` = transport SLM unique, `Verdict`/`Store`
+> unifiés, contrat `OcrEngine`/`TextLine` durci. Moteur OCR : RapidOCR (API) + Docling/LightOnOCR
+> (batch/escalade). Oracle = **smokes autonomes** (~18 verts, pas de pytest). Détail vivant →
+> [HANDOFF.md](HANDOFF.md) ; concepts → [docs/dictionnaire-metier.md](docs/dictionnaire-metier.md) ;
+> contrat BD → [docs/contrat-bd-destination.md](docs/contrat-bd-destination.md).
 
 ## Où on en est + vision émergente (actualisé 2026-06-28)
 
