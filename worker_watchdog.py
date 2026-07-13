@@ -37,7 +37,8 @@ from dataclasses import replace
 from datetime import date
 from pathlib import Path
 
-from ocr_bifunction.pipeline import CiRecord, process_ci_submission
+from ocr_bifunction.intake import handle_document
+from ocr_bifunction.orchestrator import BatchItem
 from ocr_bifunction.reader import OcrEngine, TextLine
 from ocr_bifunction.repository import (
     STATUS_DONE,
@@ -51,18 +52,12 @@ from ocr_bifunction.review_repository import (
     DECISION_ACCEPT,
     SqliteReviewRepository,
 )
-from ocr_bifunction.conformity_policy import (
-    CONFORMITY_ACTION_FLAG_AND_CONTINUE,
-    SqliteConformityPolicyRepository,
-    resolve_conformity_action,
-)
+from ocr_bifunction.conformity_policy import SqliteConformityPolicyRepository
 from ocr_bifunction.context_assembly import collect_validated_attestations
 from ocr_bifunction.drafting_flow import run_draft_pass
 from ocr_bifunction.issuer_registry import SqliteIssuerRegistryRepository
-from ocr_bifunction.router import route_document
 from ocr_bifunction.template import ValidationContext
 from ocr_bifunction.template_repository import SqliteTemplateRepository
-from ocr_bifunction.verdict import Verdict
 
 PROJECT_ROOT = Path(__file__).parent
 TEMPLATES_DIRECTORY = PROJECT_ROOT / "templates"
@@ -103,120 +98,11 @@ def _build_escalation_engine(fake: bool) -> OcrEngine:
     return LightOnOcrEngine()
 
 
-def _terminal_from_record(
-    record: CiRecord | None,
-) -> tuple[str, str | None, dict[str, str | None] | None, list[str]]:
-    """Map an escalated CI result to its D1 terminal state via the shared Verdict mapping:
-    auto -> done, review -> needs_review, reject -> rejected. The anti-fraud verdict is
-    honoured here too — an identity mismatch surfaced by the heavier read is terminal, never
-    softened to review. Verso-read provenance folds into reasons."""
-    if record is None:
-        return STATUS_NEEDS_REVIEW, None, None, ["escalation produced no record"]
-    reasons = [*record.reasons, f"verso read via: {record.verso_read_path}"]
-    return record.verdict.d1_status, record.verdict.value, record.fields, reasons
-
-
 def _spooled_files(job: Job) -> list[Path]:
     spool_directory = Path(job.document_ref) if job.document_ref else None
     if spool_directory is None or not spool_directory.is_dir():
         raise FileNotFoundError(f"spool missing: {job.document_ref!r}")
     return sorted(path for path in spool_directory.iterdir() if path.is_file())
-
-
-def _process_routed_job(
-    job: Job,
-    repository: SqliteRepository,
-    fast_engine: OcrEngine,
-    active_templates: list[dict],
-    validation_context: ValidationContext,
-    conformity_policies: dict,
-) -> str:
-    """A policy-deferred non-CI job: run the 2-lane router on the spooled document and
-    FINALIZE the row (it was enqueued 'unrouted' — routing now says what it really is).
-    Returns the terminal status."""
-    source_paths = _spooled_files(job)
-    # The declared holder travels ON the row (manual entry at the door): it becomes this
-    # job's reconcile_ci reference, layered over the pass-wide context (registry).
-    job_context = replace(
-        validation_context, ci_reference_name=job.expected_holder_name
-    )
-    routed = route_document(
-        source_paths[0],
-        TEMPLATES_DIRECTORY,
-        fast_engine,
-        category=job.category,
-        templates=active_templates,
-        context=job_context,
-        today=date.today(),
-    )
-    if routed.lane == "structured" and routed.verdict is not None:
-        status_value = routed.verdict.d1_status
-        verdict = routed.verdict.value
-        reasons = [*job.reasons, *routed.reasons]
-        if routed.verdict is Verdict.REJECT:
-            # A proven non-conformity in an async lane obeys the same métier policy
-            # as the door: flag_and_continue downgrades to review, flagged.
-            action = resolve_conformity_action(
-                job.category or routed.category, conformity_policies
-            )
-            if action == CONFORMITY_ACTION_FLAG_AND_CONTINUE:
-                status_value = STATUS_NEEDS_REVIEW
-                verdict = Verdict.REVIEW.value
-                reasons = [
-                    "non-conformity FLAGGED (policy: process continues)",
-                    *reasons,
-                ]
-        repository.update_status(
-            job.job_id,
-            status_value,
-            verdict=verdict,
-            record_fields=routed.fields,
-            reasons=reasons,
-            category_lane="structured",
-            category=routed.category,
-            template_id=routed.template_id,
-        )
-    else:
-        reasons = [
-            *job.reasons,
-            "non-structured document — routed to retrieval / human review",
-        ]
-        if routed.summary is not None and routed.summary.keywords:
-            reasons.append("keywords: " + ", ".join(routed.summary.keywords))
-        status_value = STATUS_NEEDS_REVIEW
-        repository.update_status(
-            job.job_id, status_value, reasons=reasons, category_lane="rag"
-        )
-    print(f"  job #{job.job_id}: routed -> {status_value}")
-    return status_value
-
-
-def _process_ci_job(
-    job: Job,
-    repository: SqliteRepository,
-    fast_engine: OcrEngine,
-    escalation_engine: OcrEngine,
-) -> str:
-    """Re-run the spooled CI submission WITH the escalation engine; write the terminal state.
-    Returns the terminal status."""
-    source_paths = _spooled_files(job)
-    result = process_ci_submission(
-        source_paths,
-        fast_engine,
-        TEMPLATES_DIRECTORY,
-        category=job.category,
-        escalation_engine=escalation_engine,
-    )
-    status_value, verdict, fields, reasons = _terminal_from_record(result.record)
-    repository.update_status(
-        job.job_id,
-        status_value,
-        verdict=verdict,
-        record_fields=fields,
-        reasons=reasons,
-    )
-    print(f"  job #{job.job_id}: processed -> {status_value}")
-    return status_value
 
 
 def _process_claimed_job(
@@ -228,26 +114,64 @@ def _process_claimed_job(
     validation_context: ValidationContext,
     conformity_policies: dict,
 ) -> None:
-    """Dispatch a claimed job to its flow (CI pair vs routed single doc).
+    """Process a claimed job through the shared intake handler and write its terminal row.
 
-    Spool policy: purged at every terminal state EXCEPT needs_review (a human reviews
-    the doc next to its extraction) and rejected (the non-conforme evidence goes to the
-    review / compliance). The sweep purges both once a decision lands."""
+    ONE path for both lanes (candidate B): a CI job (`category_lane == 'ci'`) re-runs the
+    recto+verso submission WITH the escalation engine (the heavier VLM verso re-read); any
+    other lane is a policy-deferred single document routed through the 2-lane router.
+    `intake.handle_document` runs the pure core + the declared-vs-recognized type-mismatch
+    check + the non-conformity reaction; this worker only PERSISTS the outcome (it owns the
+    D1 status). Unlike the door there is no uploader to bounce an incomplete/unrecognized CI
+    back to -> it lands in needs_review via the handler's general path (no done-trace edge).
+
+    Spool policy: purged at every terminal state EXCEPT needs_review (a human reviews the
+    doc next to its extraction) and rejected (the non-conforme evidence goes to the review /
+    compliance). The sweep purges both once a decision lands."""
     status_value = STATUS_FAILED
     try:
-        if job.category_lane == "ci":
-            status_value = _process_ci_job(
-                job, repository, fast_engine, escalation_engine
-            )
-        else:
-            status_value = _process_routed_job(
-                job,
-                repository,
-                fast_engine,
-                active_templates,
-                validation_context,
-                conformity_policies,
-            )
+        is_ci = job.category_lane == "ci"
+        item = BatchItem(
+            paths=_spooled_files(job),
+            # CI MUST declare "carte_identite" so the handler dispatches the recto+verso
+            # submission; a routed job carries its own declared category (may be None).
+            document_type="carte_identite" if is_ci else job.category,
+        )
+        # The declared holder travels ON the row (manual entry at the door): it becomes this
+        # job's reconcile_ci reference, layered over the pass-wide context (registry).
+        job_context = replace(
+            validation_context, ci_reference_name=job.expected_holder_name
+        )
+        outcome = handle_document(
+            item,
+            TEMPLATES_DIRECTORY,
+            fast_engine,
+            # Escalation (the heavy VLM verso re-read) is the CI lane's whole reason to be
+            # here; a routed single doc never escalates.
+            escalation_engine=escalation_engine if is_ci else None,
+            templates=active_templates,
+            context=job_context,
+            today=date.today(),
+            conformity_policies=conformity_policies,
+        )
+        reasons = [*job.reasons, *outcome.reasons]
+        if is_ci and outcome.record.verso_read_path:
+            # The escalation provenance (which verso read won) — a CI-only diagnostic with
+            # no D1 column, folded into the reasons for the async follow-up (JobResponse).
+            reasons.append(f"verso read via: {outcome.record.verso_read_path}")
+        repository.update_status(
+            job.job_id,
+            outcome.status,
+            verdict=outcome.verdict,
+            record_fields=outcome.record.fields,
+            reasons=reasons,
+            # A CI stays 'ci'; a routed 'unrouted' job is finalized to what it turned out to
+            # be (structured/rag), or 'structured' when a type-mismatch reclassified it.
+            category_lane=outcome.record.lane,
+            category=outcome.record.category,
+            template_id=outcome.record.template_id,
+        )
+        status_value = outcome.status
+        print(f"  job #{job.job_id}: processed -> {status_value}")
     except Exception as error:  # terminal failure lands IN the row, never hidden
         repository.update_status(
             job.job_id,

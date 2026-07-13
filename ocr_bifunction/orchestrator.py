@@ -72,6 +72,10 @@ class DocumentRecord:
     missing: list[str] = field(
         default_factory=list
     )  # ci lane only: the side(s) an incomplete/unrecognized submission is missing
+    verso_read_path: str | None = (
+        None  # ci lane only: which read won the verso MRZ (raw|enhance|escalation) — the
+        # escalation-provenance diagnostic the async worker folds into the row's reasons
+    )
 
 
 @dataclass
@@ -172,6 +176,7 @@ def _record_from_ci(result: CiSubmissionResult, item: BatchItem) -> DocumentReco
             template_id=record.template_id,
             fields=record.fields,
             reasons=record.reasons,
+            verso_read_path=record.verso_read_path,
         )
     # incomplete (a side missing) or unrecognized -> the human queue. `missing` names the
     # side(s) to ask the uploader for (the wire contract's `missing`, kept on the record).
