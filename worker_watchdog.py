@@ -1,7 +1,7 @@
 """Watchdog worker — the SEPARATE process that owns every D1 status transition.
 
     uv run python worker_watchdog.py                 # loop (Ctrl+C to stop after current job)
-    uv run python worker_watchdog.py --once          # one pass and exit (cron parity + smokes)
+    uv run python worker_watchdog.py --once          # one pass and exit (scheduler parity + smokes)
     uv run python worker_watchdog.py --fake-escalation   # smoke seam: no VLM, no llama
 
 The queue IS the table (repository.py doctrine): a doubtful submission is a D1 row
@@ -15,7 +15,7 @@ One pass does, in order:
                 take the same row): 'escalation' (doubtful CI, re-run WITH the VLM) and
                 'deferred' (execution policy async_immediate, routed through the 2-lane
                 router) always; 'nightly' (policy async_nightly) only with `--nightly` —
-                the night cron runs `--once --nightly`. Terminal state written, spool dir
+                the night scheduler runs `--once --nightly`. Terminal state written, spool dir
                 purged (PII hygiene). Strictly ONE job at a time (8 GB target).
   3. SWEEP    — D3 decisions (accept/reject) on jobs still `needs_review` close those D1 rows
                 (accept -> done, reject -> failed): the UI wrote D3, THIS process writes D1.
@@ -237,7 +237,7 @@ def _sweep_decisions(
 
 
 # The continuously running watchdog drains the doubt escalations AND the policy's
-# async_immediate lane; 'nightly' rows wait for a `--nightly` pass (the night cron seam).
+# async_immediate lane; 'nightly' rows wait for a `--nightly` pass (the night-scheduler seam).
 CONTINUOUS_EXECUTION_LANES = ("escalation", "deferred")
 
 
@@ -289,7 +289,7 @@ def main() -> int:
         "--store", default=os.environ.get("OCR_STORE_PATH", "ocr_store.sqlite")
     )
     parser.add_argument(
-        "--once", action="store_true", help="One pass and exit (cron parity)."
+        "--once", action="store_true", help="One pass and exit (scheduler parity)."
     )
     parser.add_argument(
         "--interval", type=float, default=5.0, help="Loop poll seconds."
@@ -314,7 +314,7 @@ def main() -> int:
         help=(
             "Also drain the 'nightly' lane (execution policy async_nightly) AND run the "
             "DRAFT pass (cluster the accumulated unknowns -> draft templates -> stage "
-            "D3 suggestions). The night cron runs `--once --nightly`; the continuous "
+            "D3 suggestions). The night scheduler runs `--once --nightly`; the continuous "
             "watchdog leaves both alone."
         ),
     )

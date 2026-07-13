@@ -20,7 +20,7 @@ continue » — three actions:
 
 Same governance as the execution policies: defaults IN CODE, seed inserts missing rows
 only (operator edits survive), '*' is the fallback row, edited through the /policies
-page with immediate effect. SQLite is the jettisonable proxy of the MariaDB table.
+page with immediate effect. SQLite is the jettisonable proxy of the internal target-DB table.
 """
 
 from __future__ import annotations
@@ -108,7 +108,7 @@ CREATE TABLE IF NOT EXISTS ocr_conformity_policies (
 
 
 class SqliteConformityPolicyRepository(ConformityPolicyRepository):
-    """The jettisonable SQLite proxy — same table shape IT will build in MariaDB 5.5."""
+    """The jettisonable SQLite proxy — same table shape IT will build on the internal target DB."""
 
     def __init__(self, store: Store | str | Path = "ocr_store.sqlite") -> None:
         self._store = store if isinstance(store, Store) else Store(store)

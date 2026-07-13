@@ -13,7 +13,7 @@ silently dropping `reject`. This value object is the single authority:
 Canonical vocabulary (business glossary + `needs_review` status): auto / review / reject.
 `Verdict` is the currency INSIDE the compute lanes; the DB column and the wire JSON stay
 strings, serialized at the edge via `.value` / `.d1_status` / `.wire_status` (the `Job` DTO
-is the MariaDB contract row — stringly typed there on purpose). `.value` doubles as the batch
+is the internal-DB contract row — stringly typed there on purpose). `.value` doubles as the batch
 `DocumentRecord.outcome` (auto/review/reject), so there is no separate outcome mapping.
 """
 

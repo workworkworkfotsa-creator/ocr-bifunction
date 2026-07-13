@@ -103,7 +103,7 @@ Trois modes :
 - **async_immediate** — spool + ligne D1 `received` en lane `deferred`, drainée par le watchdog
   qui tourne en continu (minutes).
 - **async_nightly** — même mécanique en lane `nightly`, drainée UNIQUEMENT par la passe de nuit
-  (`worker_watchdog.py --once --nightly` = le cron IT).
+  (`worker_watchdog.py --once --nightly` = l'ordonnanceur de nuit interne).
 
 Résolution à la porte : la ligne de la catégorie gagne, sinon la ligne `*` (défaut, non supprimable).
 Le client de l'API peut envoyer un `processing_mode` optionnel — honoré **seulement** si la politique

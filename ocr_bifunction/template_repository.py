@@ -2,7 +2,7 @@
 
 The template library made a real store. Per the fabrique doctrine (skill handoff-it) the CONTRACT
 that crosses to IT is the TABLE; the storage engine is a jettisonable adapter behind a
-`TemplateRepository` ABC (IT swaps `SqliteTemplateRepository` for a `MariaDbTemplateRepository`).
+`TemplateRepository` ABC (IT swaps `SqliteTemplateRepository` for an internal-DB implementation).
 
 D2 EMERGES here, from the D3->D2 promotion (cf. HANDOFF plan): until a validated suggestion needed
 to WRITE a template, the committed `templates/*.json` served reads fine (YAGNI). Now that the growth
@@ -14,9 +14,9 @@ committed JSON files are the anonymized SEED (`seed_from_directory`); the table 
 `extract_fields` (template.py) consume it UNCHANGED — we do not touch the read logic, we back it.
 
 Owner (contrat-bd-destination.md): the Backoffice / métier expert curates D2; the async worker only
-READS active templates. MariaDB target (co-freeze with IT): explicit timestamps, utf8, InnoDB,
-`active` a TINYINT, index ≤767 o. SQLite is the proxy; the DB file may carry curated anchors and is
-gitignored.
+READS active templates. Internal target-DB shape (co-freeze with IT): explicit timestamps, a
+portable engine/charset, `active` a small integer flag, mind index byte limits. SQLite is the proxy;
+the DB file may carry curated anchors and is gitignored.
 """
 
 from __future__ import annotations
@@ -30,8 +30,8 @@ from ocr_bifunction.store import Store
 
 
 class TemplateRepository(ABC):
-    """The D2 store seam. IT swaps the SQLite proxy for a MariaDB implementation; the worker reads
-    active templates through it, and promotion (D3->D2) writes through it."""
+    """The D2 store seam. IT swaps the SQLite proxy for an internal-DB implementation; the worker
+    reads active templates through it, and promotion (D3->D2) writes through it."""
 
     @abstractmethod
     def upsert(self, template: dict, *, active: bool = True) -> None:
@@ -70,7 +70,7 @@ CREATE INDEX IF NOT EXISTS idx_ocr_templates_active ON ocr_templates (active, ca
 """
 
 # Columns added after the first proxy shipped; existing local .sqlite files gain them on
-# open (proxy-only migration — the MariaDB DDL at handoff bakes them in).
+# open (proxy-only migration — the target-DB DDL at handoff bakes them in).
 _MIGRATION_COLUMNS = {
     "reference_roles_json": (
         "ALTER TABLE ocr_templates ADD COLUMN reference_roles_json TEXT"
@@ -79,12 +79,12 @@ _MIGRATION_COLUMNS = {
 
 
 class SqliteTemplateRepository(TemplateRepository):
-    """The jettisonable SQLite proxy of D2 — same table shape IT will build in MariaDB.
+    """The jettisonable SQLite proxy of D2 — same table shape IT will build on the internal target DB.
 
     The match/fields/validation blocks are stored as JSON columns (they travel with the template);
     `active_templates` rebuilds the exact dict shape the committed JSON templates have, so the
     deterministic read path (match_template/extract_fields) is unchanged. Timestamps are explicit
-    (MariaDB 5.5 has no DEFAULT CURRENT_TIMESTAMP); the clock is injectable for tests."""
+    (the target DB may lack DEFAULT CURRENT_TIMESTAMP); the clock is injectable for tests."""
 
     def __init__(self, store: Store | str | Path = "ocr_store.sqlite") -> None:
         self._store = store if isinstance(store, Store) else Store(store)

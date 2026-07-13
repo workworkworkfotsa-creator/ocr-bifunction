@@ -11,7 +11,7 @@ Three execution modes, one resolution rule:
   - async_immediate — spooled + queued, drained by the CONTINUOUSLY running watchdog
                       (minutes; execution_lane 'deferred').
   - async_nightly   — spooled + queued, drained only by the nightly pass
-                      (`worker_watchdog.py --nightly`, cron parity; execution_lane 'nightly').
+                      (`worker_watchdog.py --nightly`, scheduler parity; execution_lane 'nightly').
 
 Resolution: the policy row for the document's category wins; missing category falls back
 to the '*' default row. The API caller may send an optional `processing_mode` hint — it is
@@ -22,7 +22,7 @@ Fabrique doctrine (skill handoff-it, "leviers" pattern): defaults live IN CODE
 (`DEFAULT_EXECUTION_POLICIES`), the DB table (`ocr_execution_policies`) is the override
 store edited through the /policies UI without redeploy, and `seed_defaults` only inserts
 MISSING rows so operator edits survive restarts. The SQLite store is the jettisonable
-proxy of the MariaDB table (explicit timestamps, 5.5-safe shape).
+proxy of the internal target-DB table (explicit timestamps, portable shape).
 """
 
 from __future__ import annotations
@@ -132,8 +132,8 @@ def resolve_execution(
 
 
 class ExecutionPolicyRepository(ABC):
-    """The policy store seam. IT swaps the SQLite proxy for MariaDB; the door reads it,
-    the /policies UI writes it (one writer, no cron involved)."""
+    """The policy store seam. IT swaps the SQLite proxy for the internal DB; the door reads it,
+    the /policies UI writes it (one writer, no scheduler involved)."""
 
     @abstractmethod
     def upsert(self, policy: ExecutionPolicy) -> None:
@@ -171,7 +171,7 @@ CREATE TABLE IF NOT EXISTS ocr_execution_policies (
 
 
 class SqliteExecutionPolicyRepository(ExecutionPolicyRepository):
-    """The jettisonable SQLite proxy — same table shape IT will build in MariaDB 5.5
+    """The jettisonable SQLite proxy — same table shape IT will build on the internal target DB
     (explicit timestamps, TINYINT-like flag, short PK)."""
 
     def __init__(self, store: Store | str | Path = "ocr_store.sqlite") -> None:

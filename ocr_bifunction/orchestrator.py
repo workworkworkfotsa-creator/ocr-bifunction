@@ -14,7 +14,7 @@ only for the CI verso, exactly as in the pipeline; the batch can afford it.
 
 PERSISTENCE IS DELIBERATELY OUT OF SCOPE HERE. `process_batch` RETURNS a `BatchResult`
 (records + the auto/review split); where those records land — a SQLite store, a JSON/CSV dump,
-a MariaDB table on the IT side — is a separate SINK that plugs onto `BatchResult`. That seam is
+an internal DB table on the IT side — is a separate SINK that plugs onto `BatchResult`. That seam is
 the ④/⑤ contract to co-freeze with IT; this module stays storage-agnostic on purpose.
 """
 
@@ -82,7 +82,7 @@ class DocumentRecord:
 class BatchResult:
     """Every record from the batch, and the ④/⑤ split derived from each record's outcome.
 
-    This is the SINK SEAM: a persistence step (SQLite / JSON / MariaDB) consumes `records`
+    This is the SINK SEAM: a persistence step (SQLite / JSON / internal DB) consumes `records`
     (or the `auto` / `review` views) — it is intentionally not decided here."""
 
     records: list[DocumentRecord] = field(default_factory=list)

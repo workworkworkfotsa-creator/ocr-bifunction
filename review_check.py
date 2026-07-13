@@ -3,7 +3,7 @@
     uv run python review_check.py [--store PATH]
 
 Mechanically drives the organic-growth loop on synthetic (PII-free) D1 jobs, in ONE store file
-(the "one MariaDB, prefixed tables" target — ocr_jobs is D1, ocr_reviews is D3):
+(the "one internal DB, prefixed tables" target — ocr_jobs is D1, ocr_reviews is D3):
   1. seed a couple of `needs_review` jobs in D1 (what the worker leaves behind);
   2. D3 opens a review per job, its `projection` a VIEW of the D1 record (not a copy — the record's
      single source of truth stays in D1, referenced by job_id);

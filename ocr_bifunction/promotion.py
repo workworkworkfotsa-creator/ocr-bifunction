@@ -11,8 +11,8 @@ Two shapes of curated template reach promotion (the human curates; the SLM only 
     id but match_template missed the doc's layout.
 Either way the human owns the content; promotion just activates it and closes the D3 suggestion.
 
-The real MariaDB does the D2 write + D3 status flip as ONE transaction; the SQLite proxy does them in
-sequence (two separate-connection stores) — the seam is what crosses to IT, the atomicity is theirs.
+The real internal DB does the D2 write + D3 status flip as ONE transaction; the SQLite proxy does them
+in sequence (two separate-connection stores) — the seam is what crosses to IT, the atomicity is theirs.
 No PII in curated anchors that get committed anywhere: keep them structural (a public repo rule).
 """
 
@@ -52,8 +52,8 @@ def promote_suggestion(
     """Activate a curated template in D2 and mark the D3 suggestion validated — the promotion step.
 
     `curated_template` is the human-owned content (a brand-new template, or one from
-    grow_template_from_base). Returns the activated template_id. The MariaDB target wraps both writes
-    in one transaction; here the two proxy stores are written in sequence (D2 then D3)."""
+    grow_template_from_base). Returns the activated template_id. The internal target DB wraps both
+    writes in one transaction; here the two proxy stores are written in sequence (D2 then D3)."""
     template_repository.upsert(curated_template, active=True)
     review_repository.set_suggestion_status(review_id, SUGGESTION_VALIDATED)
     return curated_template["template_id"]

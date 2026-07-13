@@ -9,13 +9,15 @@
 ## Principe
 
 **Le contrat qui traverse la frontière POC→prod = les tables.** Le reste — mécanisme de queue,
-moteurs OCR, worker, UI — est un **adaptateur jetable**. Physiquement côté IT : **1 MariaDB `tools`,
-tables préfixées** (pas 3 bases). « 3 BD » = **3 domaines** = 3 lifecycles + 3 propriétaires distincts.
+moteurs OCR, worker, UI — est un **adaptateur jetable**. Physiquement côté IT : **1 base relationnelle
+interne, tables préfixées** (pas 3 bases). « 3 BD » = **3 domaines** = 3 lifecycles + 3 propriétaires distincts.
+(Le produit + version exacts de la BD cible sont un détail d'intégration — hors de ce dépôt public,
+fixés avec l'IT au gel du schéma.)
 
 > **Mécanisme de connexion (proxy)** : depuis 2026-07-13 la connexion + le schéma + la migration
 > du proxy SQLite vivent dans **UN** `ocr_bifunction/store.py` (`class Store`) ; les 7 repos le
 > reçoivent (`Store | chemin`) au lieu d'ouvrir chacun leur connexion. C'est le **point de swap IT** :
-> un adaptateur MariaDB remplace `Store` derrière les 7 mêmes interfaces de repo. `Store(":memory:")`
+> un adaptateur pour la BD cible interne remplace `Store` derrière les 7 mêmes interfaces de repo. `Store(":memory:")`
 > = la même SQL en mémoire pour les tests (repos partageant une connexion). Chaque repo garde SON
 > `CREATE TABLE` (locality) ; le Store ne fait que l'exécuter.
 
@@ -44,13 +46,14 @@ attente** (un worker les dépile ; mécanisme = adaptateur). Colonnes (esquisse)
   preuve) — PII hygiène, un seul purgeur par phase
 - `execution_lane` : `fast` | `escalation` (CI douteuse, VLM) | `deferred` (politique
   `async_immediate`, drainée en continu) | `nightly` (politique `async_nightly`, drainée
-  par la passe de nuit `--nightly` — le cron IT)
+  par la passe de nuit `--nightly` — l'ordonnanceur de nuit interne)
 - `status` : `received` | `processing` | `needs_review` | `done` | `rejected` | `failed`
 - `verdict` : `auto` | `review` | `reject` | null (= `Verdict.value` ; l'ancien `human` retiré
   2026-07-12, vocabulaire unifié — **à re-signaler au gel IT**) ; `reasons` (texte/JSON)
 - `verso_read_path` : `raw` | `enhance` | `escalation` | `none`
 - **le RECORD extrait** (champs consolidés) = **ici, source de vérité unique**
-- `created_at`, `updated_at` (**`NOW()` explicite** — MariaDB 5.5 n'a pas `DEFAULT CURRENT_TIMESTAMP`)
+- `created_at`, `updated_at` (**timestamps écrits explicitement** — la BD cible peut ne pas avoir
+  `DEFAULT CURRENT_TIMESTAMP` selon sa version ; le proxy les écrit déjà, donc portable)
 
 ## Domaine 2 — Templates (Backoffice curate)
 
@@ -121,8 +124,8 @@ chaque requête — s'adapte au hardware du jour J sans redéploy). Table géné
 
 **Notes worst-case pour l'IT (limites assumées du proxy, à traiter à l'intégration)** :
 - pas de kill mi-OCR d'un thread Python → le timeout dur par requête = **gateway/reverse-proxy IT** ;
-- le verrou global + la connexion SQLite unique sont des artefacts du proxy → MariaDB apporte la
-  vraie concurrence ; les scans par requête (`attestations validées`, `rejected` par titulaire)
+- le verrou global + la connexion SQLite unique sont des artefacts du proxy → la BD cible interne
+  apporte la vraie concurrence ; les scans par requête (`attestations validées`, `rejected` par titulaire)
   deviennent des **requêtes indexées** (index `status`, `expected_holder_name`, `template_id`) ;
 - multi-process : la porte est stateless SAUF le cache d'idempotence en mémoire (borné LRU) — le
   `request_id` étant en D1, une idempotence cross-process peut se re-dériver de la table ;
@@ -133,14 +136,14 @@ chaque requête — s'adapte au hardware du jour J sans redéploy). Table géné
 | Écrivain | Écrit | Lit seulement |
 |---|---|---|
 | **Worker async (Python)** | D1 (status, verdict, record) | D2 (templates actifs) |
-| **UI de revue (humain / PHP)** | D3 (comment, decision, suggestions) | D1 (`needs_review`) |
+| **UI de revue (humain, UI interne)** | D3 (comment, decision, suggestions) | D1 (`needs_review`) |
 | **Promotion (transaction)** | D2 (template activé) | D3 (suggestion validée) |
-| **UI politiques (opérateur + métier / PHP)** | D4 (`ocr_execution_policies`), D6 (`ocr_conformity_policies`), leviers (`ocr_capacity_settings`) | — |
-| **UI registre (expert métier / PHP)** | D5 (`ocr_issuer_registry`) | — |
+| **UI politiques (opérateur + métier, UI interne)** | D4 (`ocr_execution_policies`), D6 (`ocr_conformity_policies`), leviers (`ocr_capacity_settings`) | — |
+| **UI registre (expert métier, UI interne)** | D5 (`ocr_issuer_registry`) | — |
 | **Porte API (Python)** | D1 (insertion des jobs) | D4 (résolution sync/async), D2, D5 (contexte de conformité), D6 (réaction) |
 | **Passe DRAFT nightly (Python)** | D3 (suggestions stagées) | D1 (`needs_review` + spool), D2 (ids libres) |
 
-L'UI **lit** le `status` D1, ne le réécrit jamais → pas de course Python↔PHP sur la même ligne.
+L'UI **lit** le `status` D1, ne le réécrit jamais → pas de course Python↔UI interne sur la même ligne.
 
 ## La 4e surface — leviers algo (PAS une BD)
 
@@ -160,6 +163,8 @@ Checklist « changer X et Y sur Linux » → **[deploiement-linux-serving-slm.md
 ## À co-geler avec l'IT (le jour J)
 
 - Geler le schéma **conjointement + daté** ; négocier toute évolution de forme (leçon `partner_sources`).
-- **Valider contre la vraie cible** (MariaDB 5.5 / Antelope) : `NOW()` explicite, index ≤ 767 o utf8mb4,
-  pas de SQL arbitraire ni de creds en UI, PK composite portée par une clé partenaire si multi-partenaire.
+- **Valider contre la vraie cible** (le produit/version + format de ligne de la BD interne, à
+  confirmer avec l'IT) : timestamps écrits explicitement, **attention aux limites de taille d'index**
+  selon l'encodage et le format de ligne de la cible, pas de SQL arbitraire ni de creds en UI, PK
+  composite portée par une clé partenaire si multi-partenaire.
 - Fournir un `CLAUDE.md` par sous-livrable + une section « Pour le Claude de l'IT ».

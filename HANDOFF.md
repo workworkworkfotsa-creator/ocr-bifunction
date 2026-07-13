@@ -189,7 +189,7 @@ sur Linux (checklist → `docs/deploiement-linux-serving-slm.md`).
 
 > ▶ **NEXT — l'ALLER-RETOUR IT.** L'ordre du jour de la première réunion = les 8 questions du
 > `LISEZMOI_HANDOFF.md` ; les 3 qui débloquent tout : **(1) porte option A (serveur Python temps
-> réel) vs B (PHP tout-async)**, **(2) version MariaDB réelle** (DDL à co-geler + dater),
+> réel) vs B (tout-async côté UI interne)**, **(2) version de la BD cible interne** (DDL à co-geler + dater),
 > **(3) qui héberge llama-swap et avec quelle RAM** (→ leviers). Après la réunion : figer les
 > décisions ICI + ouvrir le `plan_integration.md` dans `0_Aller_retour_IT/`.
 >
@@ -305,7 +305,7 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   (architecture complète porte/router/watchdog + D1..D6 + leviers, 3 modes, verdicts/non-conformité,
   smokes — public-safe, zéro détail de stack interne). (2) **Handoff IT spécifique** →
   `0_Aller_retour_IT/ocr_bifunction_handoff_2026-07-12/LISEZMOI_HANDOFF.md` (GITIGNORÉ — détails de
-  stack interne) : décision n°1 à trancher (porte Python option A vs PHP tout-async option B),
+  stack interne) : décision n°1 à trancher (porte Python option A vs tout-async côté UI interne option B),
   garder/réécrire/jeter, checklist Windows→Linux, PII/rétention, **8 questions ouvertes pour la
   première réunion**, brief « Pour le Claude de l'IT ». (3) **GitHub** : repo **PRIVÉ**
   `workworkworkfotsa-creator/ocr-bifunction` créé via API (gh absent ; credentials GCM) + master
@@ -345,7 +345,7 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   Régressions vertes : flow 14/14, policy 20/20, conformity 12/12, holder 5/5, corroboration 7/7,
   severity 8/8, ui_smoke. **Limites assumées, notées au contrat (section « Leviers infra ») pour
   l'IT** : timeout dur mi-OCR = gateway IT (on ne tue pas un thread Python proprement) ; verrou
-  global + connexion SQLite unique = artefacts du proxy (MariaDB + index les remplacent) ;
+  global + connexion SQLite unique = artefacts du proxy (la BD cible interne + index les remplacent) ;
   idempotence cross-process re-dérivable de D1 ; concurrence watchdog = levier futur.
 - **Sévérité PAR CHECK — le bouton métier « durcir / adoucir » construit + prouvé `severity_smoke.py`
   8/8 (dette du bullet précédent SOLDÉE, demande utilisateur « à construire »).** Une règle du bloc
@@ -456,7 +456,7 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   « leviers » handoff-it — défauts DANS le code `DEFAULT_EXECUTION_POLICIES`, seed idempotent qui
   n'écrase JAMAIS une édition opérateur). 3 modes : `sync` (dans la requête) / `async_immediate`
   (lane D1 `deferred`, watchdog continu) / `async_nightly` (lane `nightly`, drainée SEULEMENT par
-  `worker_watchdog.py --nightly` = le seam cron IT). **Résolution pure** (`resolve_execution`) : ligne
+  `worker_watchdog.py --nightly` = le seam ordonnanceur de nuit interne). **Résolution pure** (`resolve_execution`) : ligne
   catégorie sinon `*` ; hint client `processing_mode` honoré SEULEMENT si `override_allowed` (défauts
   seedés : `*`=sync+override, `carte_identite`=sync VERROUILLÉE — son doute escalade par son propre
   chemin) ; tout tracé dans `reasons`. Câblage : la porte `validate_document` résout AVANT de
@@ -662,7 +662,7 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   affichage seul. ⚠️ Contrainte session : **zéro SLM (stress test VRP)** — preuves fake-engine + born-digital.
   (1) **D1 durci** (`repository.py`) : colonnes `document_ref` (pointeur spool — était déjà dans le sketch
   contrat) + `attempts` (+ migration auto des .sqlite existants) ; **`claim_next`** = claim ATOMIQUE portable
-  (SELECT candidat → `UPDATE … WHERE status='received'`, rowcount 0 = pris — MariaDB-compatible) ;
+  (SELECT candidat → `UPDATE … WHERE status='received'`, rowcount 0 = pris — portable BD cible) ;
   **`recover_stale`** = lease timeout (crash mi-job → `processing` périmé re-devient `received` ; cap
   `attempts` → `failed` = anti poison-pill). (2) **API = pure porte** (`api_maquette.py`) : worker
   thread/queue.Queue SUPPRIMÉS (perdaient les jobs au restart) ; le douteux est **spoolé sur disque**
@@ -670,7 +670,7 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   mémoire) + row `received` ; **persist-all** : CHAQUE issue laisse une row D1 (`done`/auto avec record,
   `needs_review` sync, `received`) → `job_id` sur TOUTES les réponses. (3) **`worker_watchdog.py`** : recover
   → drain (1 job à la fois, 8 Go) → **sweep décisions D3** (accept→`done`, reject→`failed` — l'UI écrit D3,
-  le WORKER écrit D1, idempotent par construction) ; `--once` (parité cron IT + smokes), `--fake-escalation`
+  le WORKER écrit D1, idempotent par construction) ; `--once` (parité ordonnanceur + smokes), `--fake-escalation`
   (seam smoke sans VLM), **PID-lockfile** (2e instance refuse). D3 gagne `decided()`. **Prouvé** : micro-smoke
   claim/lease/poison-pill/migration ; cycle réel door→**watchdog process séparé**→done (`api_smoke_async.py`
   réécrit : lance le VRAI process, assert « claimed job » dans sa sortie) ; PID-lock refuse (exit 2) ; sweep
@@ -718,7 +718,7 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   `extract_fields` (`template.py`) le consomment **INCHANGÉS** (on back le read path, on ne le touche pas). D2
   émerge MAINTENANT car la promotion en a besoin d'écrire (avant : fichiers OK en lecture, YAGNI). **Seam de
   promotion** (`ocr_bifunction/promotion.py`, l'écrivain « Promotion » du contrat) : `promote_suggestion` upsert
-  un template **actif** en D2 + flip `suggestion_status`→`validated` (transaction unique côté MariaDB ; en proxy,
+  un template **actif** en D2 + flip `suggestion_status`→`validated` (transaction unique côté BD cible interne ; en proxy,
   2 stores séparés en séquence) ; `grow_template_from_base` (pur) mint une variante réutilisant fields/validation
   d'une base quand le SLM pointe un id connu mais que `match_template` a raté le layout. **Prouvé déterministe
   (sans llama, PII-safe, `promotion_check.py`)** : D2 seedée moins `facture_entrante_03` → doc **miss**
@@ -750,7 +750,7 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   Domaine 3 (revue/curation) rendu réel, **séparé de D1** (autre propriétaire : l'UI de revue écrit D3, le
   worker écrit D1 ; D3 **référence** le job par `job_id`, **ne duplique pas** le record — source unique en D1).
   `ocr_bifunction/review_repository.py` : **`ReviewRepository` ABC** (seam DI → l'IT swappe un
-  `MariaDbReviewRepository`) + **`SqliteReviewRepository`**, table **`ocr_reviews`** (review_id PK, job_id FK,
+  adaptateur BD interne) + **`SqliteReviewRepository`**, table **`ocr_reviews`** (review_id PK, job_id FK,
   `projection` = **vue** pour l'humain PAS 2e vérité, `comment`/`decision` accept|reject, suggestion =
   `suggested_template_id`/`category`/`anchors`/`suggestion_status`). **La comm = la colonne `suggestion_status`**
   (comme `status` en D1) : suggestion en attente = `pending`, l'humain flippe → `validated` (→ promotion D2,
@@ -783,10 +783,10 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   = run réel, pas de pytest.
 - **#2 sink ④⑤ — D1 proxy (store jobs+records) bâti + comm async prouvée.** Décision utilisateur : **table, PAS
   JSON** (« JSON = temporaire ; table = organisation du travail ; le JSON vit en COLONNE »). `ocr_bifunction/
-  repository.py` : **`Repository` ABC** (seam DI → l'IT swappe un `MariaDbRepository`, doctrine fabrique) +
+  repository.py` : **`Repository` ABC** (seam DI → l'IT swappe un adaptateur BD interne, doctrine fabrique) +
   **`SqliteRepository`** (proxy jetable), table **`ocr_jobs`** = record consolidé (**source unique**) + `status`
   (`received`/`processing`/`needs_review`/`done`/`failed`) + `execution_lane` (`fast`/`escalation`) + `verdict`
-  + `record_fields`/`reasons` en **colonnes JSON** ; timestamps **explicites** (MariaDB 5.5 sans DEFAULT
+  + `record_fields`/`reasons` en **colonnes JSON** ; timestamps **explicites** (la BD cible peut ne pas avoir DEFAULT
   CURRENT_TIMESTAMP). **La comm inter-tables = la colonne `status`** (pas de bus) : « record en attente d'async »
   = `pending('received','escalation')`, le worker dépile → `processing` → `done` + record réécrit. La
   **suggestion-template** suivra le MÊME loop (autre type ; D3 réf D1 par `job_id`). Garde-fou course = **1 seul
@@ -802,7 +802,7 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   lane, `outcome` ∈ {auto, review}, detail, fields, reasons, summary). `BatchResult` expose le **split ④/⑤**
   (`.auto` = centralise-ready, `.review` = file de revue humaine). Escalade LightOCR câblée pour le verso CI
   seulement (opt-in `--escalate`). **Persistance VOLONTAIREMENT hors-scope** : `process_batch` RETOURNE les
-  records, le SINK (SQLite/JSON/MariaDB) se branche sur `BatchResult` — c'est le contrat ④/⑤ à co-geler avec
+  records, le SINK (SQLite/JSON/BD interne) se branche sur `BatchResult` — c'est le contrat ④/⑤ à co-geler avec
   l'IT (#2, non figé). Runner `batch_check.py` (lazy RapidOCR ; `--ci` groupe une submission ; `--escalate`).
   **Prouvé** (mix réel, sans llama) : `14a FACTURE…`→STRUCTURED/**auto** (facture_entrante_03, total_ht
   5909.74) ; courrier mise-en-demeure→RAG/review ; screenshot log-API→RAG/review (RapidOCR a tiré, aucun
@@ -883,8 +883,8 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   groupe Europe → millions de chunks) **très fréquemment consulté**, **batch nuit OK**, et **toujours
   lier la lecture au doc source**. Décision DB : **pas de vector DB selon la PORTÉE de requête** —
   par-partenaire (cas réaliste) = working-set petit → **force brute**, partitionné `partner_id` →
-  MariaDB suffit même ancien ; global cross-partenaires = **ANN** (MariaDB 11.8+ HNSW natif / vector DB
-  dédié). Store = millions de lignes persistées → **décision destination/IT à co-geler**, pas un build
+  la BD relationnelle interne suffit même ancienne ; global cross-partenaires = **ANN** (index vectoriel
+  natif récent / vector DB dédié). Store = millions de lignes persistées → **décision destination/IT à co-geler**, pas un build
   POC. Code (`rag.py`) : `Chunk` porte `ProvenanceSpan` (page+bbox = lien au source) + `heading` ;
   `chunk_textlines` (packing avec provenance depuis `reader` TextLines) ; `segment_articles` (découpe
   par article **romain ET arabe**, **TOC dédupliqué** par corps-max, **éclatement de blocs** pour les
@@ -1094,12 +1094,12 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
 3. **Lane suggestion-template** (SLM/GBNF) — spec → `docs/briefs/BRIEF-suggestion-template.md` (global, plus tard).
 4. **Validation facture — extensions** (si corpus s'élargit) : TVA non nulle réelle ; décimales mixtes ; multi-taux.
 - **Async côté IT (différé, leur territoire)** : `_jobs` dict → table `ocr_jobs_*` (D1), worker Python →
-  cron/queue réelle, idempotence/job store persistés. Cf. `docs/contrat-bd-destination.md` (co-geler jour J).
+  ordonnanceur/queue réels, idempotence/job store persistés. Cf. `docs/contrat-bd-destination.md` (co-geler jour J).
 - Dettes mineures : décimales virgule/point ; date textuelle `facture_entrante_03` ; mmproj F32 (qualité max ; Q8 déjà OK).
 
 ## Suivis ouverts
 - **Contrat BD destination (sketch, NON figé)** → `docs/contrat-bd-destination.md` : 3 domaines (jobs+queue
-  / templates / revue-curation), 1 MariaDB préfixée, record source-unique en D1, critères avec le template,
+  / templates / revue-curation), 1 base relationnelle interne préfixée, record source-unique en D1, critères avec le template,
   leviers algo hors-BD, contrat de colonnes. Vue sur la cible — à **co-geler avec l'IT** le jour J.
 - **CLAUDE.md « État actuel du repo »** = **périmé** (dit « archi pas implémentée » alors que ①②③ + MRZ
   tournent). À actualiser + ajouter la carte des modules. Cf. mémoire `claudemd-module-map-pending`.

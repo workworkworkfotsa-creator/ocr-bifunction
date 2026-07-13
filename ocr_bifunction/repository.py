@@ -3,23 +3,24 @@
 Stage ④ CENTRALISER made real, and the mechanism the two halves use to coordinate async work.
 Per the fabrique doctrine (skill handoff-it) the CONTRACT that crosses to IT is the TABLE; the
 storage engine is a jettisonable adapter behind a `Repository` ABC (IT swaps `SqliteRepository`
-for a `MariaDbRepository`). Nothing calls across the halves directly — they talk THROUGH the
-table.
+for an internal-DB implementation). Nothing calls across the halves directly — they talk THROUGH
+the table.
 
 How the tables "communicate" that a record is waiting for async: THE `status` COLUMN IS THE
 SIGNAL. A document waiting for the escalation worker is a row with `status='received'` and
 `execution_lane='escalation'`; the worker POLLS that (`pending('received', 'escalation')`),
 flips it to `processing`, does the work, writes the record back, flips to `done`/`needs_review`.
 No message bus. Safety = one writer per phase (the worker owns `status`; a review UI only READS
-it) — the "contrat de colonnes" that avoids a Python↔PHP race.
+it) — the "contrat de colonnes" that avoids a Python↔UI race.
 
 Template SUGGESTION (D3) will follow the SAME status-driven, human-validated loop, keyed to D1
 by `job_id` — a different job type, one mechanism. Not built here: today only D1, per
 `docs/contrat-bd-destination.md`.
 
-MariaDB target (co-freeze with IT, NOT frozen here): explicit `created_at`/`updated_at`
-(MariaDB 5.5 has no `DEFAULT CURRENT_TIMESTAMP`), utf8, InnoDB. SQLite is the proxy and does
-not enforce these — the MariaDB DDL is the contract artifact to write at handoff.
+Internal target-DB shape (co-freeze with IT, NOT frozen here): explicit `created_at`/`updated_at`
+(the target DB may lack `DEFAULT CURRENT_TIMESTAMP`), a portable engine/charset. SQLite is the
+proxy and does not enforce these — the target-DB DDL is the contract artifact to write at handoff
+(the exact product/version is fixed with IT off-repo).
 """
 
 from __future__ import annotations
@@ -60,7 +61,7 @@ class Job:
     status: str  # one of STATUS_*
     # 'fast' = in the request; 'escalation' = doubtful CI re-run (VLM); 'deferred' =
     # policy async_immediate (continuous watchdog); 'nightly' = policy async_nightly
-    # (drained only by a `--nightly` pass — the cron seam).
+    # (drained only by a `--nightly` pass — the night-scheduler seam).
     execution_lane: str = "fast"
     verdict: str | None = (
         None  # 'auto' | 'review' | 'reject' (Verdict.value; None for a trace row)
@@ -83,8 +84,8 @@ class Job:
 
 
 class Repository(ABC):
-    """The D1 store seam. IT swaps the SQLite proxy for a MariaDB implementation; both halves
-    (Python worker, review UI) talk only through the rows this exposes."""
+    """The D1 store seam. IT swaps the SQLite proxy for an internal-DB implementation; both
+    halves (Python worker, review UI) talk only through the rows this exposes."""
 
     @abstractmethod
     def save(self, job: Job) -> int:
@@ -102,7 +103,7 @@ class Repository(ABC):
         """Atomically claim the OLDEST `received` row: flip it to `processing` (+1 attempt) and
         return it, or None when the queue is empty. The claim is the portable two-step (SELECT
         candidate, then UPDATE ... WHERE status='received' checking rowcount) so two workers can
-        NEVER process the same row — the same pattern IT reproduces in MariaDB."""
+        NEVER process the same row — the same pattern IT reproduces on the target DB."""
 
     @abstractmethod
     def recover_stale(self, lease_seconds: float, max_attempts: int) -> tuple[int, int]:
@@ -156,7 +157,7 @@ CREATE INDEX IF NOT EXISTS idx_ocr_jobs_status ON ocr_jobs (status, execution_la
 """
 
 # Columns added after the first proxy shipped; existing local .sqlite files gain them on open.
-# (The MariaDB DDL at handoff bakes them in — this is proxy-only migration.)
+# (The target-DB DDL at handoff bakes them in — this is proxy-only migration.)
 _MIGRATION_COLUMNS = {
     "document_ref": "ALTER TABLE ocr_jobs ADD COLUMN document_ref TEXT",
     "attempts": "ALTER TABLE ocr_jobs ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0",
@@ -171,9 +172,9 @@ _COLUMNS = (
 
 
 class SqliteRepository(Repository):
-    """The jettisonable SQLite proxy of D1 — same table shape IT will build in MariaDB.
+    """The jettisonable SQLite proxy of D1 — same table shape IT will build on the internal target DB.
 
-    Timestamps are written EXPLICITLY (mirroring MariaDB 5.5's lack of DEFAULT
+    Timestamps are written EXPLICITLY (the target DB may lack DEFAULT
     CURRENT_TIMESTAMP); the clock is injectable for tests. The DB file holds extracted fields
     (PII) and is gitignored."""
 
@@ -256,7 +257,7 @@ class SqliteRepository(Repository):
         return [self._row_to_job(row) for row in rows]
 
     def claim_next(self, execution_lane: str | None = None) -> Job | None:
-        # Portable two-step claim (works verbatim on MariaDB 5.5): pick the oldest candidate,
+        # Portable two-step claim (works verbatim on the target DB): pick the oldest candidate,
         # then flip it ONLY IF still 'received' — rowcount 0 means another worker won the race,
         # so try the next candidate. With the PID-locked single watchdog this never loops; the
         # guard is belt-and-braces for the day two crons overlap.

@@ -8,10 +8,10 @@ Sharing one connection is also what makes an in-memory store possible: separate 
 `":memory:"` are separate EMPTY databases, so the repos must share ONE connection for a
 `Store(":memory:")` to hold all their tables together — the cheap, disk-free, real-SQL test
 seam (it runs the exact SQL prod runs, so it cannot "lie" the way a hand-written fake could).
-Prod passes a file path; the future MariaDB store is a second adapter at this same seam.
+Prod passes a file path; the future internal-DB store is a second adapter at this same seam.
 
 Repos keep their OWN table DDL (locality — a table's shape lives next to the repo that uses it);
-the Store only RUNS it. Timestamps stay explicit (MariaDB 5.5 has no DEFAULT CURRENT_TIMESTAMP);
+the Store only RUNS it. Timestamps stay explicit (the target DB may lack DEFAULT CURRENT_TIMESTAMP);
 the clock is injectable here, once, for reproducible tests.
 """
 
@@ -57,7 +57,7 @@ class Store:
         """Run a repo's DDL on the shared connection, then apply its proxy-only column
         migrations. `table` + `migrations` add any columns missing from an existing local
         `.sqlite` (PRAGMA table_info) — the ALTER loop once copy-pasted across the D1/D2/D3
-        repos, now in one place. The MariaDB DDL at handoff bakes these in; this is proxy-only."""
+        repos, now in one place. The target-DB DDL at handoff bakes these in; this is proxy-only."""
         self.connection.executescript(schema_sql)
         if table and migrations:
             existing_columns = {

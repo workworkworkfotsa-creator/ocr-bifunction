@@ -10,7 +10,7 @@ content, IT owns only the store), read at validation time into
 
 An EMPTY registry yields context `None` for that check -> needs_review, never a false
 pass (an absent registry cannot prove an issuer legitimate). SQLite is the jettisonable
-proxy of the MariaDB table (explicit timestamps, 5.5-safe shape).
+proxy of the internal target-DB table (explicit timestamps, portable shape).
 """
 
 from __future__ import annotations
@@ -72,7 +72,7 @@ CREATE TABLE IF NOT EXISTS ocr_issuer_registry (
 
 
 class SqliteIssuerRegistryRepository(IssuerRegistryRepository):
-    """The jettisonable SQLite proxy — same table shape IT will build in MariaDB 5.5."""
+    """The jettisonable SQLite proxy — same table shape IT will build on the internal target DB."""
 
     def __init__(self, store: Store | str | Path = "ocr_store.sqlite") -> None:
         self._store = store if isinstance(store, Store) else Store(store)

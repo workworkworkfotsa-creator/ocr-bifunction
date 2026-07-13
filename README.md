@@ -62,8 +62,8 @@ la row D1. Résultat : la logique métier n'existe qu'une fois, et se teste sur 
    selon la config.
 2. **Async immédiat** — spool + row `received` (lane `deferred`), drainée en continu par le
    watchdog. C'est aussi la lane d'**escalade** des CI douteuses (re-lecture avec un moteur lourd).
-3. **Async nuit** — lane `nightly`, drainée par `worker_watchdog.py --once --nightly` (parité
-   cron). La passe de nuit exécute aussi le **DRAFT** : les inconnus accumulés sont clusterisés
+3. **Async nuit** — lane `nightly`, drainée par `worker_watchdog.py --once --nightly` (invocation
+   par un ordonnanceur de nuit). La passe de nuit exécute aussi le **DRAFT** : les inconnus accumulés sont clusterisés
    par layout, un template est brouillonné (ancres + champs + checks candidats dérivés des
    extractions), nommé par SLM (opt-in), et stagé en suggestion que l'humain coche et promeut.
 
@@ -89,7 +89,7 @@ et peut en **durcir/adoucir** la sévérité — jamais sur un « je ne peux pas
 ```bash
 uv sync
 uv run uvicorn api_maquette:app          # la porte (http://127.0.0.1:8000)
-uv run python worker_watchdog.py         # le worker (process séparé) ; --once --nightly = cron
+uv run python worker_watchdog.py         # le worker (process séparé) ; --once --nightly = passe de nuit ordonnancée
 # SLM opt-in (nommage, suggestions, VLM d'escalade) : llama-swap sur 127.0.0.1:8080
 #   → cf. docs/deploiement-linux-serving-slm.md
 ```

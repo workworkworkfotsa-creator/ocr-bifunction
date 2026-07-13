@@ -5,7 +5,7 @@ doc that matched no template gets an SLM-proposed template (a candidate id from 
 known templates + the anchors that motivate it); the human validates; a validated suggestion is
 promoted to D2 (the template becomes active). Per the fabrique doctrine (skill handoff-it) the
 CONTRACT that crosses to IT is the TABLE; the storage engine is a jettisonable adapter behind a
-`ReviewRepository` ABC (IT swaps `SqliteReviewRepository` for a `MariaDbReviewRepository`).
+`ReviewRepository` ABC (IT swaps `SqliteReviewRepository` for an internal-DB implementation).
 
 D3 is a SEPARATE domain from D1 (jobs): a different owner (the reviewer / review UI writes D3; the
 worker writes D1) and a different lifecycle. D3 REFERENCES a job by `job_id` and does NOT duplicate
@@ -16,11 +16,12 @@ How the suggestion loop "communicates": THE `suggestion_status` COLUMN IS THE SI
 D1's `status`. A suggestion waiting for the human is a row with suggestion_status='pending';
 validating it flips to 'validated', which is what the promotion step (D3 -> D2) polls. One writer
 per phase (the reviewer owns the decision; promotion owns the D2 write) — the "contrat de colonnes"
-that avoids a Python<->PHP race.
+that avoids a Python<->UI race.
 
-MariaDB target (co-freeze with IT, NOT frozen here): explicit created_at/updated_at (MariaDB 5.5
-has no DEFAULT CURRENT_TIMESTAMP), utf8, InnoDB, and `job_id` a real FK to ocr_jobs. SQLite is the
-proxy and does not enforce the FK — the MariaDB DDL is the contract artifact to write at handoff.
+Internal target-DB shape (co-freeze with IT, NOT frozen here): explicit created_at/updated_at (the
+target DB may lack DEFAULT CURRENT_TIMESTAMP), a portable engine/charset, and `job_id` a real FK to
+ocr_jobs. SQLite is the proxy and does not enforce the FK — the target-DB DDL is the contract
+artifact to write at handoff.
 """
 
 from __future__ import annotations
@@ -90,7 +91,7 @@ class Review:
 
 
 class ReviewRepository(ABC):
-    """The D3 store seam. IT swaps the SQLite proxy for a MariaDB implementation; the review UI
+    """The D3 store seam. IT swaps the SQLite proxy for an internal-DB implementation; the review UI
     and the promotion step talk only through the rows this exposes."""
 
     @abstractmethod
@@ -152,7 +153,7 @@ CREATE INDEX IF NOT EXISTS idx_ocr_reviews_job ON ocr_reviews (job_id);
 """
 
 # Columns added after the first proxy shipped; existing local .sqlite files gain them on
-# open. (The MariaDB DDL at handoff bakes them in — this is proxy-only migration.)
+# open. (The target-DB DDL at handoff bakes them in — this is proxy-only migration.)
 _MIGRATION_COLUMNS = {
     "suggested_template_json": (
         "ALTER TABLE ocr_reviews ADD COLUMN suggested_template_json TEXT"
@@ -167,9 +168,9 @@ _COLUMNS = (
 
 
 class SqliteReviewRepository(ReviewRepository):
-    """The jettisonable SQLite proxy of D3 — same table shape IT will build in MariaDB.
+    """The jettisonable SQLite proxy of D3 — same table shape IT will build on the internal target DB.
 
-    Timestamps are written EXPLICITLY (mirroring MariaDB 5.5's lack of DEFAULT CURRENT_TIMESTAMP);
+    Timestamps are written EXPLICITLY (the target DB may lack DEFAULT CURRENT_TIMESTAMP);
     the clock is injectable for tests. The DB file may hold projected fields (PII) and is gitignored.
     """
 
