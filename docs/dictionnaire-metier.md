@@ -259,3 +259,26 @@ Source de vérité : `ocr_bifunction/capacity_settings.py` (table `ocr_capacity_
 leviers) ; admission → `api_maquette.py` (`_try_acquire_sync_slot`, branche débordement de
 `validate_document`) ; cache d'idempotence borné (LRU). Prouvé : `load_smoke.py` 10/10
 (2026-07-12 — 12 uploads concurrents, pic mesuré ≤ plafond, zéro 5xx, débordement drainé).
+
+## couche intake (traitement d'un document — point d'entrée unique)
+
+« Un document + son contexte → un résultat prêt à persister » — la couche que **les DEUX régimes
+traversent** (porte API temps réel ET worker batch), pour ne plus la ré-écrire deux fois. Elle
+s'assoit AU-DESSUS du cœur pur `orchestrator.process_document` (qui reste `document → DocumentRecord`,
+sans persistance) et ajoute ce qui était dupliqué porte↔worker : le check de type déclaré ≠ type
+reconnu ([[politique de non-conformité (block / block_holder / flag_and_continue)]]), la réaction de
+non-conformité, et l'unique mapping record→`Job`.
+
+`handle_document` est **PUR** — il ne touche AUCUN store ; il renvoie un `DocumentOutcome` (record,
+status, [[verdict de routing (auto / humain / invalide)|verdict]], reasons, retain_bytes,
+nonconformity). Ce sont les **adaptateurs** qui persistent : la porte `save` une nouvelle row, le
+worker `update_status` la row réclamée — les checkpoints durables (et la reprise sur crash) restent
+aux adaptateurs, et le handler est ré-exécutable + testable sur un Store en mémoire. Deux edges
+restent DANS les adaptateurs (policy réelle par point d'entrée, pas de la duplication) : la porte
+escalade un CI douteux (fast-lane) et done-trace un CI incomplet/inconnu (l'uploader resoumet) ; le
+worker, sans uploader à qui renvoyer, route ces cas en `needs_review`.
+
+Source de vérité : `ocr_bifunction/intake.py:160` (`handle_document`), `:222` (`job_from_outcome`) ;
+appelée par `api_maquette.py` (`_handle_validated_document`) et `worker_watchdog.py`
+(`_process_claimed_job`). Prouvé : `handler_check.py` 6/6 (isolé, Store `:memory:`). Refactor
+candidat B, 2026-07-13.

@@ -99,7 +99,7 @@ sur `Store(":memory:")`.
 - **Incomplete/unrecognized CI status** : la PORTE done-trace (l'uploader resoumet, aucun reviewer ne
   corrige un côté manquant) ; le WORKER/batch → needs_review (pas d'uploader à qui renvoyer).
 
-#### STEP 2 — cutover PORTE (`api_maquette.py`) — À FAIRE
+#### STEP 2 — cutover PORTE (`api_maquette.py`) — FAIT (`13a9738`, archive du plan)
 `validate_document` : **ADMISSION inchangée** (idempotence l.860, holder-block l.870, exec-policy l.893,
 spool+enqueue async l.905, sync-slot/overflow l.923). Remplacer les DEUX appels
 `_handle_ci_submission`/`_handle_single_document` (l.~958-971) par **UN seul chemin** :
@@ -128,7 +128,7 @@ spool+enqueue async l.905, sync-slot/overflow l.923). Remplacer les DEUX appels
 - **GATE step 2** : `uv run python` de `verdict_flow_check`, `severity_smoke`, `holder_reference_smoke`,
   `conformity_smoke`, `flow_smoke`, `load_smoke` → tous verts (iso) ; + `ruff check .`.
 
-#### STEP 3 — cutover WORKER (`worker_watchdog.py`) — À FAIRE
+#### STEP 3 — cutover WORKER (`worker_watchdog.py`) — FAIT (`4fe9a70`, archive du plan)
 `_process_claimed_job` : remplacer la branche `ci`/`routed` (`_process_ci_job`/`_process_routed_job`)
 par **UN seul chemin** :
 - `item = BatchItem(paths=_spooled_files(job), document_type=("carte_identite" if job.category_lane==
