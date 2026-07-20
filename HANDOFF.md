@@ -13,6 +13,36 @@
 > coller de valeur réelle (nom, n°doc, adresse) dans le code, les docs ou un message de commit ; `0_Aller_retour_IT/`,
 > `inputs/`, `outputs/`, `models/`, `spool/` restent gitignorés (vérifié absent du tree poussé).
 
+## État au 2026-07-20 (nuit) — versionnage adopté (v0.1.0 releasé) + NEXT markitdown (arête SENS)
+
+**Versionnage sérieux posé** (le repo devient source de vérité) : SemVer + **Keep a Changelog**
+(`CHANGELOG.md`) mappés sur les Conventional Commits déjà en place (`fix:`→PATCH, `feat:`→MINOR,
+`feat!:`/`BREAKING CHANGE:`→MAJOR). **`v0.1.0` taggé + Release GitHub publiée** (baseline = tout
+l'état livré à ce jour). `pyproject.toml version` = `0.1.0` synchro. Détail/politique → `CHANGELOG.md`
+(ne pas dupliquer ici). Workflow release : `[Unreleased]`→`[X.Y.Z]`, bump pyproject, tag `vX.Y.Z`,
+push `--follow-tags`, Release (via API GitHub — `gh` absent ; ou installer `gh`). Prochaine release =
+`v0.2.0` au prochain `feat:` releasé. Opt-in plus tard : flux PR + `.github/release.yml` + automatisation
+release-please.
+
+**NEXT (nouvelle session, demande utilisateur) — markitdown pour la VALIDATION SÉMANTIQUE de Docling.**
+Rappel des 3 arêtes de la validation de conversion : **complétude** (faite — `conversion_guard` +
+résilience, cf. section suivante), **forme** (`layout_score`), **sens** (TOUJOURS OUVERT — pas de
+checksum type MRZ). Idée à tester : **[microsoft/markitdown](https://github.com/microsoft/markitdown)
+comme 2e lecteur indépendant** → comparer son markdown à celui de Docling → **accord = corroboration
+sémantique** (même philosophie que le reconcile recto/verso et `corroborated_by`), **divergence > seuil
+→ humain** (la porte de l'arête sens).
+- **Vérifié (WebFetch 2026-07-20)** : léger, **sans GPU ni gros modèle**, → markdown préservant la
+  structure (titres/listes/tables). **PDF intégré = couche texte born-digital SEULEMENT, PAS d'OCR.**
+  OCR de markitdown = **cloud uniquement** (plugin markitdown-ocr GPT-4o / Azure Content Understanding)
+  → **EXCLU par RGPD/local-PII** (cf. [[lighton-ocr-french-rgpd-preference]]).
+- **Donc le fit** : markitdown corrobore la lane **BORN-DIGITAL** (STAS/contrats à couche texte —
+  exactement le corpus `inputs/cplx`) : lecture indépendante, locale, cheap, cadre avec 8 Go/sans-GPU.
+  Il **ne** corrobore **pas** la lane scannée (built-in = rien sans OCR cloud interdit). Pour le scanné,
+  l'arête sens reste à traiter autrement.
+- **Métrique candidate** : similarité/diff texte Docling↔markitdown (réutiliser le TF-IDF de la lane RAG,
+  ou un diff structuré) ; le seuil = la porte auto/humain de l'arête sens. À explorer AVANT d'écrire des
+  tests (valider la conception sur docs réels — discipline projet).
+
 ## État au 2026-07-20 (soir) — résilience conversion Docling : découpage + backoff dégressif + réconciliation (PROUVÉ SUR DOCLING RÉEL)
 
 **Le garde de conversion (section suivante) DÉTECTE l'incomplétude ; ce chantier construit
