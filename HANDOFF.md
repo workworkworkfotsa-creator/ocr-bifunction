@@ -13,6 +13,41 @@
 > coller de valeur réelle (nom, n°doc, adresse) dans le code, les docs ou un message de commit ; `0_Aller_retour_IT/`,
 > `inputs/`, `outputs/`, `models/`, `spool/` restent gitignorés (vérifié absent du tree poussé).
 
+## État au 2026-07-20 — garde de conversion universel (complétude + erreur)
+
+**Benchmark Docling sur de vrais docs multi-pages** (SOP fiches métier + contrats/STAS,
+corpus gitignoré `inputs/sop` + `inputs/cplx`, ~30-55 pages) → **3 arêtes conceptuelles
+tranchées** :
+- **Complétude** (mesurable, coût ~0) : Docling peut manquer de mémoire EN COURS de doc et
+  **dropper des pages en silence en rapportant `EXCELLENT`**. Signal dur : `page_count`
+  natif (PyMuPDF) vs pages réellement produites (`len(result.confidence.pages)`) — une page
+  plantée n'a AUCUNE entrée (vérifié : run 27-50 → 23/24, page 46 absente). **Même check
+  attrape l'erreur (page crashée) ET le doc incomplet.**
+- **Forme** (mesurable) : `layout_score` par page (Docling, [0,1], seuils natifs
+  poor<0.5/fair<0.8/good<0.9/excellent≥0.9) — validé sur 8 docs, pointe pile les tableaux
+  larges/denses garbled (p.ex. page 4 du 21-p à 0.70). ⚠️ le composite `mean_grade` DILUE
+  ce signal (moyenné avec parse=1.0) → utiliser `layout_score` SEUL. `table_score` = **nan
+  partout** (non câblé dans cette version, ne pas s'y fier).
+- **Sens** : pas de checksum équivalent au MRZ — **toujours ouvert** (cf. CADRAGE-META).
+
+**Cause mémoire diagnostiquée** (pas supposée) : le process Docling ne pèse que ~2 Go — ce
+n'est PAS un leak géant, c'est la CONTENTION (machine partagée à 3,4 Go libres, commit
+charge au ras). Les pages 27-45 qui plantaient dans le run complet passent **impeccables**
+en lot frais → le contenu n'est pas en cause, c'est l'accumulation dans une conversion.
+Implication : cible prod dédiée 8 Go a de la marge ; le fix lourd (batching `page_range`)
+est DIFFÉRÉ — on détecte et on route vers l'humain plutôt que sur-ingénierer.
+
+**Livré — `ocr_bifunction/conversion_guard.py`** (léger, pré-vérif + détection, PAS de
+batching) : `page_count` (le dénominateur), `assess_page_coverage` (pur, agnostique au
+type ET au converter — attrape erreur+incomplet en un check), `low_layout_pages` (signal
+forme séparé). **UNIVERSEL, pas SOP-spécifique** (demande utilisateur) : toute lecture
+multi-pages lourde, attestation scannée 3 pages = SOP 50 pages ; c'est le MÊME invariant
+que le flux CI porte déjà (`incomplete` / `missing:[recto|verso]`), au grain de la page.
+Prouvé `conversion_guard_smoke.py` 6/6 SANS lancer Docling (logique pure, machine
+préservée). **PAS encore branché** (aucun lecteur multi-pages lourd en prod pour aucun
+type) — c'est le garde que le 1er lecteur de ce genre DEVRA appeler. Seuil 0.8 à calibrer
+sur lot étiqueté avant d'en faire une porte auto/humain.
+
 ## État au 2026-07-20 — D7 : clefs use_case (le premier auth de la maquette)
 
 **Décision d'architecture prise en amont** (méta-repo `00_Missions_POC_to_Prod`, hors de
