@@ -18,9 +18,20 @@ not here.
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, runtime_checkable
+
+from ocr_bifunction.conversion_guard import page_count
+from ocr_bifunction.resilient_conversion import (
+    PageRangeConverter,
+    reconcile_page_range_conversion,
+)
+
+# A factory that binds a per-document `PageRangeConverter` (e.g. Docling bound to one path, sharing
+# one loaded model): the heavy resilient read needs the path both to count pages and to convert.
+HeavyPageConverterFactory = Callable[[Path], PageRangeConverter]
 
 # A PDF page yielding fewer than this many characters of native text is treated as
 # image-only (scanned) and routed to the OCR engine instead of the text layer.
@@ -116,6 +127,11 @@ class ReadResult:
     elapsed_seconds: float = 0.0
     needs_ocr: bool = False  # routed to an OCR engine, but none was wired in
     error: str | None = None
+    # Heavy resilient read only (empty otherwise): pages never produced even after the smallest
+    # batch (genuinely bad -> human review) and pages present but below the layout threshold. The
+    # page-grain twin of the CI `missing` signal — an incomplete read never passes for a whole one.
+    missing_pages: list[int] = field(default_factory=list)
+    low_form_pages: list[int] = field(default_factory=list)
 
 
 @runtime_checkable
@@ -136,11 +152,22 @@ class OcrEngine(Protocol):
 
 
 def read_document(
-    document_path: Path, ocr_engine: OcrEngine | None = None
+    document_path: Path,
+    ocr_engine: OcrEngine | None = None,
+    *,
+    heavy_page_converter_factory: HeavyPageConverterFactory | None = None,
 ) -> ReadResult:
-    """Route a document to the backend fit for its type and return its text."""
+    """Route a document to the backend fit for its type and return its text.
+
+    `heavy_page_converter_factory` (opt-in) selects the RESILIENT read for PDFs — split into
+    page-range batches, retry any dropped page on a smaller batch, reconcile (for the RAG/contract
+    lane where a heavy converter's reading-order is the value and mid-document memory drops are the
+    risk). Default None keeps the existing per-page light read untouched, so every current caller is
+    unaffected."""
     suffix = document_path.suffix.lower()
     if suffix == ".pdf":
+        if heavy_page_converter_factory is not None:
+            return _read_pdf_resilient(document_path, heavy_page_converter_factory)
         return _read_pdf(document_path, ocr_engine)
     if suffix == ".docx":
         return _read_docx(document_path)
@@ -150,6 +177,38 @@ def read_document(
         document_path=document_path,
         backend_name="(unsupported)",
         error=f"unsupported file type: {suffix}",
+    )
+
+
+def _read_pdf_resilient(
+    document_path: Path,
+    heavy_page_converter_factory: HeavyPageConverterFactory,
+) -> ReadResult:
+    """Heavy multi-page read that survives a converter dropping pages mid-document.
+
+    Splits the PDF into page-range batches, retries any dropped page under a decreasing batch-size
+    schedule, and reconciles the produced pages into one document ordered by page number. The rich
+    per-page markdown (reading-order preserved) is joined into `text` for the RAG chunker; the
+    completeness verdict rides on `missing_pages`/`low_form_pages` so the router routes an incomplete
+    read to a human. No per-line geometry here — this lane's value is the reading-order text, not the
+    template-anchor boxes the light `_read_pdf` produces."""
+    started_at = time.perf_counter()
+    expected_page_count = page_count(document_path)
+    page_range_converter = heavy_page_converter_factory(document_path)
+    conversion = reconcile_page_range_conversion(
+        expected_page_count, page_range_converter
+    )
+    combined_text = "\n\n".join(page.markdown for page in conversion.page_results)
+    return ReadResult(
+        document_path=document_path,
+        backend_name="resilient-page-range",
+        text=combined_text,
+        confidence=None,
+        page_count=expected_page_count,
+        character_count=len(combined_text),
+        elapsed_seconds=time.perf_counter() - started_at,
+        missing_pages=conversion.missing_page_numbers,
+        low_form_pages=conversion.low_form_page_numbers,
     )
 
 

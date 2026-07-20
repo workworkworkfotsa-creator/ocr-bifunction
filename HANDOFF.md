@@ -13,6 +13,61 @@
 > coller de valeur réelle (nom, n°doc, adresse) dans le code, les docs ou un message de commit ; `0_Aller_retour_IT/`,
 > `inputs/`, `outputs/`, `models/`, `spool/` restent gitignorés (vérifié absent du tree poussé).
 
+## État au 2026-07-20 (soir) — résilience conversion Docling : découpage + backoff dégressif + réconciliation (PROUVÉ SUR DOCLING RÉEL)
+
+**Le garde de conversion (section suivante) DÉTECTE l'incomplétude ; ce chantier construit
+L'ACTION** : convertir en lots, rejouer toute page droppée sous une **schedule décroissante**
+(ex. 20→10→5→2→1), réconcilier par numéro de page absolu. Le fix `page_range` que le HANDOFF
+disait DIFFÉRÉ est fait, et **prouvé bout-en-bout sur Docling réel**.
+
+**Livré :**
+- **`ocr_bifunction/resilient_conversion.py`** (PUR, converter-agnostique comme `conversion_guard`) :
+  Protocol `PageRangeConverter`, `reconcile_page_range_conversion(expected_page_count, converter, *,
+  batch_size_schedule=DEFAULT_BATCH_SIZE_SCHEDULE)`. **Rounds décroissants** : round 0 = tout le doc
+  en lots de `schedule[0]` ; round k = re-chunk des pages ENCORE manquantes à `schedule[k]` (plafond).
+  Union disjointe keyed page absolue, `PageResult.produced_in_round` (0 = 1re passe, >0 = RÉCUPÉRÉE
+  par le backoff — le signal honnête, pas la largeur). Levier `batch_size_schedule` validé fail-loud
+  (non vide, strictement décroissant, finit par 1). Réutilise `conversion_guard.assess_page_coverage`
+  (porte de complétude) + `low_layout_pages` (forme, JAMAIS rejouée). `DEFAULT_BATCH_SIZE_SCHEDULE =
+  [16, 8, 4, 2, 1]` (à CALIBRER).
+- **`ocr_bifunction/docling_page_range_converter.py`** (seule pièce impure) : adaptateur Docling
+  (`convert(path, page_range=…)` → surface produced/status/layout/markdown). Vérifié Docling 2.107.0.
+- **Câblage opt-in** `reader.py` + `router.py` : `read_document(..., heavy_page_converter_factory=…)`
+  → `_read_pdf_resilient` (markdown page-ordonné en `.text`, `missing_pages`/`low_form_pages` sur
+  `ReadResult`). `route_document` threade le factory ; `_rag_result` nomme les pages manquantes en
+  RAISON de revue (jumeau page-grain du CI `missing:[recto|verso]`). **Défaut None = comportement
+  actuel** (16 appelants de `read_document` intacts). **PAS threadé jusqu'à la porte API/worker**
+  (inerte tant que le consommateur `sop_contract` n'existe pas — cf. D7).
+- **`resilient_docling_real_run.py`** : le test empirique du backoff (dry par défaut, `--go` requis,
+  `--schedule`, PII-safe : chiffres seulement, jamais le contenu).
+
+**⚠️ FINDING CRITIQUE (le run réel l'a attrapé) → [[docling-produced-signal-confidence-pages]] :**
+Docling garde l'ENTRÉE de page dans `result.document.pages` même quand l'OCR bad_alloc (mesuré :
+55 pages, 27-55 crashées, `document.pages`=55 mais `confidence.pages`=26). Mon détecteur croyait
+55/55 COMPLETE → le backoff ne se déclenchait pas → **une lecture incomplète passait pour entière**
+(le bug exact que le garde existe pour empêcher). **Fix = `produced = sorted(result.confidence.pages)`**
+(pas `document.pages`). C'est un bug d'ADAPTATEUR, pas du cœur. L'hypothèse « une page crashée ne
+laisse aucune entrée » du garde est FAUSSE pour `document.pages`, VRAIE pour `confidence.pages`.
+
+**Preuve empirique (STAS 55 p., `inputs/cplx`, gitignoré) :**
+- schedule **20→10→5→2→1** : COMPLETE 55/55, `attempts=3` = les 3 chunks du round 0, **0 retry**
+  (le lot de 20 lit tout sans drop ; le backoff n'a pas eu à tirer). ~20 min à 3,4 Go libres.
+- schedule **55→20→10→5→2→1** : round 0 (55 d'un coup) bad_alloc 27-55 → **round 1 (lot 20) RÉCUPÈRE
+  les 29 pages** → COMPLETE 55/55, `RECOVERED [27..55]` `produced_in_round=1`. **Le backoff prouvé.**
+  ~6 min. Lot ≤20 = sûr sur cette machine pour ce doc.
+
+**Oracle : `resilient_conversion_smoke.py` 11/11** (faux converter, SANS Docling — machine préservée :
+full success ; drop récupéré au round suivant ; provenance round+largeur ; jamais-récupéré→missing→
+review ; invariant porte ; union disjointe ; low-form rapporté PAS rejoué ; pas de travail redondant ;
+doc 1 page ; chunk entier FAILURE récupéré ; schedule malformée→ValueError). Régressions vertes :
+`conversion_guard_smoke` 6/6, `flow_smoke` 14/14, `policy_smoke` 20/20, `conformity_smoke` 12/12,
+`holder_reference_smoke` 5/5, `verdict_flow_check` 7/7. `ruff check .` propre.
+
+**NEXT (calibration = A/B, l'utilisateur tranche la schedule) :** faire tourner `--go` sur plus de
+docs (`inputs/sop` + `inputs/cplx`, 14 PDF, 1-55 p.) pour choisir `DEFAULT_BATCH_SIZE_SCHEDULE` (lot
+initial sûr vs coût) et calibrer le seuil 0.8. Le run montre par doc : provenance par round/largeur,
+pages récupérées, missing, low-form.
+
 ## État au 2026-07-20 — garde de conversion universel (complétude + erreur)
 
 **Benchmark Docling sur de vrais docs multi-pages** (SOP fiches métier + contrats/STAS,

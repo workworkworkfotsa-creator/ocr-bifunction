@@ -30,7 +30,12 @@ from pathlib import Path
 from datetime import date
 
 from ocr_bifunction.rag import Summary, chunk_document, summarize_extractive
-from ocr_bifunction.reader import OcrEngine, TextLine, read_document
+from ocr_bifunction.reader import (
+    HeavyPageConverterFactory,
+    OcrEngine,
+    TextLine,
+    read_document,
+)
 from ocr_bifunction.suggestion import SuggestionOutcome
 from ocr_bifunction.template import (
     ValidationContext,
@@ -73,6 +78,7 @@ def route_document(
     suggester: SuggesterHook | None = None,
     context: ValidationContext | None = None,
     today: date | None = None,
+    heavy_page_converter_factory: HeavyPageConverterFactory | None = None,
 ) -> RoutedDocument:
     """Read one document, decide its lane, and return that lane's first product.
 
@@ -93,7 +99,11 @@ def route_document(
     (reconcile_ci / issuer_registry / corroborated_by) need `context`, and date_order's
     freshness side reads `today`. Absent context resolves to REVIEW (never a false reject).
     """
-    result = read_document(document_path, engine)
+    result = read_document(
+        document_path,
+        engine,
+        heavy_page_converter_factory=heavy_page_converter_factory,
+    )
     if templates is None:
         available_templates = load_templates(templates_directory, category)
     else:
@@ -109,7 +119,12 @@ def route_document(
             document_path.name, result.lines, template, context, today
         )
 
-    routed = _rag_result(document_path.name, result.text)
+    routed = _rag_result(
+        document_path.name,
+        result.text,
+        missing_pages=result.missing_pages,
+        low_form_pages=result.low_form_pages,
+    )
     if suggester is not None and result.text.strip():
         routed.suggestion = suggester(result.text, result.lines, category)
     return routed
@@ -147,14 +162,36 @@ def _structured_result(
     )
 
 
-def _rag_result(source: str, text: str) -> RoutedDocument:
+def _rag_result(
+    source: str,
+    text: str,
+    *,
+    missing_pages: list[int] | None = None,
+    low_form_pages: list[int] | None = None,
+) -> RoutedDocument:
+    # A heavy resilient read may have dropped pages (genuinely bad content that survived even the
+    # smallest batch) or produced low-form ones: surface WHICH pages, the page-grain twin of the CI
+    # `missing: [recto|verso]` reason. The RAG lane already routes to review — these make the reason
+    # specific and actionable instead of a generic "routed to review".
+    completeness_reasons: list[str] = []
+    if missing_pages:
+        completeness_reasons.append(
+            f"incomplete conversion: {len(missing_pages)} page(s) never produced "
+            f"(routed to human review): pages {missing_pages}"
+        )
+    if low_form_pages:
+        completeness_reasons.append(
+            "low-form pages (layout below threshold, structure not confidently "
+            f"recovered): pages {low_form_pages}"
+        )
     if not text.strip():
         # No structured match and nothing to read (image-only with no OCR engine wired).
         return RoutedDocument(
             source=source,
             lane="rag",
             reasons=[
-                "no structured match and no extractable text (image needs an OCR engine)"
+                "no structured match and no extractable text (image needs an OCR engine)",
+                *completeness_reasons,
             ],
         )
     chunks = chunk_document(text, source=source)
@@ -163,4 +200,5 @@ def _rag_result(source: str, text: str) -> RoutedDocument:
         lane="rag",
         summary=summarize_extractive(text),
         chunk_count=len(chunks),
+        reasons=completeness_reasons,
     )
