@@ -13,6 +13,44 @@
 > coller de valeur réelle (nom, n°doc, adresse) dans le code, les docs ou un message de commit ; `0_Aller_retour_IT/`,
 > `inputs/`, `outputs/`, `models/`, `spool/` restent gitignorés (vérifié absent du tree poussé).
 
+## État au 2026-07-20 — D7 : clefs use_case (le premier auth de la maquette)
+
+**Décision d'architecture prise en amont** (méta-repo `00_Missions_POC_to_Prod`, hors de
+ce dépôt public — voir `CADRAGE-META.md` là-bas, section « enveloppe à profondeur
+variable, clef à la porte ») : un 2e consommateur réel de la lecture démarre
+(`sop_contract`, réconciliation contrat↔SOP↔instruction), aux côtés du consommateur
+existant (`ci_pii`). Décision : **un schéma de sortie unique** pour les deux, gelé sur le
+cas le plus exigeant ; ce qui varie par usage est la **profondeur de remplissage**
+(champs `null` = jamais calculés par cet usage), jamais la forme. La clef API pilote le
+remplissage + le moteur/rétention — jamais la forme.
+
+**Livré ici, scope volontairement resserré à l'auth + la traçabilité** (le lecteur SOP
+lui-même — hiérarchie, renvois — n'existe pas encore ; construire une logique de
+profondeur sans lecteur pour la consommer serait du code inerte, contraire à la
+discipline fail-loud du projet) :
+- **`ocr_bifunction/use_case_key.py`** (neuf, D7) : `UseCaseKeyRepository` (patron
+  leviers), clef hashée SHA-256 (secret brut jamais stocké, affiché une seule fois à la
+  création), `resolve_use_case` pur. **Défaut silencieux** : requête sans clef →
+  `use_case="ci_pii"`, comportement inchangé pour tout appelant antérieur (zéro
+  régression). Clef inconnue/révoquée → **401** (vraie garantie d'auth).
+- **D1** (`ocr_jobs`) gagne la colonne `use_case` (migration, patron `expected_holder_name`) :
+  snapshot du profil résolu à l'intake, pas une FK vivante — révoquer une clef plus tard
+  ne réécrit jamais l'historique.
+- **`api_maquette.py`** : header `X-OCR-Api-Key`, gate 401 avant toute logique métier
+  (avant même le cache d'idempotence — une clef volée ne doit pas lire un résultat en
+  cache), threadé dans les 3 sites de création de `Job` ; endpoints CRUD
+  `/v1/use-case-keys` (POST crée + révèle le secret une fois, GET liste sans jamais
+  exposer secret/hash, DELETE révoque) ; page `/use-case-keys` (patron `registry.html`).
+- **Prouvé `use_case_key_smoke.py` 13/13** (défaut silencieux ; clef inconnue → 401 ; clef
+  émise → job porte le bon use_case ; liste sans secret ; révocation → 401 ; double
+  révocation → 404 sans crash ; use_case inconnu à la création → 422 ; `hash_key`
+  déterministe). Régressions vertes : `flow_smoke` 14/14, `policy_smoke` 20/20,
+  `conformity_smoke` 12/12, `holder_reference_smoke` 5/5, `ruff check .` propre.
+- **PAS fait ici (suite du chantier SOP, hors scope de ce commit)** : le lecteur SOP
+  lui-même (hiérarchie de sections, renvois clause→SOP→instruction — le graphe de
+  renvois), la profondeur de remplissage effective de l'enveloppe. Documenté dans
+  `docs/contrat-bd-destination.md` (domaine 7).
+
 ## État au 2026-07-13 — REFACTOR ARCHITECTURE TERMINÉ (A/B/C/D/E/F faits)
 
 > Issu de `/improve-codebase-architecture` (rapport HTML généré en temp, non versionné — les 6

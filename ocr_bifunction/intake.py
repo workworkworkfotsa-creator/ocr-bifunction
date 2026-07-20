@@ -227,10 +227,12 @@ def job_from_outcome(
     document_ref: str | None = None,
     expected_holder_name: str | None = None,
     execution_lane: str = "fast",
+    use_case: str | None = None,
 ) -> Job:
     """The single record->Job mapping (was hand-assembled ~7x in the HTTP handlers). `source`
     overrides the record's temp-file name with the upload's real name; `document_ref` is the
-    spool pointer when `outcome.retain_bytes`."""
+    spool pointer when `outcome.retain_bytes`. `use_case` is a snapshot of the API-key
+    resolution (use_case_key.py) at intake time — traceability, not yet a behaviour fork."""
     record = outcome.record
     return Job(
         source=source if source is not None else record.source,
@@ -245,4 +247,5 @@ def job_from_outcome(
         request_id=request_id,
         document_ref=document_ref,
         expected_holder_name=expected_holder_name,
+        use_case=use_case,
     )

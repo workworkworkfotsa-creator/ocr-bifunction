@@ -1,0 +1,125 @@
+<!doctype html>
+<!-- Use-case keys page — disposable local-test adapter over the /v1/use-case-keys
+     endpoints. Issues + revokes API keys that resolve which consumer profile (use_case)
+     a request belongs to (CADRAGE-META "enveloppe à profondeur variable, clef à la
+     porte"). The raw secret is shown ONCE, right after creation, and never again — it
+     is never stored (only its SHA-256 hash is). No PII on this page. -->
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <title>OCR BiFunction — Clefs use_case</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 2rem auto; max-width: 52rem; color: #222; }
+    h1 { font-size: 1.3rem; }
+    table { border-collapse: collapse; width: 100%; margin-top: 1rem; }
+    th, td { border: 1px solid #ccc; padding: 0.5rem 0.7rem; text-align: left; font-size: 0.95rem; }
+    th { background: #f2f2f2; }
+    input[type=text], select { font-size: 0.95rem; padding: 0.2rem 0.4rem; }
+    button { padding: 0.25rem 0.9rem; font-size: 0.9rem; cursor: pointer; }
+    .muted { color: #666; font-size: 0.85rem; }
+    code { background: #f2f2f2; padding: 0.1rem 0.3rem; border-radius: 4px; }
+    #message { margin-top: 1rem; padding: 0.6rem 1rem; border-radius: 8px; display: none; }
+    #message.ok   { background: #e7f6e7; border: 1px solid #7c7; display: block; }
+    #message.warn { background: #fff7e0; border: 1px solid #dbb84d; display: block; }
+    #reveal { margin-top: 1rem; padding: 0.8rem 1rem; border-radius: 8px; display: none;
+              background: #fff3cd; border: 1px solid #e0b400; }
+    #reveal code { word-break: break-all; }
+    a { color: #2a5db0; }
+  </style>
+</head>
+<body>
+  <h1>OCR BiFunction — Clefs API par use_case</h1>
+  <p class="muted">
+    Chaque clef résout, à la porte, le profil consommateur (<code>use_case</code>) d'une
+    requête — pas la forme de sortie, qui reste unique (cf. CADRAGE-META). Aucune clef
+    présentée = profil par défaut, silencieusement. Le secret n'est affiché
+    <strong>qu'une fois</strong>, à la création — il n'est jamais stocké en clair.
+    Dépôt : <a href="/">upload</a> · Revue : <a href="/review">revue</a> ·
+    Politiques : <a href="/policies">politiques</a>.
+  </p>
+
+  <div id="reveal"></div>
+
+  <table>
+    <thead><tr><th>ID</th><th>Libellé</th><th>use_case</th><th>Créée le</th><th></th></tr></thead>
+    <tbody id="rows"></tbody>
+    <tfoot>
+      <tr>
+        <td class="muted">—</td>
+        <td><input type="text" id="new_label" placeholder="ex. Backoffice CI" /></td>
+        <td><select id="new_use_case"></select></td>
+        <td class="muted">—</td>
+        <td><button id="add">Créer</button></td>
+      </tr>
+    </tfoot>
+  </table>
+
+  <div id="message"></div>
+
+  <script>
+    const rowsBody = document.getElementById("rows");
+    const messagePanel = document.getElementById("message");
+    const revealPanel = document.getElementById("reveal");
+    const useCaseSelect = document.getElementById("new_use_case");
+
+    function say(kind, text) {
+      messagePanel.className = kind;
+      messagePanel.textContent = text;
+    }
+
+    function escapeHtml(text) {
+      return String(text ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+    }
+
+    async function load() {
+      const body = await (await fetch("/v1/use-case-keys")).json();
+      useCaseSelect.innerHTML = body.known_use_cases
+        .map(useCase => `<option value="${escapeHtml(useCase)}">${escapeHtml(useCase)}</option>`)
+        .join("");
+      if (!body.keys.length) {
+        rowsBody.innerHTML = '<tr><td colspan="5" class="muted">Aucune clef émise — toute requête sans en-tête utilise le profil par défaut.</td></tr>';
+        return;
+      }
+      rowsBody.innerHTML = "";
+      for (const key of body.keys) {
+        const row = document.createElement("tr");
+        row.innerHTML = `<td>${key.key_id}</td><td>${escapeHtml(key.label)}</td>` +
+          `<td>${escapeHtml(key.use_case)}</td><td>${escapeHtml(key.created_at)}</td>`;
+        const actionCell = document.createElement("td");
+        const revokeButton = document.createElement("button");
+        revokeButton.textContent = "Révoquer";
+        revokeButton.addEventListener("click", async () => {
+          const response = await fetch("/v1/use-case-keys/" + key.key_id, { method: "DELETE" });
+          if (response.ok) { say("ok", "Clef #" + key.key_id + " révoquée."); load(); }
+          else { say("warn", "Erreur " + response.status); }
+        });
+        actionCell.appendChild(revokeButton);
+        row.appendChild(actionCell);
+        rowsBody.appendChild(row);
+      }
+    }
+
+    document.getElementById("add").addEventListener("click", async () => {
+      const label = document.getElementById("new_label").value.trim();
+      const useCase = useCaseSelect.value;
+      if (!label) { say("warn", "Libellé requis."); return; }
+      const response = await fetch("/v1/use-case-keys", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ label, use_case: useCase }),
+      });
+      if (response.ok) {
+        const created = await response.json();
+        revealPanel.style.display = "block";
+        revealPanel.innerHTML = `<strong>Clef créée — copiez-la maintenant, elle ne sera plus jamais affichée :</strong><br/>` +
+          `<code>${escapeHtml(created.api_key)}</code>`;
+        document.getElementById("new_label").value = "";
+        say("ok", "Clef #" + created.key_id + " (" + created.use_case + ") créée.");
+        load();
+      } else { say("warn", "Erreur " + response.status); }
+    });
+
+    load();
+  </script>
+</body>
+</html>

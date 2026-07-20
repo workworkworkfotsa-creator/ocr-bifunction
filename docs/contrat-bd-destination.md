@@ -31,6 +31,7 @@ fixés avec l'IT au gel du schéma.)
 | **4 — Politiques d'exécution** | `ocr_execution_policies` | Infra / exécution (contenu opéré par le Backoffice) | **Backoffice / opérateur** (l'IT possède le store, pas le contenu) | config vivante, très lent | `ocr_bifunction/execution_policy.py` |
 | **5 — Registre des organismes** | `ocr_issuer_registry` | Dictionnaire métier (conformité) | **Expert métier / Backoffice** | référence curée, lent | `ocr_bifunction/issuer_registry.py` |
 | **6 — Politiques de non-conformité** | `ocr_conformity_policies` | Dictionnaire métier (réaction) | **Expert métier / Backoffice** | config vivante, très lent | `ocr_bifunction/conformity_policy.py` |
+| **7 — Clefs use_case (auth)** | `ocr_use_case_keys` | Infra / auth (premier auth de la maquette) | **Opérateur** | secrets, très lent | `ocr_bifunction/use_case_key.py` |
 
 ## Domaine 1 — Jobs + queue (worker Python écrit)
 
@@ -111,6 +112,32 @@ machine prouve la non-conformité, la fraude est le jugement de compliance). Par
 La preuve (row `rejected` + bytes retenus) est visible dans la section « Documents non conformes »
 de la revue ; « clore » = vu / transmis compliance → le worker purge la preuve au sweep.
 
+## Domaine 7 — Clefs use_case (le premier auth de la maquette)
+
+Décision 2026-07-20 (cf. mémoire `enveloppe-profondeur-variable`, CADRAGE-META du méta-repo) :
+un second consommateur réel de la lecture démarre (`sop_contract`, réconciliation
+contrat↔SOP↔instruction), aux côtés du consommateur existant (`ci_pii`, validation
+CI/habilitation). Une clef API à la porte résout QUEL profil consommateur traite la
+requête — jamais la FORME de sortie, qui reste un schéma unique (seule sa profondeur de
+remplissage variera, une fois le lecteur SOP construit — **non fait à ce stade**, cf.
+`use_case_key.py` : ce domaine ne fait QUE l'auth + la traçabilité, volontairement, pour
+ne pas construire de code inerte en avance d'un lecteur qui n'existe pas).
+
+- `key_id` (PK), `key_hash` (SHA-256, le secret brut n'est **jamais** stocké — affiché une
+  seule fois à la création), `label`, `use_case` (`ci_pii` | `sop_contract`), `created_at`,
+  `updated_at`.
+- **Défaut silencieux** : requête sans clef → `use_case="ci_pii"`, comportement inchangé
+  pour tout appelant antérieur à ce header (zéro régression, patron `resolve_execution`).
+  Clef présentée mais inconnue/révoquée → **401** (une vraie garantie d'auth, jamais un
+  repli silencieux).
+- **Snapshot, pas FK vivante** : `ocr_jobs.use_case` capture le profil résolu AU MOMENT de
+  l'intake ; révoquer une clef plus tard ne réécrit jamais l'historique des rows passées.
+- Prouvé `use_case_key_smoke.py` **13/13** (défaut silencieux ; clef inconnue → 401 ; clef
+  émise → job porte le bon use_case ; liste n'expose jamais le secret/hash ; révocation →
+  401 identique à inconnue ; double révocation → 404 sans crash ; use_case inconnu à la
+  création → 422). Régressions vertes : `flow_smoke` 14/14, `policy_smoke` 20/20,
+  `conformity_smoke` 12/12, `holder_reference_smoke` 5/5.
+
 ## Leviers infra — `ocr_capacity_settings` (l'admission de la porte)
 
 Worst-case assumé (2026-07-12 : serveurs modestes, pas de rack GPU) : le sync est **plafonné** et
@@ -140,7 +167,8 @@ chaque requête — s'adapte au hardware du jour J sans redéploy). Table géné
 | **Promotion (transaction)** | D2 (template activé) | D3 (suggestion validée) |
 | **UI politiques (opérateur + métier, UI interne)** | D4 (`ocr_execution_policies`), D6 (`ocr_conformity_policies`), leviers (`ocr_capacity_settings`) | — |
 | **UI registre (expert métier, UI interne)** | D5 (`ocr_issuer_registry`) | — |
-| **Porte API (Python)** | D1 (insertion des jobs) | D4 (résolution sync/async), D2, D5 (contexte de conformité), D6 (réaction) |
+| **Porte API (Python)** | D1 (insertion des jobs) | D4 (résolution sync/async), D2, D5 (contexte de conformité), D6 (réaction), D7 (résolution use_case) |
+| **UI clefs use_case (opérateur, UI interne)** | D7 (`ocr_use_case_keys`) | — |
 | **Passe DRAFT nightly (Python)** | D3 (suggestions stagées) | D1 (`needs_review` + spool), D2 (ids libres) |
 
 L'UI **lit** le `status` D1, ne le réécrit jamais → pas de course Python↔UI interne sur la même ligne.

@@ -43,7 +43,7 @@ from datetime import date
 from pathlib import Path
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException, Response, status
+from fastapi import FastAPI, Header, HTTPException, Response, status
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel, Field
 
@@ -112,6 +112,12 @@ from ocr_bifunction.verdict import Verdict
 from ocr_bifunction.template_repository import (
     SqliteTemplateRepository,
     TemplateRepository,
+)
+from ocr_bifunction.use_case_key import (
+    KNOWN_USE_CASES,
+    SqliteUseCaseKeyRepository,
+    UseCaseKeyRepository,
+    resolve_use_case,
 )
 
 PROJECT_ROOT = Path(__file__).parent
@@ -369,6 +375,7 @@ def _spool_and_enqueue(
     category_lane: str = "ci",
     execution_lane: str = "escalation",
     expected_holder_name: str | None = None,
+    use_case: str | None = None,
 ) -> int:
     """Persist the uploaded bytes to the spool and insert a `received` D1 row pointing at them.
 
@@ -389,6 +396,7 @@ def _spool_and_enqueue(
             request_id=request_id,
             document_ref=_spool_files(files),
             expected_holder_name=expected_holder_name,
+            use_case=use_case,
         )
     )
 
@@ -477,6 +485,7 @@ def _handle_validated_document(
     document_type: str | None,
     request_id: str | None,
     expected_holder_name: str | None = None,
+    use_case: str | None = None,
 ) -> ValidateResponse:
     """The single SYNC processing path — the shared intake handler + the door's two edges.
 
@@ -542,6 +551,7 @@ def _handle_validated_document(
                 category=document_type,
                 reasons=trace_reasons,
                 request_id=request_id,
+                use_case=use_case,
             )
         )
         return ValidateResponse(
@@ -554,7 +564,9 @@ def _handle_validated_document(
 
     # EDGE (a): a complete but doubtful CI -> spool the bytes, enqueue for the watchdog.
     if record.lane == "ci" and outcome.verdict == Verdict.REVIEW.value:
-        job_id = _spool_and_enqueue(files, document_type, outcome.reasons, request_id)
+        job_id = _spool_and_enqueue(
+            files, document_type, outcome.reasons, request_id, use_case=use_case
+        )
         return ValidateResponse(
             status="pending", verdict=None, reasons=outcome.reasons, job_id=job_id
         )
@@ -566,6 +578,7 @@ def _handle_validated_document(
         request_id=request_id,
         document_ref=_spool_files(files) if outcome.retain_bytes else None,
         expected_holder_name=expected_holder_name,
+        use_case=use_case,
     )
     job_id = _save_job(job)
     return ValidateResponse(
@@ -580,7 +593,11 @@ def _handle_validated_document(
 
 
 @app.post("/v1/documents:validate", response_model=ValidateResponse)
-def validate_document(request: ValidateRequest, response: Response) -> ValidateResponse:
+def validate_document(
+    request: ValidateRequest,
+    response: Response,
+    x_ocr_api_key: str | None = Header(default=None, alias="X-OCR-Api-Key"),
+) -> ValidateResponse:
     """Validate one upload: the EXECUTION POLICY decides WHEN, `document_type` decides WHICH flow.
 
     First the execution policy for the category (fallback '*') resolves sync vs async,
@@ -589,7 +606,18 @@ def validate_document(request: ValidateRequest, response: Response) -> ValidateR
     continuously, 'nightly' drained by the night pass), answered 202 pending. Sync ->
     `carte_identite` runs the CI submission flow; any other type (facture, …) or none runs
     a single document through the 2-lane router.
+
+    `X-OCR-Api-Key` resolves which consumer profile (`use_case`) this request belongs to
+    (use_case_key.py). Absent -> the default profile, SILENTLY (zero regression for every
+    caller predating this header). Present but unknown/revoked -> 401 (a real auth
+    guarantee, never a silent fallback).
     """
+    with _repository_lock:
+        use_case_key_repository = _ensure_use_case_key_repository()
+    resolved_use_case = resolve_use_case(x_ocr_api_key, use_case_key_repository)
+    if resolved_use_case.use_case is None:
+        raise HTTPException(status_code=401, detail="invalid or unknown API key")
+
     if request.request_id and request.request_id in _idempotency_cache:
         cached = _idempotency_cache[request.request_id]
         response.status_code = _http_status_for(cached)
@@ -613,6 +641,7 @@ def validate_document(request: ValidateRequest, response: Response) -> ValidateR
                 reasons=[block_reason],
                 request_id=request.request_id,
                 expected_holder_name=request.expected_holder_name,
+                use_case=resolved_use_case.use_case,
             )
         )
         wire = ValidateResponse(
@@ -645,6 +674,7 @@ def validate_document(request: ValidateRequest, response: Response) -> ValidateR
             ),
             execution_lane=EXECUTION_LANE_FOR_ASYNC_MODE[resolved.execution_mode],
             expected_holder_name=request.expected_holder_name,
+            use_case=resolved_use_case.use_case,
         )
         wire = ValidateResponse(
             status="pending", verdict=None, reasons=resolved.reasons, job_id=job_id
@@ -682,6 +712,7 @@ def validate_document(request: ValidateRequest, response: Response) -> ValidateR
                 ),
                 execution_lane="deferred",
                 expected_holder_name=request.expected_holder_name,
+                use_case=resolved_use_case.use_case,
             )
             wire = ValidateResponse(
                 status="pending", verdict=None, reasons=overflow_reasons, job_id=job_id
@@ -695,6 +726,7 @@ def validate_document(request: ValidateRequest, response: Response) -> ValidateR
                     request.document_type,
                     request.request_id,
                     request.expected_holder_name,
+                    use_case=resolved_use_case.use_case,
                 )  # may raise 500
             finally:
                 _release_sync_slot()
@@ -793,6 +825,7 @@ _execution_policy_repository: ExecutionPolicyRepository | None = None
 _issuer_registry_repository: IssuerRegistryRepository | None = None
 _conformity_policy_repository: ConformityPolicyRepository | None = None
 _capacity_settings_repository: CapacitySettingsRepository | None = None
+_use_case_key_repository: UseCaseKeyRepository | None = None
 
 
 def _ensure_capacity_settings_repository() -> CapacitySettingsRepository:
@@ -827,6 +860,17 @@ def _ensure_issuer_registry_repository() -> IssuerRegistryRepository:
     return _issuer_registry_repository
 
 
+def _ensure_use_case_key_repository() -> UseCaseKeyRepository:
+    """Build the shared use-case-key store once (lazy). Caller MUST hold `_repository_lock`.
+
+    No seed_defaults: keys are secrets, issued explicitly through `/use-case-keys`, never
+    conjured from an in-code default (unlike the other leviers surfaces)."""
+    global _use_case_key_repository
+    if _use_case_key_repository is None:
+        _use_case_key_repository = SqliteUseCaseKeyRepository(_new_store())
+    return _use_case_key_repository
+
+
 def _ensure_execution_policy_repository() -> ExecutionPolicyRepository:
     """Build the shared execution-policy store once (lazy). Caller MUST hold `_repository_lock`.
 
@@ -852,6 +896,11 @@ def policies_page() -> str:
 @app.get("/registry", response_class=HTMLResponse, include_in_schema=False)
 def registry_page() -> str:
     return (UI_DIRECTORY / "registry.html").read_text(encoding="utf-8")
+
+
+@app.get("/use-case-keys", response_class=HTMLResponse, include_in_schema=False)
+def use_case_keys_page() -> str:
+    return (UI_DIRECTORY / "use_case_keys.html").read_text(encoding="utf-8")
 
 
 @app.get("/review", response_class=HTMLResponse, include_in_schema=False)
@@ -1249,6 +1298,64 @@ def delete_issuer_entry(identifier: str) -> dict:
             status_code=404, detail=f"unknown issuer identifier: {identifier!r}"
         )
     return {"identifier": identifier, "deleted": True}
+
+
+# --- Use-case keys: the door's auth + consumer-profile resolution (D7). ---------------
+
+
+@app.get("/v1/use-case-keys")
+def use_case_keys() -> dict:
+    """Every issued key (hash + use_case, never the raw secret — it was never stored)."""
+    with _repository_lock:
+        keys = _ensure_use_case_key_repository().all_keys()
+    return {
+        "keys": [
+            {
+                "key_id": key.key_id,
+                "label": key.label,
+                "use_case": key.use_case,
+                "created_at": key.created_at,
+            }
+            for key in keys
+        ],
+        "known_use_cases": list(KNOWN_USE_CASES),
+    }
+
+
+class UseCaseKeyRequest(BaseModel):
+    label: str
+    use_case: str
+
+
+@app.post("/v1/use-case-keys")
+def create_use_case_key(request: UseCaseKeyRequest) -> dict:
+    """Issue a new key. The raw secret is returned HERE ONLY — it is never stored, so it
+    can never be shown again; a lost key must be revoked and a new one issued."""
+    if request.use_case not in KNOWN_USE_CASES:
+        raise HTTPException(
+            status_code=422, detail=f"unknown use_case: {request.use_case!r}"
+        )
+    with _repository_lock:
+        issued = _ensure_use_case_key_repository().create(
+            request.label, request.use_case
+        )
+    return {
+        "key_id": issued.key_id,
+        "label": issued.label,
+        "use_case": issued.use_case,
+        "api_key": issued.raw_key,
+    }
+
+
+@app.delete("/v1/use-case-keys/{key_id}")
+def revoke_use_case_key(key_id: int) -> dict:
+    """Revoke a key. Past D1 rows already carry a snapshot of the use_case it resolved
+    to — revoking never rewrites history, it only stops FUTURE requests using it."""
+    with _repository_lock:
+        removed = _ensure_use_case_key_repository().revoke(key_id)
+    if not removed:
+        raise HTTPException(status_code=404, detail=f"unknown key_id: {key_id}")
+    return {"key_id": key_id, "revoked": True}
 
 
 # --- Conformity-policy surface: WHAT a proven non-conformity does (métier config). ----
