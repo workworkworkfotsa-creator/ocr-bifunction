@@ -22,6 +22,23 @@ the date, and bump `version` in `pyproject.toml` to match the tag.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-21
+
+Two SILENT reading failures closed — a read that dropped most of a document while reporting
+success, and geometry rules that quietly tightened on a better scan — plus the reviewer gaining
+the ability to correct what was read, not only to judge it.
+
+### Added
+- **Editable extraction in review** — a reviewer can now correct an extracted value, not just judge
+  it. The edit is staged in D3 as `{field: {"from": what the machine read, "to": what the human
+  put}}` and applied to the D1 record by the watchdog when the review is accepted: the UI writes D3,
+  the watchdog writes D1, one writer per column. Keeping both sides is what makes a correction
+  auditable later — and what will tell a recurring OCR weakness from a one-off. A corrected field
+  carries `origin: "human"` and NO span: a typed value sits nowhere on the page, and pointing at the
+  box the machine read would show a region that no longer holds what the field says. Corrections are
+  surgical (untouched fields keep value, origin and spans), a rejected review applies nothing, and
+  re-submitting the machine's own value is not a correction.
+
 ### Fixed
 - **The geometry rules silently depended on the capture resolution.** "Same column" and "same row"
   were absolute pixel constants tuned on ~1100 px card scans, so the same card scanned at 2200 px
@@ -45,17 +62,6 @@ the date, and bump `version` in `pyproject.toml` to match the tag.
   wired, such a page sets `needs_ocr` — the gap is declared rather than dropped. OCR boxes are
   rescaled into the page's points on those pages, so the template geometry rules never compare
   render pixels against PDF points on one page.
-
-### Added
-- **Editable extraction in review** — a reviewer can now correct an extracted value, not just judge
-  it. The edit is staged in D3 as `{field: {"from": what the machine read, "to": what the human
-  put}}` and applied to the D1 record by the watchdog when the review is accepted: the UI writes D3,
-  the watchdog writes D1, one writer per column. Keeping both sides is what makes a correction
-  auditable later — and what will tell a recurring OCR weakness from a one-off. A corrected field
-  carries `origin: "human"` and NO span: a typed value sits nowhere on the page, and pointing at the
-  box the machine read would show a region that no longer holds what the field says. Corrections are
-  surgical (untouched fields keep value, origin and spans), a rejected review applies nothing, and
-  re-submitting the machine's own value is not a correction.
 
 ## [0.2.0] - 2026-07-21
 
@@ -89,7 +95,6 @@ the region it was read from instead of being asked to trust it.
   This closes the character side of the semantic edge — the side a second independent reader cannot
   corroborate, since every text-layer extractor trusts the same broken PDF `ToUnicode` CMap and so
   agrees on the same garbage.
-
 - **The review page shows WHERE a value came from** — clicking an extracted field draws its region
   over the document. Pages are now rendered server-side to PNG (`GET /v1/jobs/{id}/page`), because
   the previous `<embed>` handed PDFs to the browser's built-in viewer: an opaque plugin nothing can
@@ -144,6 +149,7 @@ Initial baseline — the bi-mode document intake proven end-to-end on real docum
   multi-page conversion (split into page-range batches, retry dropped pages under a decreasing
   batch-size schedule, reconcile by absolute page number), proven on real Docling.
 
-[Unreleased]: https://github.com/workworkworkfotsa-creator/ocr-bifunction/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/workworkworkfotsa-creator/ocr-bifunction/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/workworkworkfotsa-creator/ocr-bifunction/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/workworkworkfotsa-creator/ocr-bifunction/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/workworkworkfotsa-creator/ocr-bifunction/releases/tag/v0.1.0
