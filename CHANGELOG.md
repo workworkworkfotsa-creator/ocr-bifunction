@@ -50,6 +50,17 @@ the date, and bump `version` in `pyproject.toml` to match the tag.
   corroborate, since every text-layer extractor trusts the same broken PDF `ToUnicode` CMap and so
   agrees on the same garbage.
 
+- **The review page shows WHERE a value came from** — clicking an extracted field draws its region
+  over the document. Pages are now rendered server-side to PNG (`GET /v1/jobs/{id}/page`), because
+  the previous `<embed>` handed PDFs to the browser's built-in viewer: an opaque plugin nothing can
+  be drawn over, whose displayed page cannot even be chosen — and PDFs are exactly where provenance
+  exists. Every document type is an `<img>` now, so the overlay is uniform and "go to page 12"
+  becomes possible. The zone is placed in plain percentages: spans are already page fractions, so
+  no unit, dpi or page size travels to the browser. An out-of-range page is a 404 rather than a
+  silent fallback to page 0 — a wrong page under a highlight looks right while pointing elsewhere.
+  Known limit, surfaced in the UI: a span names the page, not which file of a multi-file submission,
+  so zones are drawn on the first retained file.
+
 ### Changed
 - **BREAKING (D1 payload)** — `ocr_jobs.record_fields` is now
   `{name: {value, origin, spans: [{page_index, bbox}]}}` instead of `{name: value}`, one shape for

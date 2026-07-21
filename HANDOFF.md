@@ -13,20 +13,50 @@
 > coller de valeur réelle (nom, n°doc, adresse) dans le code, les docs ou un message de commit ; `0_Aller_retour_IT/`,
 > `inputs/`, `outputs/`, `models/`, `spool/` restent gitignorés (vérifié absent du tree poussé).
 
-## ▶ NEXT (posé 2026-07-21) — le RECTANGLE : il faut RENDRE la page côté serveur
+## ▶ NEXT (posé 2026-07-21) — la chaîne « nœud → page → zone » est BOUCLÉE ; à toi de choisir la suite
 
-**Bloqueur identifié avant de coder** : l'aperçu PDF de la revue est un `<embed>`
-([review.html](ui/review.html)). **On ne superpose rien sur le viewer PDF natif** du navigateur —
-boîte noire, scroll/zoom inconnus, page affichée non pilotable. Or le PDF born-digital est
-précisément là où la provenance existe. Les images (`<img>`) sont superposables, pas les PDF.
-**Le geste** : un endpoint qui rend UNE page en PNG (PyMuPDF `get_pixmap`, déjà utilisé
-[reader.py:306](ocr_bifunction/reader.py:306)), p.ex. `/v1/jobs/{id}/page/{n}.png`. Tout devient
-alors un `<img>`, la superposition est uniforme, et ça débloque aussi « aller à la page 12 » —
-impossible en `<embed>`. Le rectangle se pose ensuite en pur CSS : les spans sont déjà en
-fractions, donc `left: x0*100%` etc., **aucune conversion, aucune dimension à transporter**.
+L'exigence produit qui a lancé ce chantier est **atteinte de bout en bout** : un reviewer clique un
+champ et voit la zone du document d'où sort la valeur. Restent, par ordre de valeur décroissante et
+**aucun n'est engagé** :
+1. **Extraction ÉDITABLE dans la revue** (parking utilisateur « bien plus tard ») — voir la zone
+   permet de juger ; corriger demande d'écrire, donc de trancher où atterrit une valeur corrigée
+   (D3, pas D1 — cf. contrat domaine 1).
+2. **Le fichier d'un span n'est pas identifié** (limite nommée, pas un oubli) : un span dit la PAGE,
+   pas QUEL fichier d'une soumission multi-fichiers. Le surlignage se pose sur le premier fichier
+   et l'UI le dit. Ça ne mord que sur les paires CI.
+3. **Tolérances dépendantes de la résolution** (chantier séparé, ci-dessous) — oracle disponible :
+   `ci_geometry_fingerprint.py`.
+4. **Le chemin lourd et la provenance RAG ne sont pas câblés** — décision en attente d'un
+   consommateur (`sop_contract`), pas un oubli.
 
-**Le resserrement au mot est FAIT** (2026-07-21, section suivante) : la zone n'est plus le bloc
-mais les mots de la valeur. Il ne reste donc que le rendu de page + le rectangle CSS.
+## État au 2026-07-21 (suite) — le RECTANGLE : la zone s'affiche sur la page rendue
+
+**Bloqueur levé** : l'aperçu PDF était un `<embed>`, c'est-à-dire le viewer PDF natif du navigateur
+— une boîte noire sur laquelle **on ne peut rien dessiner**, dont le scroll et le zoom sont inconnus
+et dont la page affichée n'est pas pilotable. Or c'est exactement là que la provenance existe.
+
+**Livré :**
+- **`GET /v1/jobs/{id}/page?index=&page=`** ([api_maquette.py](api_maquette.py)) : rend UNE page en
+  PNG (`get_pixmap`, `PAGE_RENDER_DPI = 150`). Une image est sa propre page et est servie telle
+  quelle. Tout devient un `<img>` → superposition uniforme, et « aller à la page 12 » devient
+  possible. Rendu à chaque requête : le cache est une décision d'intégration, pas de proxy.
+- **`ui/review.html`** : `.page-frame` + `.zone` en **pourcentages** — les spans étant déjà des
+  fractions de page, il n'y a **aucune conversion, aucune unité, aucun dpi** à transporter. C'est
+  le dividende de la normalisation. Ligne de champ cliquable → la page bascule et la zone se
+  dessine ; délégation d'événement (les tables sont reconstruites à chaque rafraîchissement).
+
+**Deux défauts de précision trouvés EN MESURANT, pas en regardant :**
+- la bordure était sur l'`<img>` → ses 2 px tombaient **hors** de la boîte de positionnement →
+  décalage. Déplacée sur `.page-frame` ;
+- `.zone` sans `box-sizing: border-box` → le rectangle sortait **4 px trop grand** (mesuré :
+  `x1` à 0,2681 au lieu de 0,2587).
+
+**Prouvé sur navigateur réel** (page synthétique, zéro PII, serveur local) : `<embed>` restants =
+**0** ; image = le rendu serveur 1240×1755 (A4 à 150 dpi) ; les 3 champs cliqués donnent un
+rectangle qui coïncide avec son span à **0,02 px** près. Plus `page_render_smoke.py` **9/9** (PNG
+réel, `page` sélectionne vraiment, page hors bornes → **404 et non un repli silencieux sur la page
+0** — une mauvaise page sous un surlignage a l'air juste tout en pointant à côté, image servie
+telle quelle, job/index inconnus → 404, ratio d'aspect préservé). Régressions vertes.
 
 **Chantier séparé, nommé pour ne pas se perdre — les tolérances dépendent de la RÉSOLUTION.**
 `COLUMN_X_TOLERANCE = 60.0` / `ROW_Y_TOLERANCE = 25.0` sont en **pixels**, « calibrées sur des
