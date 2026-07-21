@@ -25,11 +25,8 @@ alors un `<img>`, la superposition est uniforme, et ça débloque aussi « aller
 impossible en `<embed>`. Le rectangle se pose ensuite en pur CSS : les spans sont déjà en
 fractions, donc `left: x0*100%` etc., **aucune conversion, aucune dimension à transporter**.
 
-**Puis, dans le même geste** : resserrer le span au niveau du mot (`page.get_text("words")`,
-arité 8 vérifiée) — aujourd'hui la zone est le BLOC PyMuPDF (1,7 % à 6,8 % de la hauteur de page
-selon le champ, mesuré). **Ne PAS toucher à la granularité de `ReadResult.lines`** : les règles
-`_value_below`/`_value_right` et leurs tolérances sont calibrées sur des blocs (cf. le chantier
-séparé ci-dessous). Option écartée explicitement, ne pas la re-litiger sans A/B.
+**Le resserrement au mot est FAIT** (2026-07-21, section suivante) : la zone n'est plus le bloc
+mais les mots de la valeur. Il ne reste donc que le rendu de page + le rectangle CSS.
 
 **Chantier séparé, nommé pour ne pas se perdre — les tolérances dépendent de la RÉSOLUTION.**
 `COLUMN_X_TOLERANCE = 60.0` / `ROW_Y_TOLERANCE = 25.0` sont en **pixels**, « calibrées sur des
@@ -39,6 +36,42 @@ aujourd'hui (un seul régime de résolution en circulation). Le fix = exprimer l
 fraction de page, comme les spans. **Bloqué sur un inconnu** : le commentaire ne documente aucune
 hauteur de référence, donc convertir `ROW_Y_TOLERANCE` demande de la deviner. Oracle disponible :
 le harnais d'empreintes CI décrit ci-dessous.
+
+## État au 2026-07-21 (suite) — le span se resserre AUX MOTS de la valeur (par position)
+
+**Le problème** : en born-digital, un `TextLine` = un **bloc** PyMuPDF, soit un paragraphe. Une
+valeur de 8 caractères était surlignée par une zone couvrant jusqu'à 5 lignes → « c'est quelque
+part là-dedans », pas « c'est là ».
+
+**⚠️ LE PIÈGE, rencontré en direct pendant la mesure exploratoire — à ne pas rejouer.** Pour
+chiffrer vite le gain, j'ai sélectionné les mots **par leur texte** (`word in valeur`). Résultat
+sur le champ date : une boîte **3× PLUS GRANDE** que le bloc qu'elle devait rétrécir — parce que
+les mots de la date figurent AUSSI dans le titre du document, et l'union de toutes les occurrences
+couvrait un cinquième de la page. **Un mot ne se retrouve pas par son orthographe** : il se
+retrouve par sa POSITION. C'est la leçon qui a dicté la conception.
+
+**Livré :**
+- **`reader.WordSpan(start, end, bbox)`** : offsets de chaque mot **dans le texte de sa ligne** +
+  sa boîte. Porté par `TextLine.word_spans`.
+- **`reader._word_spans_in_block`** : localise chaque mot en **avançant un curseur** dans le texte
+  du bloc, jamais par `find` depuis le début — les mots arrivent en ordre de lecture, donc chacun
+  reste à sa place même répété. Un mot non contenu verbatim (ligature, césure) est **ignoré**
+  plutôt que placé approximativement.
+- **`template._word_level_bbox`** : union des boîtes des mots que la tranche `[start, end)` du
+  match **chevauche** — pur recouvrement d'intervalles, `template.py` ne voit que des offsets et
+  reste sans dépendance PDF. Aucun mot recouvrant → repli sur la ligne entière.
+- **Scoping automatique, sans tag** (cf. [analyse-tag-ingestion.md](docs/analyse-tag-ingestion.md)) :
+  seul le lecteur couche-texte remplit `word_spans`. Les moteurs OCR laissent vide et retombent sur
+  la ligne — dont ils n'ont pas besoin, leurs boîtes étant déjà au grain ligne (médiane 1,66 %).
+
+**Mesuré sur la facture réelle** — aire de la zone : `numero_facture` **7,7×** plus petite,
+`date_facture` **6,4×**, `total_ht` **3,0×**. Hauteurs ramenées à 1,46–1,65 % de la page (une ligne)
+contre jusqu'à 6,80 % avant.
+
+**Oracle** : `field_provenance_smoke` **18/18** (+4, dont le cas décisif — **deux valeurs sur la
+MÊME ligne donnent deux boîtes différentes**, ce qu'une recherche par orthographe ne peut pas
+produire — et le repli sans grain mot). `ci_geometry_fingerprint` : **diff vide**, la lane CI est
+intacte. 22 suites de régression vertes, `ruff` propre.
 
 ## État au 2026-07-21 (suite) — les spans deviennent PLAÇABLES (normalisés 0..1)
 

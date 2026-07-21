@@ -29,7 +29,16 @@ the date, and bump `version` in `pyproject.toml` to match the tag.
   recovers its span from the match's character range over the joined text. A value straddling lines,
   or pages, yields several spans — hence a list. This is what lets a reviewer be shown the region a
   value was read from, without which they can neither validate nor correct it. Provenance that does
-  not exist stays empty (MRZ-backfilled ID-card fields, nothing matched) and is never fabricated.
+  not exist stays empty (MRZ-backfilled ID-card fields, a VLM read whose synthetic boxes encode
+  reading order rather than position, nothing matched) and is never fabricated.
+- **Per-word narrowing of the highlighted region** — a born-digital PDF is read in PyMuPDF *blocks*,
+  which are paragraph-sized (up to 30 % of a page), so highlighting the block told a reviewer
+  "somewhere in here". The span now covers only the words the value occupies, selected BY CHARACTER
+  POSITION — never by matching a word's spelling, which lands on whichever occurrence comes first:
+  measured on a real invoice, spelling selection produced a box 3x LARGER than the block it was
+  meant to shrink, because a date's words also appeared in the document title. Measured gain on that
+  invoice: 3.0x to 7.7x smaller area. OCR backends expose no word grain and need none — their boxes
+  are already line-sized — so they fall back to the whole line.
 - **Character-integrity guard** — an intrinsic, model-agnostic check on extracted text
   (`text_integrity_guard`), computed at a single seam in `read_document` so every backend (PDF text
   layer, OCR engine, `.docx`, resilient converter) is covered, and applied to both router lanes. It
@@ -45,9 +54,12 @@ the date, and bump `version` in `pyproject.toml` to match the tag.
 - **BREAKING (D1 payload)** — `ocr_jobs.record_fields` is now
   `{name: {value, origin, spans: [{page_index, bbox}]}}` instead of `{name: value}`, one shape for
   every lane. Read it through `template.payload_value`. The verdict engine is untouched: it consumes
-  the value-only projection (`field_values`). Known precision limit, measured on a real invoice: on
-  born-digital PDFs the box is the PyMuPDF *block*, not the word — median 27.5 pt, worst case 252 pt.
-  The page is reliable; the zone can be too coarse to highlight finely.
+  the value-only projection (`field_values`).
+- **Spans are normalized to the page** — `bbox` is four fractions in `[0, 1]` of page width/height,
+  not the reader's native units. Those differ by backend (PDF points at 72 dpi for a text layer,
+  pixels of a 200 dpi render for OCR, ~2.78x apart) and the payload said neither which nor the page
+  size, so a box was literally unplaceable. Normalized, a consumer draws it with no unit, no dpi and
+  no dimensions to carry, and the value survives a change of render resolution or OCR engine.
 
 ### Removed
 - **Automatic table corroboration** — comparing two independent table reconstructions by SHAPE

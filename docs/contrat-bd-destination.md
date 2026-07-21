@@ -73,10 +73,16 @@ attente** (un worker les dépile ; mécanisme = adaptateur). Colonnes (esquisse)
   MRZ (décodée, pas localisée) et une lecture **sans repère de page** — le lecteur VLM émet des
   boîtes synthétiques qui encodent l'ORDRE de lecture, pas une position, donc il ne déclare aucune
   dimension et aucun span n'en est frappé.
-  **LIMITE DE PRÉCISION connue et assumée** (mesurée 2026-07-21 sur facture réelle) : sur du
-  born-digital la bbox est celle du **BLOC** PyMuPDF, pas du mot — mesuré sur les champs extraits :
-  1,7 % de la hauteur de page (une ligne, exploitable) à **6,8 %** (~5 lignes, trop grossier pour
-  surligner). La **page** est fiable. Resserrement prévu avec le rectangle (cf. HANDOFF). `origin` nomme le chemin d'obtention — ce n'est pas un score de qualité.
+  **PRÉCISION** (mesurée 2026-07-21 sur facture réelle) : la bbox cerne **les mots de la valeur**,
+  pas le paragraphe qui la contient. Le born-digital est lu par BLOCS PyMuPDF (jusqu'à 30 % d'une
+  page) ; le span est resserré aux mots que la valeur occupe, sélectionnés **par position dans le
+  texte** — jamais par orthographe, un même mot revenant plusieurs fois sur une page. Gain mesuré
+  sur les 3 champs : aire **3,0× à 7,7×** plus petite, hauteurs ramenées à 1,46–1,65 % de la page
+  (une ligne). Les lanes OCR n'ont pas de grain mot et n'en ont pas besoin : leurs boîtes sont déjà
+  au grain ligne (médiane 1,66 %) — elles retombent sur la ligne entière.
+  **Limite résiduelle, mineure** : un mot que le lecteur ne rend pas verbatim (ligature, césure)
+  est ignoré, donc la boîte peut être un peu plus étroite que la valeur ; si aucun mot ne
+  correspond, repli sur le bloc entier. Jamais de mot placé approximativement. `origin` nomme le chemin d'obtention — ce n'est pas un score de qualité.
   Producteur/lecteur = `template.field_payload` / `template.payload_value` (une seule
   connaissance de la forme). **Pas de `superseded_by` ici, contrairement à D8** : D1 porte
   l'extraction MACHINE ; la correction humaine appartient à D3 (qui référence le job sans
