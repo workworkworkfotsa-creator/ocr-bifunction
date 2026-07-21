@@ -88,7 +88,7 @@ from ocr_bifunction.issuer_registry import (
 from ocr_bifunction.intake import handle_document, job_from_outcome
 from ocr_bifunction.orchestrator import BatchItem
 from ocr_bifunction.promotion import promote_suggestion
-from ocr_bifunction.reader import OcrEngine
+from ocr_bifunction.reader import IMAGE_SUFFIXES, OcrEngine
 from ocr_bifunction.store import Store
 from ocr_bifunction.repository import (
     STATUS_DONE,
@@ -788,6 +788,56 @@ def job_document(job_id: int, index: int = 0) -> FileResponse:
             status_code=404, detail=f"no retained document for job {job_id}"
         )
     return FileResponse(files[index])
+
+
+# Display resolution for the rendered page preview. ANY value works: provenance spans are
+# normalized to the page, so the overlay is dpi-independent — precisely what normalizing bought.
+PAGE_RENDER_DPI = 150
+
+
+@app.get("/v1/jobs/{job_id}/page")
+def job_page(job_id: int, index: int = 0, page: int = 0) -> Response:
+    """Render ONE page of a retained document to PNG — what the highlight overlay needs.
+
+    A browser's built-in PDF viewer is an opaque plugin: nothing can be drawn over it, its
+    scroll and zoom are unknown, and the page it displays cannot be chosen. Rendering the page
+    ourselves makes every document type an `<img>`, so the overlay is uniform and "go to page
+    12" becomes possible at all. `index` picks the file (a CI pair has two), `page` is 0-based
+    within it — the same numbering `ProvenanceSpan.page_index` uses.
+
+    An image file IS its own page and is served as-is. Rendering happens per request: caching
+    is the integrator's call on real infrastructure, not something a proxy should presume.
+    """
+    job = _get_job_row(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"unknown job_id: {job_id}")
+    files = _spooled_document_files(job)
+    if not files or index < 0 or index >= len(files):
+        raise HTTPException(
+            status_code=404, detail=f"no retained document for job {job_id}"
+        )
+    document_path = files[index]
+    suffix = document_path.suffix.lower()
+    if suffix in IMAGE_SUFFIXES:
+        if page != 0:
+            raise HTTPException(
+                status_code=404, detail=f"an image has one page, asked for {page}"
+            )
+        return FileResponse(document_path)
+    if suffix != ".pdf":
+        raise HTTPException(
+            status_code=404, detail=f"cannot render a page of a {suffix} document"
+        )
+    import pymupdf
+
+    with pymupdf.open(document_path) as document:
+        if page < 0 or page >= document.page_count:
+            raise HTTPException(
+                status_code=404,
+                detail=f"page {page} outside 0..{document.page_count - 1}",
+            )
+        pixmap = document[page].get_pixmap(dpi=PAGE_RENDER_DPI)
+        return Response(content=pixmap.tobytes("png"), media_type="image/png")
 
 
 # --- Local-test UI + review surface (disposable adapters, BRIEF-fonctionnement-mix). ---

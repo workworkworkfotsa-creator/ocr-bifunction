@@ -16,8 +16,21 @@
     .card h3 { margin: 0 0 0.4rem; font-size: 1rem; }
     .side-by-side { display: flex; gap: 1rem; align-items: flex-start; }
     .doc-preview { flex: 0 0 46%; max-width: 46%; }
-    .doc-preview img { max-width: 100%; border: 1px solid #ddd; border-radius: 4px; }
-    .doc-preview embed { width: 100%; height: 26rem; border: 1px solid #ddd; border-radius: 4px; }
+    /* The border sits on the FRAME, never on the image: a border on the image would put its
+       2px outside the box the zone is positioned against, offsetting every highlight. */
+    .doc-preview img { max-width: 100%; display: block; }
+    /* The page is RENDERED server-side to PNG so a zone can be drawn over it — impossible on a
+       browser's built-in PDF viewer. The frame is the positioning context; the zone is placed in
+       PERCENT, which is exactly the form provenance spans already have (no unit, no dpi). */
+    .page-frame { position: relative; display: inline-block; max-width: 100%;
+                  border: 1px solid #ddd; border-radius: 4px; line-height: 0; }
+    /* border-box, or the 2px outline would sit OUTSIDE the percentage box and the drawn zone
+       would be 4px wider and taller than the span it represents (measured). */
+    .zone { position: absolute; box-sizing: border-box; border: 2px solid #d33;
+            background: rgba(221, 51, 51, 0.14); border-radius: 2px; pointer-events: none; }
+    tr.locatable { cursor: pointer; }
+    tr.locatable:hover td { background: #fdeaea; }
+    tr.located td { background: #fdeaea; font-weight: 600; }
     .doc-details { flex: 1; min-width: 0; }
     .fields td { padding: 0.1rem 0.8rem 0.1rem 0; font-size: 0.9rem; }
     ul { margin: 0.3rem 0; padding-left: 1.2rem; font-size: 0.9rem; }
@@ -57,35 +70,88 @@
     // No span means provenance genuinely does not exist (MRZ backfill, nothing matched) — it
     // shows as "—" rather than a made-up location, so the reviewer knows when there is no zone
     // to go look at.
-    function fieldRows(recordFields) {
+    function fieldRows(recordFields, jobId) {
       const names = Object.keys(recordFields || {});
       if (!names.length) return "";
       return "<table class='fields'>" + names.map(name => {
         const entry = recordFields[name] || {};
-        const pages = [...new Set((entry.spans || []).map(span => span.page_index + 1))];
+        const spans = entry.spans || [];
+        const pages = [...new Set(spans.map(span => span.page_index + 1))];
         const location = pages.length ? "p. " + pages.join(", ") : "—";
-        return `<tr><td>${escapeHtml(name)}</td><td><b>${escapeHtml(entry.value ?? "—")}</b></td>`
-             + `<td class="muted">${escapeHtml(location)}</td></tr>`;
+        const cells = `<td>${escapeHtml(name)}</td><td><b>${escapeHtml(entry.value ?? "—")}</b></td>`
+                    + `<td class="muted">${escapeHtml(location)}</td>`;
+        if (!spans.length) return `<tr>${cells}</tr>`;
+        // The row carries its own spans: clicking it draws them over the rendered page.
+        return `<tr class="locatable" data-job="${jobId}" data-page="${spans[0].page_index}"`
+             + ` data-spans="${escapeHtml(JSON.stringify(spans))}"`
+             + ` title="Cliquer pour situer cette valeur dans le document">${cells}</tr>`;
       }).join("") + "</table>";
     }
+
+    // Draw a field's spans over the rendered page. bbox is [x0,y0,x1,y1] as FRACTIONS of the
+    // page, so it maps straight to percentages — no unit, no dpi, no page size needed here.
+    // That is exactly what normalizing spans at the reader bought: the zone stays correct
+    // whatever resolution the page happens to be rendered at.
+    function showZone(jobId, pageIndex, spans, row) {
+      const fileIndex = 0;   // see documentPreview — the file a span came from is not recorded
+      const frame = document.getElementById(`frame_${jobId}_${fileIndex}`);
+      const image = document.getElementById(`page_${jobId}_${fileIndex}`);
+      if (!frame || !image) return;
+      image.src = `/v1/jobs/${jobId}/page?index=${fileIndex}&page=${pageIndex}`;
+      frame.querySelectorAll(".zone").forEach(zone => zone.remove());
+      spans.filter(span => span.page_index === pageIndex).forEach(span => {
+        const [x0, y0, x1, y1] = span.bbox;
+        const zone = document.createElement("div");
+        zone.className = "zone";
+        zone.style.left = `${x0 * 100}%`;
+        zone.style.top = `${y0 * 100}%`;
+        zone.style.width = `${(x1 - x0) * 100}%`;
+        zone.style.height = `${(y1 - y0) * 100}%`;
+        frame.appendChild(zone);
+      });
+      document.querySelectorAll("tr.located").forEach(other => other.classList.remove("located"));
+      if (row) row.classList.add("located");
+    }
+
+    // Delegated: the field tables are rebuilt by innerHTML on every refresh, so binding here
+    // once survives every reload.
+    document.addEventListener("click", event => {
+      const row = event.target.closest && event.target.closest("tr.locatable");
+      if (!row) return;
+      showZone(Number(row.dataset.job), Number(row.dataset.page),
+               JSON.parse(row.dataset.spans), row);
+    });
 
     // The retained document rendered NEXT TO its extraction, so the reviewer judges the
     // extraction itself (doc + fields side by side), not just the record.
     const IMAGE_SUFFIXES = [".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"];
 
-    function documentPreview(documents) {
+    // Every previewable document is shown as a SERVER-RENDERED page image, PDFs included: a
+    // browser's built-in PDF viewer is opaque, so nothing can be drawn over it and the page it
+    // shows cannot be chosen. Rendering makes the overlay uniform and "go to page N" possible.
+    //
+    // KNOWN LIMIT, named rather than guessed: a provenance span says WHICH PAGE, not which FILE
+    // of a multi-file submission (a CI pair retains recto AND verso). Zones are therefore drawn
+    // on the FIRST retained file; when several are retained the others are shown plain, and the
+    // note below says so instead of silently pointing at the wrong sheet.
+    function documentPreview(documents, jobId) {
       if (!documents || !documents.length) {
         return '<p class="muted">Document non retenu (traité avant la rétention, ou purgé).</p>';
       }
-      return documents.map(doc => {
-        if (IMAGE_SUFFIXES.includes(doc.suffix)) {
-          return `<img src="${doc.url}" alt="${escapeHtml(doc.filename)}" />`;
+      const frames = documents.map((doc, fileIndex) => {
+        if (doc.suffix !== ".pdf" && !IMAGE_SUFFIXES.includes(doc.suffix)) {
+          return `<p><a href="${doc.url}" target="_blank">${escapeHtml(doc.filename)}</a></p>`;
         }
-        if (doc.suffix === ".pdf") {
-          return `<embed src="${doc.url}" type="application/pdf" />`;
-        }
-        return `<p><a href="${doc.url}" target="_blank">${escapeHtml(doc.filename)}</a></p>`;
+        return `<div class="page-frame" id="frame_${jobId}_${fileIndex}">`
+             + `<img id="page_${jobId}_${fileIndex}"`
+             + ` src="/v1/jobs/${jobId}/page?index=${fileIndex}&page=0"`
+             + ` alt="${escapeHtml(doc.filename)}" /></div>`;
       }).join("");
+      const note = documents.length > 1
+        ? '<p class="muted">Plusieurs fichiers retenus : le surlignage se place sur le premier '
+          + '(la provenance nomme la page, pas le fichier).</p>'
+        : "";
+      return frames + note;
     }
 
     async function loadQueue() {
@@ -96,9 +162,9 @@
         <div class="card">
           <h3>#${job.job_id} — ${escapeHtml(job.source)} <span class="muted">[${job.category_lane}${job.template_id ? " / " + escapeHtml(job.template_id) : ""}]</span></h3>
           <div class="side-by-side">
-            <div class="doc-preview">${documentPreview(job.documents)}</div>
+            <div class="doc-preview">${documentPreview(job.documents, job.job_id)}</div>
             <div class="doc-details">
-              ${fieldRows(job.record_fields)}
+              ${fieldRows(job.record_fields, job.job_id)}
               <ul>${job.reasons.map(reason => `<li>${escapeHtml(reason)}</li>`).join("")}</ul>
               ${job.decision
                 ? `<p class="done">Décision enregistrée : ${job.decision} (clôture au prochain passage du watchdog)</p>`
@@ -132,11 +198,11 @@
           <h3>#${job.job_id} — ${escapeHtml(job.source)}
               <span class="muted">[${escapeHtml(job.category ?? "?")}${job.template_id ? " / " + escapeHtml(job.template_id) : ""}${job.expected_holder_name ? " — titulaire déclaré : " + escapeHtml(job.expected_holder_name) : ""}]</span></h3>
           <div class="side-by-side">
-            <div class="doc-preview">${documentPreview(job.documents)}</div>
+            <div class="doc-preview">${documentPreview(job.documents, job.job_id)}</div>
             <div class="doc-details">
               <p><b>Document non validé car :</b></p>
               <ul>${job.reasons.map(reason => `<li>${escapeHtml(reason)}</li>`).join("")}</ul>
-              ${fieldRows(job.record_fields)}
+              ${fieldRows(job.record_fields, job.job_id)}
               ${job.decision
                 ? `<p class="done">Clos (${job.decision}) — purge du document au prochain passage du watchdog</p>`
                 : `<input type="text" id="comment_${job.job_id}" placeholder="note pour compliance (optionnel)" />
