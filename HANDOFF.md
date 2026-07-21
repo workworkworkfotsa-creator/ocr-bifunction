@@ -13,6 +13,85 @@
 > coller de valeur réelle (nom, n°doc, adresse) dans le code, les docs ou un message de commit ; `0_Aller_retour_IT/`,
 > `inputs/`, `outputs/`, `models/`, `spool/` restent gitignorés (vérifié absent du tree poussé).
 
+## État au 2026-07-20 (suite) — arête SENS scindée : garde d'intégrité d'encodage (model-agnostic)
+
+**Affinage de l'arête « sens » (confirmé utilisateur 2026-07-20)** — elle se scinde :
+- **structure / ordre de lecture** → corroborable (idée markitdown, section suivante).
+- **intégrité-caractères** → **PAS corroborable**. En born-digital le texte vient de la CMap
+  `ToUnicode` du PDF ; une police sous-ensemble à CMap cassée produit du **mojibake** (`Ã©`, `â€™`)
+  sur un doc pourtant natif. Docling, markitdown, PyMuPDF font TOUS confiance à la MÊME CMap → même
+  faux → **faux accord** de corroboration. Propriété de la SOURCE, pas du lecteur : changer de modèle
+  n'aide pas. Donc l'idée markitdown **ne ferme QUE la sous-arête structure**, jamais l'intégrité-
+  caractères.
+
+**Décision : un garde de plausibilité model-agnostique** (test intrinsèque sur le texte extrait,
+au-dessus du slot lecteur `reader.py`, identique Docling/markitdown). Signaux **vérifiés (Context7
+2026-07-20)** :
+- compte de `U+FFFD` (�) > 0 → **flag dur, irréparable** (perte déjà consommée) ;
+- `ftfy.badness.is_bad(text)` / `ftfy.badness.badness(text)` → **détection** heuristique (sans
+  réparer, false-positive-safe sur du FR propre) ;
+- `ftfy.fix_and_explain(text)` → `(fixed, explanation)` = **répare + explique** → réparation en
+  SUGGESTION, l'humain valide (doctrine suggestion/DRAFT) ; `ftfy.fix_encoding` = variante encodage-seul ;
+- ratio « script attendu » (Latin + ponctuation FR) vs C1/combinants isolés.
+Politique : réversible → suggestion + humain ; `U+FFFD`/irréversible → flag dur, aucun auto-repair.
+
+**Stratégie de test (smoke-first ; l'utilisateur n'a pas encore de cas — il cherche en ligne) :** la
+LOGIQUE du garde est unit-testable **dès maintenant** sur des chaînes mojibake **fabriquées**
+(ex. `"été".encode("utf-8").decode("cp1252")` — aucun PDF requis) ; un **vrai PDF à CMap cassée**
+(police sous-ensemble sans `ToUnicode` ; signature = copier-coller qui sort du charabia) n'est requis
+que pour la preuve **bout-en-bout**. Un reproducteur synthétique (PDF à ToUnicode strippée) est une
+alternative à la chasse en ligne.
+
+**Transverse** : la même classe de défaut se produit à TOUTE frontière où du texte entre (ingestion
+d'API, import, écriture BD), pas seulement à la lecture de documents. Playbook commun écrit →
+[docs/playbook-encodage.md](docs/playbook-encodage.md) (principe de garantie à la frontière, contrat
+en 5 points, signaux de détection, politique de réparation, diagnostic BD en 3 cas, checklist à
+dérouler à chaque nouvelle étape). Concept → [[arête « sens »]] du dictionnaire.
+
+**LIVRÉ (2026-07-20) — la LOGIQUE du garde, prouvée sur chaînes fabriquées (pas de PDF requis).**
+`ocr_bifunction/text_integrity_guard.py` : `assess_text_integrity(text) -> TextIntegrityAssessment`
+(PUR, model-agnostic). Dispositions `clean` / `repairable_mojibake` / `irreversible_loss` /
+`suspect_encoding`, précédence irréversible > réparable > suspect > clean. Deux signaux vérifiés sur
+`ftfy` 6.3.1 : `U+FFFD` (perte, flag dur, aucun repair) et `ftfy.badness.is_bad` (mojibake) +
+`fix_and_explain` (repair candidat + provenance octets, en SUGGESTION). Score `ftfy.badness.badness`
+exposé = le nombre calibratable (patron `layout_score`). **Finding verrouillé : `is_bad` renvoie False
+sur `U+FFFD`** → le check U+FFFD n'est pas redondant. Dép runtime `ftfy>=6.3.1` ajoutée. Prouvé
+`text_integrity_guard_smoke.py` **5/5** ; `conversion_guard_smoke` 6/6 (régression) ; `ruff` propre.
+Calibration du seuil `badness` = passe observateur sur `inputs/cplx` (pas encore faite).
+
+**CÂBLÉ (2026-07-21) — le garde est ACTIF de la lecture au verdict.**
+- **`reader.py`** : `ReadResult.text_integrity: TextIntegrityAssessment | None = None` (champ optionnel,
+  **16 appelants intacts**) ; calcul à **UN seul seam** — `read_document` capture le résultat de tous les
+  backends (PyMuPDF / OCR / docx / résilient) et évalue `assess_text_integrity(result.text)` avant de
+  rendre. C'est ce qui rend le garde model-agnostique en pratique. Laissé `None` si pas de texte
+  (« non évalué » est honnête, « clean » sur du vide ne le serait pas).
+- **`router.py`** : `apply_text_integrity_signal(routed, assessment)` appliqué aux **DEUX lanes**.
+  Règle porteuse : un texte non-clean **escalade AUTO → REVIEW** (un doc peut matcher son template et
+  passer tous ses checks alors que les CARACTÈRES extraits sont du mojibake) ; un **REJECT n'est jamais
+  adouci** ; le `repaired_text` est nommé en **SUGGESTION**, jamais appliqué (après détection, c'est
+  l'humain — demande utilisateur).
+- **Reproducteur e2e SANS PDF à CMap cassée** : un PDF synthétique dont la couche texte porte
+  littéralement le mojibake (`insert_text`). Le garde lit la CHAÎNE extraite → la cause de la corruption
+  lui est indifférente. Bonus mesuré : ftfy récupère même l'espace insécable aplati par l'extraction PDF
+  (`Ã\xa0` → `Ã `), la réparation retombe sur l'original **exact**.
+- Prouvé **`text_integrity_wiring_smoke.py` 8/8** (e2e read + route, non-régression sur PDF propre,
+  escalade AUTO→REVIEW, REJECT non adouci, no-op sur clean, perte irréversible sans suggestion).
+  Régressions vertes (exit 0) : `text_integrity_guard_smoke` 5/5, `conversion_guard_smoke` 6/6,
+  `resilient_conversion_smoke` 11/11, `verdict_check`, `verdict_flow_check`, `handler_check`,
+  `store_check`, `checks_check`, `reconcile_verdict_check`, `context_checks_check`,
+  `escalation_reject_smoke`, `reconcile_normalize_smoke`. `ruff` propre.
+- **Smokes FastAPI/subprocess relancés (2026-07-21, GO utilisateur) — TOUS VERTS** : `flow_smoke` 14/14,
+  `load_smoke` 10/10, `policy_smoke` 20/20, `conformity_smoke` 12/12, `use_case_key_smoke` 13/13,
+  `severity_smoke` 8/8, `corroboration_smoke` 7/7, `holder_reference_smoke` 5/5,
+  `async_type_mismatch_smoke` 4/4, `draft_smoke` 12/12, `facture_validation_smoke` ALL PASS.
+  **Aucune régression** : le champ optionnel sur `ReadResult` et le helper du router ne cassent aucun
+  des 16 appelants ni aucune surface.
+
+**Parking (demande utilisateur, « bien plus tard ») :** UI de revue avec le **document affiché à côté de
+l'extraction, extraction ÉDITABLE**. Hors scope tant que le reste n'est pas stabilisé.
+
+Commit non fait (l'utilisateur committera).
+
 ## État au 2026-07-20 (nuit) — versionnage adopté (v0.1.0 releasé) + NEXT markitdown (arête SENS)
 
 **Versionnage sérieux posé** (le repo devient source de vérité) : SemVer + **Keep a Changelog**

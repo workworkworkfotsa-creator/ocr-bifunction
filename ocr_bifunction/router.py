@@ -37,6 +37,7 @@ from ocr_bifunction.reader import (
     read_document,
 )
 from ocr_bifunction.suggestion import SuggestionOutcome
+from ocr_bifunction.text_integrity_guard import TextIntegrityAssessment
 from ocr_bifunction.template import (
     ValidationContext,
     evaluate_validation,
@@ -115,9 +116,10 @@ def route_document(
     template = match_template(result.lines, available_templates)
 
     if template is not None:
-        return _structured_result(
+        structured = _structured_result(
             document_path.name, result.lines, template, context, today
         )
+        return apply_text_integrity_signal(structured, result.text_integrity)
 
     routed = _rag_result(
         document_path.name,
@@ -127,6 +129,33 @@ def route_document(
     )
     if suggester is not None and result.text.strip():
         routed.suggestion = suggester(result.text, result.lines, category)
+    return apply_text_integrity_signal(routed, result.text_integrity)
+
+
+def apply_text_integrity_signal(
+    routed: RoutedDocument, assessment: TextIntegrityAssessment | None
+) -> RoutedDocument:
+    """Surface a corrupted-characters read on the routed document — and never let it AUTO.
+
+    The character-integrity edge is ORTHOGONAL to the template checks: a document can match its
+    template and satisfy every validation rule while the CHARACTERS those fields were extracted
+    from are mojibake. So a non-clean assessment adds its specific reason AND escalates an AUTO
+    verdict to REVIEW. A REJECT is never softened (reject > review > auto stands), and the RAG
+    lane — whose verdict is None and which already routes to a human — only gains the reason.
+
+    The repair, when one exists, rides along as a SUGGESTION named in the reasons; it is NEVER
+    applied here. Deciding on the content after detection is the human's call."""
+    if assessment is None or assessment.disposition == "clean":
+        return routed
+    reasons = [*routed.reasons, *assessment.reasons]
+    if assessment.repaired_text is not None:
+        reasons.append(
+            "a repaired reading is available as a suggestion "
+            "(human validates, never auto-applied)"
+        )
+    routed.reasons = reasons
+    if routed.verdict is Verdict.AUTO:
+        routed.verdict = Verdict.REVIEW
     return routed
 
 

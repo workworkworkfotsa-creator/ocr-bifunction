@@ -282,3 +282,52 @@ Source de vérité : `ocr_bifunction/intake.py:160` (`handle_document`), `:222` 
 appelée par `api_maquette.py` (`_handle_validated_document`) et `worker_watchdog.py`
 (`_process_claimed_job`). Prouvé : `handler_check.py` 6/6 (isolé, Store `:memory:`). Refactor
 candidat B, 2026-07-13.
+
+## arête « sens » : structure vs intégrité-caractères (l'encodage born-digital)
+
+L'arête SENS de la validation de conversion (la 3e, après complétude et forme) se **scinde en deux
+sous-arêtes de nature différente** (confirmé utilisateur 2026-07-20) :
+
+- **structure / ordre de lecture** — titres, paragraphes, cellules de table, linéarisation. Un
+  extracteur peut mal linéariser un multi-colonnes ou une table → tokens dans le mauvais ordre → sens
+  corrompu SANS qu'un caractère soit faux. **Corroborable** par un 2e lecteur indépendant (idée
+  markitdown : diff Docling↔markitdown ; divergence > seuil → humain).
+- **intégrité-caractères** — les caractères eux-mêmes sont-ils les bons ? En born-digital, le texte
+  vient de la couche programmatique du PDF via sa table `ToUnicode` (CMap). **Table absente/cassée
+  (police sous-ensemble) → mojibake** (`Ã©`, `â€™`…) alors que le doc est parfaitement natif. **NON
+  corroborable** : Docling, markitdown, PyMuPDF font TOUS confiance à la MÊME CMap → même faux →
+  **faux accord** (« corroboré » à tort). C'est une propriété de la SOURCE, héritée à l'identique par
+  tout extracteur du même type — changer de modèle n'y change rien.
+
+Donc l'intégrité-caractères exige un **garde de plausibilité model-agnostique** : un test intrinsèque
+sur le texte extrait (quel qu'en soit le producteur), placé AU-DESSUS du slot lecteur. Signaux
+(vérifiés Context7 2026-07-20) : compte de `U+FFFD` (perte déjà consommée → flag dur, irréparable) ;
+`ftfy.badness.is_bad` / `badness()` (heuristique mojibake, sans réparer, false-positive-safe sur du
+FR propre) ; `ftfy.fix_and_explain()` → `(fixed, explanation)` (répare + explique ce qu'il a changé →
+réparation en SUGGESTION, l'humain valide, doctrine [[passe DRAFT (drafting câblé au flux)]] «
+propose/dispose ») ; ratio « script attendu » (Latin + ponctuation FR).
+
+**LIVRÉ + CÂBLÉ (logique 2026-07-20, câblage 2026-07-21)** — actif de la lecture au verdict.
+Deux classes séparées, mesurées sur `ftfy` 6.3.1 : **perte irréversible** (`U+FFFD`
+présent → flag dur, aucun repair) et **mojibake réparable** (`is_bad` + `fix_and_explain` renverse et
+explique les octets → `repaired_text` en suggestion, humain valide). Finding verrouillé :
+`ftfy.badness.is_bad` renvoie **False** sur du `U+FFFD` → le check U+FFFD n'est PAS redondant, il
+attrape une classe que l'heuristique mojibake laisse passer.
+
+**Règle porteuse du câblage** : un texte non-clean **escalade AUTO → REVIEW** (un document peut matcher
+son template et passer tous ses checks alors que les CARACTÈRES dont les champs sont extraits sont du
+mojibake — l'arête est ORTHOGONALE aux checks) ; un **REJECT n'est jamais adouci** ; le `repaired_text`
+est offert en **SUGGESTION**, jamais appliqué (après détection, c'est l'humain qui tranche).
+
+Source : `ocr_bifunction/text_integrity_guard.py` (`assess_text_integrity`, `TextIntegrityAssessment`,
+dispositions `clean`/`repairable_mojibake`/`irreversible_loss`/`suspect_encoding`) ; câblage
+`ocr_bifunction/reader.py` (`ReadResult.text_integrity`, calcul à un seam unique dans `read_document` —
+tous backends confondus) et `ocr_bifunction/router.py` (`apply_text_integrity_signal`, appliqué aux 2
+lanes). Prouvé `text_integrity_guard_smoke.py` 5/5 (logique, chaînes fabriquées
+`encode("utf-8").decode("latin-1")`) + `text_integrity_wiring_smoke.py` 8/8 (bout-en-bout via un PDF
+synthétique dont la couche texte PORTE le mojibake — la cause de la corruption est indifférente au
+garde, donc aucun PDF à CMap cassée n'est nécessaire pour prouver le chemin). Complétude/forme
+déjà ancrées `ocr_bifunction/conversion_guard.py` (`assess_page_coverage`, `low_layout_pages`) et
+`ocr_bifunction/docling_page_range_converter.py` (`confidence.pages` = produced ; `layout_score`).
+Confirmation utilisateur 2026-07-20 ; `ftfy` vérifié Context7 + install 2026-07-20.
+Voir [[verdict de routing (auto / humain / invalide)]].

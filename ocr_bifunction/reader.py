@@ -28,6 +28,10 @@ from ocr_bifunction.resilient_conversion import (
     PageRangeConverter,
     reconcile_page_range_conversion,
 )
+from ocr_bifunction.text_integrity_guard import (
+    TextIntegrityAssessment,
+    assess_text_integrity,
+)
 
 # A factory that binds a per-document `PageRangeConverter` (e.g. Docling bound to one path, sharing
 # one loaded model): the heavy resilient read needs the path both to count pages and to convert.
@@ -132,6 +136,12 @@ class ReadResult:
     # page-grain twin of the CI `missing` signal — an incomplete read never passes for a whole one.
     missing_pages: list[int] = field(default_factory=list)
     low_form_pages: list[int] = field(default_factory=list)
+    # Character-integrity signal, None when there was no text to assess. The extracted characters
+    # can be MOJIBAKE on a perfectly native PDF (a subset font with a broken ToUnicode CMap) — a
+    # corruption every text-layer extractor inherits identically, so it is checked HERE, once, on
+    # the output, rather than per-engine. Orthogonal to `confidence` (legibility of a recognition)
+    # and to `missing_pages` (completeness): those can all be perfect while the characters are wrong.
+    text_integrity: TextIntegrityAssessment | None = None
 
 
 @runtime_checkable
@@ -167,17 +177,28 @@ def read_document(
     suffix = document_path.suffix.lower()
     if suffix == ".pdf":
         if heavy_page_converter_factory is not None:
-            return _read_pdf_resilient(document_path, heavy_page_converter_factory)
-        return _read_pdf(document_path, ocr_engine)
-    if suffix == ".docx":
-        return _read_docx(document_path)
-    if suffix in IMAGE_SUFFIXES:
-        return _read_image(document_path, ocr_engine)
-    return ReadResult(
-        document_path=document_path,
-        backend_name="(unsupported)",
-        error=f"unsupported file type: {suffix}",
-    )
+            result = _read_pdf_resilient(document_path, heavy_page_converter_factory)
+        else:
+            result = _read_pdf(document_path, ocr_engine)
+    elif suffix == ".docx":
+        result = _read_docx(document_path)
+    elif suffix in IMAGE_SUFFIXES:
+        result = _read_image(document_path, ocr_engine)
+    else:
+        result = ReadResult(
+            document_path=document_path,
+            backend_name="(unsupported)",
+            error=f"unsupported file type: {suffix}",
+        )
+
+    # ONE seam, every backend: whatever produced the characters (PDF text layer, OCR engine,
+    # docx, heavy resilient converter), they are checked for corruption here. That is what makes
+    # the guard model-agnostic — the failure it catches belongs to the SOURCE, not to any engine.
+    # Left None when there is nothing to assess (an image-only page with no OCR engine wired):
+    # "not assessed" is honest, "clean" on empty text would not be.
+    if result.text.strip():
+        result.text_integrity = assess_text_integrity(result.text)
+    return result
 
 
 def _read_pdf_resilient(
