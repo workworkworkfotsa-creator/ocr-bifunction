@@ -49,6 +49,9 @@ ROW_Y_TOLERANCE = 25.0
 ORIGIN_ANCHOR = "anchor"  # geometry path: the value is one read line, box known exactly
 ORIGIN_PATTERN = "pattern"  # regex path: spans are the line(s) the match overlapped
 ORIGIN_MRZ = "mrz"  # CI backfill from the parsed machine-readable zone — NO geometry
+# A reviewer typed it (D3 field_corrections, applied to D1 on accept): authoritative, and by
+# nature WITHOUT geometry — a typed value sits nowhere on the page.
+ORIGIN_HUMAN = "human"
 
 
 @dataclass

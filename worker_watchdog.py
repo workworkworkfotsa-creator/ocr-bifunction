@@ -56,7 +56,7 @@ from ocr_bifunction.conformity_policy import SqliteConformityPolicyRepository
 from ocr_bifunction.context_assembly import collect_validated_attestations
 from ocr_bifunction.drafting_flow import run_draft_pass
 from ocr_bifunction.issuer_registry import SqliteIssuerRegistryRepository
-from ocr_bifunction.template import ValidationContext, field_payload
+from ocr_bifunction.template import ORIGIN_HUMAN, ValidationContext, field_payload
 from ocr_bifunction.template_repository import SqliteTemplateRepository
 
 PROJECT_ROOT = Path(__file__).parent
@@ -187,6 +187,31 @@ def _process_claimed_job(
             shutil.rmtree(job.document_ref, ignore_errors=True)  # PII leaves the disk
 
 
+def _apply_corrections(
+    record_fields: dict[str, dict], corrections: dict[str, dict]
+) -> dict[str, dict] | None:
+    """The record with the human's edits applied — None when there is nothing to apply.
+
+    A corrected value is authoritative, so it carries `origin: "human"` and NO spans: a typed
+    value sits nowhere on the page, and pointing at the box the MACHINE read would show the
+    reviewer a region that no longer holds what the field says. Absent provenance stays absent
+    (the rule the whole provenance chain is built on).
+
+    Returning None on an empty correction map keeps `update_status` from rewriting the column
+    for the ordinary case, so an uncorrected accept is byte-identical to what it was before.
+    """
+    if not corrections:
+        return None
+    corrected = dict(record_fields)
+    for name, correction in corrections.items():
+        corrected[name] = {
+            "value": correction.get("to"),
+            "origin": ORIGIN_HUMAN,
+            "spans": [],
+        }
+    return corrected
+
+
 def _sweep_decisions(
     repository: SqliteRepository, review_repository: SqliteReviewRepository
 ) -> int:
@@ -213,13 +238,29 @@ def _sweep_decisions(
         if job.status != STATUS_NEEDS_REVIEW:
             continue
         if review.decision == DECISION_ACCEPT:
+            # Accepting is what makes a staged correction real: THIS process writes D1, so the
+            # reviewer's edits (staged in D3) land in the record here and nowhere else. A
+            # corrected value is authoritative and has NO geometry — nobody typed it onto the
+            # page — so its provenance is honestly empty rather than the machine's old box.
+            corrected_fields = _apply_corrections(
+                job.record_fields, review.field_corrections
+            )
+            correction_reasons = [
+                f"human corrected '{name}'" for name in sorted(review.field_corrections)
+            ]
             repository.update_status(
                 job.job_id,
                 STATUS_DONE,
-                reasons=[*job.reasons, "human decision: accept"],
+                record_fields=corrected_fields,
+                reasons=[*job.reasons, "human decision: accept", *correction_reasons],
             )
             print(
                 f"  job #{job.job_id}: closed done (human accepted, review #{review.review_id})"
+                + (
+                    f", {len(review.field_corrections)} field(s) corrected"
+                    if review.field_corrections
+                    else ""
+                )
             )
         else:
             repository.update_status(

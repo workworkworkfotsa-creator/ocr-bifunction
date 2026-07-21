@@ -28,6 +28,9 @@
        would be 4px wider and taller than the span it represents (measured). */
     .zone { position: absolute; box-sizing: border-box; border: 2px solid #d33;
             background: rgba(221, 51, 51, 0.14); border-radius: 2px; pointer-events: none; }
+    /* No `type` attribute, so the wider `input[type=text]` rule below does not apply here. */
+    .field-value { width: 13rem; font-size: 0.9rem; padding: 0.1rem 0.3rem; }
+    .save-fields { margin-top: 0.4rem; font-size: 0.85rem; }
     tr.locatable { cursor: pointer; }
     tr.locatable:hover td { background: #fdeaea; }
     tr.located td { background: #fdeaea; font-weight: 600; }
@@ -78,14 +81,44 @@
         const spans = entry.spans || [];
         const pages = [...new Set(spans.map(span => span.page_index + 1))];
         const location = pages.length ? "p. " + pages.join(", ") : "—";
-        const cells = `<td>${escapeHtml(name)}</td><td><b>${escapeHtml(entry.value ?? "—")}</b></td>`
+        // The value is EDITABLE: seeing the zone lets the reviewer judge, correcting needs a
+        // field to type in. The edit is staged in D3 and applied to the D1 record by the
+        // watchdog on accept — the UI never writes D1. `data-machine` keeps what the machine
+        // read, so an untouched field submits nothing.
+        const cells = `<td>${escapeHtml(name)}</td>`
+                    + `<td><input class="field-value" data-job="${jobId}" data-field="${escapeHtml(name)}"`
+                    + ` data-machine="${escapeHtml(entry.value ?? "")}"`
+                    + ` value="${escapeHtml(entry.value ?? "")}" /></td>`
                     + `<td class="muted">${escapeHtml(location)}</td>`;
         if (!spans.length) return `<tr>${cells}</tr>`;
         // The row carries its own spans: clicking it draws them over the rendered page.
         return `<tr class="locatable" data-job="${jobId}" data-page="${spans[0].page_index}"`
              + ` data-spans="${escapeHtml(JSON.stringify(spans))}"`
              + ` title="Cliquer pour situer cette valeur dans le document">${cells}</tr>`;
-      }).join("") + "</table>";
+      }).join("") + "</table>"
+        + `<button class="save-fields" onclick="saveCorrections(${jobId})">Enregistrer les corrections</button>`
+        + `<span class="muted" id="saved_${jobId}"></span>`;
+    }
+
+    // Only CHANGED values travel: an untouched form is a no-op, and re-typing exactly what the
+    // machine read is not a correction. The server re-checks this against D1 — the browser is
+    // a convenience here, not the authority.
+    async function saveCorrections(jobId) {
+      const fields = {};
+      document.querySelectorAll(`.field-value[data-job="${jobId}"]`).forEach(input => {
+        if (input.value !== input.dataset.machine) fields[input.dataset.field] = input.value;
+      });
+      const note = document.getElementById(`saved_${jobId}`);
+      if (!Object.keys(fields).length) { note.textContent = " aucun changement à enregistrer"; return; }
+      const response = await fetch(`/v1/reviews/${jobId}/fields`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fields }),
+      });
+      const body = await response.json();
+      note.textContent = response.ok
+        ? ` ${body.corrected.length} correction(s) en attente — appliquées au record à l'acceptation`
+        : ` erreur : ${body.detail ?? response.status}`;
     }
 
     // Draw a field's spans over the rendered page. bbox is [x0,y0,x1,y1] as FRACTIONS of the

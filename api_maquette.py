@@ -107,7 +107,7 @@ from ocr_bifunction.review_repository import (
     ReviewRepository,
     SqliteReviewRepository,
 )
-from ocr_bifunction.template import ValidationContext, load_templates
+from ocr_bifunction.template import ValidationContext, load_templates, payload_value
 from ocr_bifunction.verdict import Verdict
 from ocr_bifunction.template_repository import (
     SqliteTemplateRepository,
@@ -1014,6 +1014,64 @@ class DecisionRequest(BaseModel):
 
     decision: Literal["accept", "reject"]
     comment: str | None = None
+
+
+class FieldCorrectionRequest(BaseModel):
+    """The reviewer's edited values, `{field_name: value}` — only the fields they touched."""
+
+    fields: dict[str, str | None]
+
+
+@app.post("/v1/reviews/{job_id}/fields")
+def record_field_corrections(job_id: int, request: FieldCorrectionRequest) -> dict:
+    """Store the human's corrections of an extracted record in D3 (never in D1).
+
+    Seeing the zone lets a reviewer JUDGE a value; correcting it means writing one, and the
+    writer rule decides where: the UI writes D3, the watchdog writes D1. So the edit is staged
+    here as `{field: {"from": what the machine read, "to": what the human put}}` — keeping both
+    is what makes the correction auditable later, and what tells a recurring OCR weakness from
+    a one-off. The watchdog APPLIES it to D1 when the review is accepted; until then D1 still
+    says, honestly, what the machine read.
+
+    A value equal to the machine's is NOT a correction and is dropped, so an untouched form
+    submits nothing. Unknown field names are refused rather than silently invented.
+    """
+    with _repository_lock:
+        job = _ensure_repository().get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail=f"unknown job_id: {job_id}")
+        unknown = sorted(set(request.fields) - set(job.record_fields))
+        if unknown:
+            raise HTTPException(
+                status_code=422,
+                detail=f"not fields of this record: {', '.join(unknown)}",
+            )
+        corrections = {
+            name: {"from": payload_value(job.record_fields, name), "to": value}
+            for name, value in request.fields.items()
+            if value != payload_value(job.record_fields, name)
+        }
+        review_repository = _ensure_review_repository()
+        review = review_repository.by_job(job_id)
+        if review is None:
+            review_id = review_repository.open_review(
+                Review(
+                    job_id=job_id,
+                    projection={
+                        "source": job.source,
+                        "lane": job.category_lane,
+                        "verdict": job.verdict,
+                    },
+                )
+            )
+        else:
+            review_id = review.review_id
+        review_repository.record_field_corrections(review_id, corrections)
+    return {
+        "review_id": review_id,
+        "corrected": sorted(corrections),
+        "note": "applied to the D1 record by the watchdog when the review is accepted",
+    }
 
 
 @app.post("/v1/reviews/{job_id}/decision")

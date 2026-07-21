@@ -78,13 +78,21 @@ class Review:
     It REFERENCES the job by `job_id` and never duplicates its record (the record's single source
     of truth stays in D1). `projection` is a view built FOR the human (source, lane, a short
     summary), explicitly not a second source of truth. `decision` is the human's accept/reject on
-    the record; `suggestion` (when present) carries the organic-growth candidate."""
+    the record; `suggestion` (when present) carries the organic-growth candidate.
+
+    `field_corrections` is the human's EDIT of the extracted record: `{field: {"from": machine
+    value, "to": human value}}`. It lives HERE, not in D1, for two reasons. The writer rule — the
+    UI writes D3, the watchdog writes D1 — and the audit: keeping what the machine read next to
+    what the human put in its place is what makes a correction reviewable later (and what tells
+    a recurring OCR weakness from a one-off). The watchdog APPLIES it to D1 when the review is
+    accepted; until then D1 still says, honestly, what the machine read."""
 
     job_id: int
     projection: dict[str, str | None] = field(default_factory=dict)
     comment: str | None = None
     decision: str | None = None  # accept | reject | None (not yet decided)
     suggestion: Suggestion | None = None
+    field_corrections: dict[str, dict] = field(default_factory=dict)
     review_id: int | None = None
     created_at: str | None = None
     updated_at: str | None = None
@@ -121,6 +129,15 @@ class ReviewRepository(ABC):
         """The human's verdict on the reviewed record (comment and/or accept/reject)."""
 
     @abstractmethod
+    def record_field_corrections(
+        self, review_id: int, corrections: dict[str, dict]
+    ) -> None:
+        """Store the human's edits of the extracted record ({field: {"from", "to"}}).
+
+        Replaces the whole map, so re-saving is idempotent and un-editing a field (setting it
+        back to the machine value) removes it — the caller decides what counts as a change."""
+
+    @abstractmethod
     def stage_suggestion(self, review_id: int, suggestion: Suggestion) -> None:
         """Attach a suggestion to an EXISTING review (a review is opened at intake; the SLM lane
         or the reviewer stages the candidate later — two writes, one row)."""
@@ -145,6 +162,7 @@ CREATE TABLE IF NOT EXISTS ocr_reviews (
     suggested_anchors       TEXT,
     suggested_template_json TEXT,
     suggestion_status       TEXT,
+    field_corrections       TEXT,
     created_at              TEXT NOT NULL,
     updated_at              TEXT NOT NULL
 );
@@ -158,12 +176,13 @@ _MIGRATION_COLUMNS = {
     "suggested_template_json": (
         "ALTER TABLE ocr_reviews ADD COLUMN suggested_template_json TEXT"
     ),
+    "field_corrections": "ALTER TABLE ocr_reviews ADD COLUMN field_corrections TEXT",
 }
 
 _COLUMNS = (
     "review_id, job_id, projection, comment, decision, suggested_template_id, "
     "suggested_category, suggested_anchors, suggested_template_json, "
-    "suggestion_status, created_at, updated_at"
+    "suggestion_status, field_corrections, created_at, updated_at"
 )
 
 
@@ -188,8 +207,9 @@ class SqliteReviewRepository(ReviewRepository):
         cursor = self._connection.execute(
             "INSERT INTO ocr_reviews (job_id, projection, comment, decision, "
             "suggested_template_id, suggested_category, suggested_anchors, "
-            "suggested_template_json, suggestion_status, created_at, updated_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            "suggested_template_json, suggestion_status, field_corrections, "
+            "created_at, updated_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 review.job_id,
                 json.dumps(review.projection, ensure_ascii=False),
@@ -204,6 +224,7 @@ class SqliteReviewRepository(ReviewRepository):
                 if suggestion and suggestion.template is not None
                 else None,
                 suggestion.status if suggestion else None,
+                json.dumps(review.field_corrections, ensure_ascii=False),
                 now,
                 now,
             ),
@@ -231,6 +252,7 @@ class SqliteReviewRepository(ReviewRepository):
             comment=row["comment"],
             decision=row["decision"],
             suggestion=suggestion,
+            field_corrections=json.loads(row["field_corrections"] or "{}"),
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
@@ -278,6 +300,20 @@ class SqliteReviewRepository(ReviewRepository):
         self._connection.execute(
             f"UPDATE ocr_reviews SET {', '.join(assignments)} WHERE review_id = ?",
             parameters,
+        )
+        self._connection.commit()
+
+    def record_field_corrections(
+        self, review_id: int, corrections: dict[str, dict]
+    ) -> None:
+        self._connection.execute(
+            "UPDATE ocr_reviews SET field_corrections = ?, updated_at = ? "
+            "WHERE review_id = ?",
+            (
+                json.dumps(corrections, ensure_ascii=False),
+                self._clock(),
+                review_id,
+            ),
         )
         self._connection.commit()
 
