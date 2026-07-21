@@ -13,6 +13,43 @@
 > coller de valeur réelle (nom, n°doc, adresse) dans le code, les docs ou un message de commit ; `0_Aller_retour_IT/`,
 > `inputs/`, `outputs/`, `models/`, `spool/` restent gitignorés (vérifié absent du tree poussé).
 
+## État au 2026-07-21 — les adaptateurs ARRÊTENT de jeter la provenance (chemin lourd)
+
+**Constat qui a déclenché ça** : la géométrie existait partout SAUF là où elle sert. `TextLine` porte
+`bbox` + `page_index` (invariants fail-loud) et `rag.py` sait déjà empaqueter des chunks **avec** leur
+`ProvenanceSpan(page, bbox)` — mais `_read_pdf_resilient` (le chemin Docling lourd) ne produisait
+**aucun `TextLine`**, et `extract_fields(lines, template) -> dict[str, str | None]` **détruit** la
+géométrie à l'extraction (D1 n'a d'ailleurs aucune colonne géométrique). Les deux moteurs
+*exposaient* la provenance ; **nos adaptateurs la jetaient**.
+
+**Livré — le chemin lourd la conserve** (scope resserré à ce qui a un consommateur réel) :
+- **`resilient_conversion.py`** : `TextSpan(text, bbox)` — l'unité de provenance, **volontairement
+  PAS un type du lecteur** (`reader.py` importe ce module, dépendre de `TextLine` serait circulaire).
+  `PageRangeConversionAttempt.page_text_spans` et `PageResult.text_spans`, **défaut vide** → un
+  converter sans géométrie (le faux du smoke) satisfait toujours le contrat.
+- **`docling_page_range_converter._page_text_spans`** : récolte `item.prov[0].bbox`, **flip
+  top-left dans l'adaptateur** (aucun appelant n'hérite de la convention bottom-left de Docling).
+  **Vérifié 2026-07-21** : sous `page_range`, `prov.page_no` est **ABSOLU** (chunk (2,3) → pages 2 et
+  3) — même propriété que `confidence.pages`, donc aucun offset. **Vérifié aussi** :
+  `SectionHeaderItem` **hérite** de `TextItem` → les titres ne sont pas silencieusement jetés.
+- **`reader._read_pdf_resilient`** : reconstruit les `TextLine` (`page_number - 1` → `page_index`
+  0-based) → **la chaîne lecture → chunk → provenance se referme sur le chemin lourd**, en réutilisant
+  la machinerie RAG existante. Vide si le converter n'expose rien : **la provenance absente reste
+  absente, jamais fabriquée**.
+
+**Prouvé sur les DEUX plans** (le pur ne suffisait pas — le faux converter n'a pas de géométrie) :
+- pur : `resilient_conversion_smoke` **12/12** (+1 : chaque page porte son span, et une page
+  **récupérée par le backoff** porte le span de l'attempt qui l'a **gagnée**, pas un span périmé) ;
+- **réel Docling** (PDF synthétique 3 pages) : 6 lignes, 3 pages représentées, `page_index` 0-based,
+  bbox top-left cohérente avec les points d'insertion (x=72 → x0=72), titres inclus.
+Régressions vertes : `conversion_guard` 6/6, `text_integrity_wiring` 8/8, `flow` 14/14, `policy`
+20/20, `conformity` 12/12 ; `ruff` propre.
+
+**PAS fait, volontairement** : la provenance **par cellule de table** (D8) — aucun consommateur
+n'existe encore, ce serait du code inerte. Et `extract_fields` détruit toujours la géométrie pour la
+lane structurée : c'est le **prochain point de rupture** si on veut « nœud → page → zone » sur les
+champs extraits, pas seulement sur les chunks RAG.
+
 ## État au 2026-07-21 — markitdown RESSERRÉ AUX TABLES : un second avis étroit mais réel
 
 **Question posée** : markitdown peut-il servir de 2e lecteur pour la sous-arête STRUCTURE (l'autre

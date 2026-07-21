@@ -197,7 +197,14 @@ appartient donc à **l'entité compétente côté métier** — jamais un défau
 de l'algo. Config, pas constante : patron D4/D6 (défaut en code, override opéré, effet à l'upload
 suivant).
 
-**Statut : rien n'est construit.** Les deux extracteurs sont mesurés (cf.
+**Statut : la table D8 n'est pas construite** — mais la brique la plus fragile, la **provenance**,
+a cessé d'être jetée en amont (2026-07-21). Le chemin de lecture lourd conserve désormais la
+géométrie (`TextSpan(text, bbox)` porté par la réconciliation → `TextLine` reconstruits →
+`ReadResult.lines`), donc « page + bbox » **existe au moment de l'extraction** au lieu d'être perdu.
+Restent NON faits : la provenance **par cellule de table** (pas de consommateur : ce serait du code
+inerte) et la lane structurée, où `extract_fields(lines, template) -> dict[str, str | None]`
+**détruit toujours** la géométrie — c'est le prochain point de rupture pour « nœud → page → zone »
+sur des champs extraits. Les deux extracteurs de tables sont mesurés (cf.
 [outils-evalues.md](outils-evalues.md)) et la fenêtre d'adjudication humaine existe
 (`table_adjudication_build.py` → HTML local **gitignoré**, contenu réel). Le schéma ci-dessus est un
 sketch, à co-geler avec l'IT comme les autres.

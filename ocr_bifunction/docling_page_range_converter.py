@@ -25,6 +25,7 @@ from ocr_bifunction.resilient_conversion import (
     PageRangeConversionAttempt,
     PageRangeConverter,
     ResilientConversion,
+    TextSpan,
     reconcile_page_range_conversion,
 )
 
@@ -38,6 +39,50 @@ def _map_conversion_status(status_name: str) -> str:
     if status_name == "PARTIAL_SUCCESS":
         return CONVERSION_STATUS_PARTIAL_SUCCESS
     return CONVERSION_STATUS_FAILURE
+
+
+def _page_text_spans(
+    document: object, produced_page_numbers: list[int]
+) -> dict[int, list[TextSpan]]:
+    """Harvest WHERE each piece of text sat, keyed by absolute page — the provenance the markdown
+    alone cannot carry.
+
+    Docling exposes a bbox per item (`item.prov[0]`) and this is the ONLY moment it is available:
+    once the page is reduced to markdown the geometry is gone for good, and with it any chance of
+    showing a reviewer the region a value came from. Verified 2026-07-21: under `page_range`,
+    `prov.page_no` is ABSOLUTE (a chunk (2,3) reports pages 2 and 3), so spans key straight into the
+    reconciliation without an offset — the same absolute-numbering property `confidence.pages` has.
+
+    `SectionHeaderItem` subclasses `TextItem` (verified), so headings are harvested too rather than
+    silently dropped. The bbox is flipped to the reader's TOP-LEFT origin here, in the adapter, so
+    no caller inherits Docling's bottom-left convention."""
+    from docling_core.types.doc import TextItem
+
+    wanted = set(produced_page_numbers)
+    page_heights = {
+        page_number: getattr(getattr(page, "size", None), "height", None)
+        for page_number, page in document.pages.items()
+    }
+
+    spans: dict[int, list[TextSpan]] = {}
+    for element, _level in document.iterate_items():
+        if not isinstance(element, TextItem) or not element.text.strip():
+            continue
+        if not element.prov:
+            continue
+        provenance = element.prov[0]
+        if provenance.page_no not in wanted:
+            continue
+        bbox = provenance.bbox
+        page_height = page_heights.get(provenance.page_no)
+        if page_height is not None:
+            bbox = bbox.to_top_left_origin(page_height=page_height)
+        x0, x1 = min(bbox.l, bbox.r), max(bbox.l, bbox.r)
+        y0, y1 = min(bbox.t, bbox.b), max(bbox.t, bbox.b)
+        spans.setdefault(provenance.page_no, []).append(
+            TextSpan(text=element.text, bbox=(x0, y0, x1, y1))
+        )
+    return spans
 
 
 def make_docling_page_range_converter(
@@ -79,6 +124,7 @@ def make_docling_page_range_converter(
             page_markdown=page_markdown,
             page_layout_scores=page_layout_scores,
             status=_map_conversion_status(result.status.name),
+            page_text_spans=_page_text_spans(result.document, produced_page_numbers),
         )
 
     return convert_page_range

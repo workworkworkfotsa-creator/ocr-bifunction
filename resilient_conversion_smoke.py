@@ -27,6 +27,7 @@ from ocr_bifunction.resilient_conversion import (
     CONVERSION_STATUS_PARTIAL_SUCCESS,
     CONVERSION_STATUS_SUCCESS,
     PageRangeConversionAttempt,
+    TextSpan,
     reconcile_page_range_conversion,
 )
 
@@ -104,12 +105,25 @@ class FakeMemoryBoundedConverter:
             status = CONVERSION_STATUS_SUCCESS
         else:
             status = CONVERSION_STATUS_PARTIAL_SUCCESS
+        # PROVENANCE: a real converter knows WHERE each piece of text sat. The span encodes both the
+        # page and the batch width that produced it, so the smoke can prove the span landing on a
+        # page came from the attempt that actually WON that page — not a stale earlier one.
+        page_text_spans = {
+            page_number: [
+                TextSpan(
+                    text=f"page {page_number} produced at width {chunk_width}",
+                    bbox=(0.0, float(page_number), 10.0, float(page_number) + 5.0),
+                )
+            ]
+            for page_number in produced_page_numbers
+        }
         return PageRangeConversionAttempt(
             requested_page_range=page_range,
             produced_page_numbers=produced_page_numbers,
             page_markdown=page_markdown,
             page_layout_scores=page_layout_scores,
             status=status,
+            page_text_spans=page_text_spans,
         )
 
 
@@ -261,6 +275,30 @@ def run() -> int:
         except ValueError:
             pass
     _check("malformed batch_size_schedule -> ValueError (fail loud)", all_rejected)
+
+    # 12. PROVENANCE rides through the reconciliation: every reconciled page carries the positioned
+    #     text of the attempt that WON it, so a page rescued by the backoff keeps the span from its
+    #     RECOVERY round, never a stale one from the wider batch that dropped it.
+    provenance_converter = FakeMemoryBoundedConverter(
+        drop_threshold_batch_size=2, fragile_page_numbers=frozenset({3})
+    )
+    provenance_result = reconcile_page_range_conversion(
+        4, provenance_converter, batch_size_schedule=[4, 2, 1]
+    )
+    recovered_page = next(
+        page for page in provenance_result.page_results if page.page_number == 3
+    )
+    first_pass_page = next(
+        page for page in provenance_result.page_results if page.page_number == 1
+    )
+    _check(
+        "provenance: each page carries its span, a recovered page carries the WINNING attempt's",
+        all(len(page.text_spans) == 1 for page in provenance_result.page_results)
+        and first_pass_page.text_spans[0].bbox[1] == 1.0
+        and recovered_page.produced_in_round > 0
+        and f"width {recovered_page.produced_by_batch_size}"
+        in recovered_page.text_spans[0].text,
+    )
 
     passed = all(condition for _, condition in CHECKS)
     print(

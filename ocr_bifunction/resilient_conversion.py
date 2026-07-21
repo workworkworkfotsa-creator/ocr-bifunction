@@ -24,7 +24,7 @@ machine is preserved). The Docling adapter is the only impure piece, and it live
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
 from ocr_bifunction.conversion_guard import (
@@ -48,6 +48,23 @@ DEFAULT_BATCH_SIZE_SCHEDULE = [16, 8, 4, 2, 1]
 
 
 @dataclass(frozen=True)
+class TextSpan:
+    """One positioned piece of text — the PROVENANCE unit the reconciliation carries through.
+
+    Deliberately NOT a reader type: this core stays free of `TextLine` (which lives in `reader.py`
+    and imports THIS module, so depending on it would be circular). The caller rebuilds its own line
+    type from these spans. `bbox` is `(x0, y0, x1, y1)` in a TOP-LEFT origin, matching the reader's
+    contract, so the adapter — not the caller — owns the flip from a converter's own convention.
+
+    Why it rides along at all: a heavy converter knows WHERE each piece of text sat on the page, and
+    that is the only moment it is known. Dropped here, it cannot be recovered from the markdown
+    downstream — and without it a reviewer can never be shown the region a value came from."""
+
+    text: str
+    bbox: tuple[float, float, float, float]
+
+
+@dataclass(frozen=True)
 class PageRangeConversionAttempt:
     """What ONE conversion of a single page range produced.
 
@@ -63,6 +80,9 @@ class PageRangeConversionAttempt:
         int, float
     ]  # absolute page number -> layout_score in [0, 1]
     status: str  # CONVERSION_STATUS_SUCCESS | _PARTIAL_SUCCESS | _FAILURE
+    # absolute page number -> the positioned text of that page. Empty when a converter exposes no
+    # geometry (the contract stays satisfiable by a text-only converter, e.g. the smoke's fake one).
+    page_text_spans: dict[int, list[TextSpan]] = field(default_factory=dict)
 
 
 @runtime_checkable
@@ -92,6 +112,9 @@ class PageResult:
         # this page?" signal (a round-0 remainder chunk is narrower than the batch yet is NOT a
         # recovery).
     )
+    # The page's positioned text, carried from the attempt that won this page. Empty when the
+    # converter exposes no geometry — never silently fabricated.
+    text_spans: list[TextSpan] = field(default_factory=list)
 
 
 @dataclass
@@ -212,6 +235,7 @@ def reconcile_page_range_conversion(
                         layout_score=attempt.page_layout_scores.get(page_number, 1.0),
                         produced_by_batch_size=chunk_width,
                         produced_in_round=round_index,
+                        text_spans=attempt.page_text_spans.get(page_number, []),
                     )
                     existing = accumulated_page_results.get(page_number)
                     # By construction a retried run holds only previously-missing pages, so this is

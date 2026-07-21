@@ -211,8 +211,14 @@ def _read_pdf_resilient(
     schedule, and reconciles the produced pages into one document ordered by page number. The rich
     per-page markdown (reading-order preserved) is joined into `text` for the RAG chunker; the
     completeness verdict rides on `missing_pages`/`low_form_pages` so the router routes an incomplete
-    read to a human. No per-line geometry here — this lane's value is the reading-order text, not the
-    template-anchor boxes the light `_read_pdf` produces."""
+    read to a human.
+
+    Per-line geometry IS carried (since 2026-07-21): the converter knows where each piece of text sat
+    and that is the only moment it is known, so the adapter hands it over as `TextSpan`s and they are
+    rebuilt into `TextLine`s here. That closes the provenance chain on the heavy lane — `rag.py`
+    already packs chunks WITH their page+bbox spans, so a passage read this way can now be shown back
+    to a human at its place in the original. Empty when a converter exposes no geometry: absent
+    provenance stays absent, never fabricated."""
     started_at = time.perf_counter()
     expected_page_count = page_count(document_path)
     page_range_converter = heavy_page_converter_factory(document_path)
@@ -220,10 +226,17 @@ def _read_pdf_resilient(
         expected_page_count, page_range_converter
     )
     combined_text = "\n\n".join(page.markdown for page in conversion.page_results)
+    # `page_number` is absolute 1-based; `TextLine.page_index` is 0-based (reader contract).
+    lines = [
+        TextLine(span.text, span.bbox, None, page.page_number - 1)
+        for page in conversion.page_results
+        for span in page.text_spans
+    ]
     return ReadResult(
         document_path=document_path,
         backend_name="resilient-page-range",
         text=combined_text,
+        lines=lines,
         confidence=None,
         page_count=expected_page_count,
         character_count=len(combined_text),
