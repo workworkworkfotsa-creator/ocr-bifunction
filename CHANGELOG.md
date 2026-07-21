@@ -15,6 +15,18 @@ match the tag.
 
 ## [Unreleased]
 
+### Added
+- **Character-integrity guard** — an intrinsic, model-agnostic check on extracted text
+  (`text_integrity_guard`), computed at a single seam in `read_document` so every backend (PDF text
+  layer, OCR engine, `.docx`, resilient converter) is covered, and applied to both router lanes. It
+  separates *irreversible loss* (a `U+FFFD` already present — the bytes are gone, hard flag, no
+  repair) from *repairable mojibake* (UTF-8 read as latin-1/cp1252 — reversed and explained, offered
+  as a suggestion a human validates, never auto-applied). Corrupted characters can never
+  auto-validate: a non-clean read escalates `auto` to `review`, while a `reject` is never softened.
+  This closes the character side of the semantic edge — the side a second independent reader cannot
+  corroborate, since every text-layer extractor trusts the same broken PDF `ToUnicode` CMap and so
+  agrees on the same garbage.
+
 ## [0.1.0] - 2026-07-20
 
 Initial baseline — the bi-mode document intake proven end-to-end on real documents.
