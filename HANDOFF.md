@@ -66,9 +66,32 @@ le brouillon `reading_order_comparison.py` a été **supprimé** plutôt que lai
 pour plus tard : si on y revient, la métrique devra être **sensible à l'ordre** (un TF-IDF /
 sac-de-mots score ~1.0 par construction, les deux lecteurs tirant les mêmes mots de la même couche).
 
-**PAS branché** : `table_corroboration` n'est appelé par personne (il faudrait faire tourner Docling
-ET markitdown sur le même doc — le run Docling est lourd, GO utilisateur requis). Logique prouvée,
-câblage à décider.
+**⚠️ INVALIDÉ PAR LE RUN RÉEL (2026-07-21) — `table_corroboration_real_run.py --go --limit 4` :
+0 corroboré / 4 divergents, 100 %.** Le motif est **systématique, pas documentaire** : Docling trouve
+**peu de grandes** tables (`1 × 11x7`, `2 × [2x2, 10x4]`), pdfplumber **beaucoup de petites** à
+nombre de colonnes stable (4–7 tables en `…x5`). Les deux ne divergent pas sur la QUALITÉ mais sur
+**ce qui constitue UNE table** — une convention de **segmentation**. Un détecteur qui se déclenche
+sur 100 % des cas ne détecte rien : **la comparaison de FORME n'est pas un signal exploitable.**
+- **Leçon (application directe du garde-fou du CLAUDE.md)** : `table_corroboration_smoke.py` était
+  vert 6/6 **parce qu'il figeait mon hypothèse de conception** (les deux côtés fabriqués avec la même
+  segmentation). Des tests verts ne valident pas une CONCEPTION ; seul le run réel le fait — et il
+  l'a tuée en 3 minutes. Le module et son smoke restent en place comme trace de la tentative, mais
+  **ne doivent pas être câblés en l'état**.
+- **Coût mesuré** : Docling = 14–77 s pour un document d'**une page**. Lourd même sur du petit.
+
+**RECADRAGE UTILISATEUR (2026-07-21)** : la vraie question n'est pas « sont-ils d'accord » mais
+**« lequel est le plus proche de la réalité »** — car les tables sont, sur des centaines de types de
+fichiers, **la principale source d'information**, et une table mal reconstruite doit être refaite à la
+main en aval (c'est tout l'intérêt d'avoir des nœuds chaînés plutôt que du RAG pur). **La vérité n'est
+pas dérivable de deux extracteurs qui se contredisent → il faut une référence humaine.**
+- **`table_adjudication_build.py`** (livré) : pour chaque page, l'**image rendue** à côté des **deux
+  reconstructions**, en un HTML autonome → `outputs/table_adjudication.html` (**gitignoré, contenu
+  réel + PII, ne jamais committer/partager**).
+- **HYPOTHÈSE À RÉFUTER**, énoncée avant de regarder : table **avec bordures tracées** → la vérité est
+  dans le fichier, le **géométrique** (pdfplumber) devrait gagner ; table **sans traits** (alignée par
+  blancs) → la géométrie n'a rien à mordre, le **neural** (TableFormer) devrait gagner. Si ça tient,
+  la règle devient opérable (« table réglée → géométrique, sinon neural ») et le signal de revue
+  humaine devient « table non réglée + désaccord → humain ». **En attente du verdict utilisateur.**
 
 **⚠️ TROU ASSUMÉ, nommé plutôt que masqué** : la **hiérarchie / le découpage en sections** de Docling
 n'a **aucun second avis possible** (markitdown ne produit aucun titre : 0 sur 24 PDF) et n'est
