@@ -32,6 +32,7 @@ from ocr_bifunction.drafting import DraftingDocument
 from ocr_bifunction.llama_transport import post_json, resolve_base_url
 from ocr_bifunction.template import (
     extract_fields,
+    field_values,
     match_template,
     validate_fields,
 )
@@ -201,7 +202,7 @@ def _draft_retests_green(draft: dict, cluster: list[DraftingDocument]) -> list[s
         if match_template(document.lines, [draft]) is None:
             reasons.append(f"{document.source}: renamed draft no longer matches")
             continue
-        extracted = extract_fields(document.lines, draft)
+        extracted = field_values(extract_fields(document.lines, draft))
         reasons.extend(
             f"{document.source}: {failure}"
             for failure in validate_fields(extracted, validation)

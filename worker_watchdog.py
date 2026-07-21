@@ -56,7 +56,7 @@ from ocr_bifunction.conformity_policy import SqliteConformityPolicyRepository
 from ocr_bifunction.context_assembly import collect_validated_attestations
 from ocr_bifunction.drafting_flow import run_draft_pass
 from ocr_bifunction.issuer_registry import SqliteIssuerRegistryRepository
-from ocr_bifunction.template import ValidationContext
+from ocr_bifunction.template import ValidationContext, field_payload
 from ocr_bifunction.template_repository import SqliteTemplateRepository
 
 PROJECT_ROOT = Path(__file__).parent
@@ -162,7 +162,7 @@ def _process_claimed_job(
             job.job_id,
             outcome.status,
             verdict=outcome.verdict,
-            record_fields=outcome.record.fields,
+            record_fields=field_payload(outcome.record.fields),
             reasons=reasons,
             # A CI stays 'ci'; a routed 'unrouted' job is finalized to what it turned out to
             # be (structured/rag), or 'structured' when a type-mismatch reclassified it.

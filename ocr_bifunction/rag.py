@@ -26,7 +26,10 @@ from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
 from ocr_bifunction.llama_transport import post_json, resolve_base_url
-from ocr_bifunction.reader import TextLine
+from ocr_bifunction.reader import (
+    ProvenanceSpan as ProvenanceSpan,  # moved next to TextLine (shared with the structured
+    TextLine,  # lane); re-exported here, its historical home, so importers are unchanged.
+)
 
 # Keep accented Latin letters and digits; everything else splits tokens.
 _TOKEN_PATTERN = re.compile(r"[a-zA-ZÀ-ÿ0-9]+")
@@ -47,19 +50,6 @@ STOPWORDS: frozenset[str] = frozenset(
     not no any all can will would should could may might one two
     """.split()
 )
-
-
-@dataclass
-class ProvenanceSpan:
-    """Where one piece of a chunk came from in the SOURCE document: page + box.
-
-    This is the link from the read text back to the original document — so a retrieved
-    clause can be shown verbatim AND located (page, bounding box) for the human to verify
-    against the source. bbox is (x0, y0, x1, y1) in the page coordinate system.
-    """
-
-    page_index: int
-    bbox: tuple[float, float, float, float]
 
 
 @dataclass
@@ -151,7 +141,7 @@ def chunk_textlines(
         if not text:
             continue
         current_parts.append(text)
-        current_spans.append(ProvenanceSpan(line.page_index, line.bbox))
+        current_spans.append(ProvenanceSpan.from_line(line))
         current_token_count += len(tokenize(text))
         if current_token_count >= target_tokens:
             chunks.append(

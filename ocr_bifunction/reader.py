@@ -110,6 +110,28 @@ class TextLine:
 
 
 @dataclass
+class ProvenanceSpan:
+    """Where one piece of a downstream product came from in the SOURCE document: page + box.
+
+    This is the link from read text back to the original document — so a retrieved passage OR
+    an extracted field can be shown verbatim AND located (page, bounding box) for the human to
+    verify against the source. `bbox` is `(x0, y0, x1, y1)` in `TextLine`'s coordinate system.
+
+    It lives HERE, next to `TextLine`, because it is a projection of one — not a RAG concept:
+    the retrieval lane (`rag.Chunk.spans`) and the structured lane (`template.ExtractedField
+    .spans`) both need the same vocabulary, and neither should import the other.
+    """
+
+    page_index: int
+    bbox: tuple[float, float, float, float]
+
+    @classmethod
+    def from_line(cls, line: TextLine) -> ProvenanceSpan:
+        """The span of a whole read line — the only way provenance is ever created."""
+        return cls(line.page_index, line.bbox)
+
+
+@dataclass
 class ReadResult:
     """What stage ① hands to stage ② CATÉGORISER.
 

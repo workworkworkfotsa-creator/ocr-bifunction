@@ -40,7 +40,7 @@ from ocr_bifunction.review_repository import (
     Suggestion,
     SqliteReviewRepository,
 )
-from ocr_bifunction.template import load_templates
+from ocr_bifunction.template import field_payload, load_templates
 
 PROJECT_ROOT = Path(__file__).parent
 TEMPLATES_DIRECTORY = PROJECT_ROOT / "templates"
@@ -124,7 +124,7 @@ def _job_from_record(record: DocumentRecord) -> Job:
         verdict=verdict,
         category=record.category,
         template_id=record.template_id,
-        record_fields=record.fields,
+        record_fields=field_payload(record.fields),
         reasons=record.reasons,
     )
 

@@ -52,6 +52,23 @@
       return String(text).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
     }
 
+    // One extracted field per row: its value AND where it was read from. `record_fields` is
+    // D1's payload (template.field_payload): name -> {value, origin, spans:[{page_index,bbox}]}.
+    // No span means provenance genuinely does not exist (MRZ backfill, nothing matched) — it
+    // shows as "—" rather than a made-up location, so the reviewer knows when there is no zone
+    // to go look at.
+    function fieldRows(recordFields) {
+      const names = Object.keys(recordFields || {});
+      if (!names.length) return "";
+      return "<table class='fields'>" + names.map(name => {
+        const entry = recordFields[name] || {};
+        const pages = [...new Set((entry.spans || []).map(span => span.page_index + 1))];
+        const location = pages.length ? "p. " + pages.join(", ") : "—";
+        return `<tr><td>${escapeHtml(name)}</td><td><b>${escapeHtml(entry.value ?? "—")}</b></td>`
+             + `<td class="muted">${escapeHtml(location)}</td></tr>`;
+      }).join("") + "</table>";
+    }
+
     // The retained document rendered NEXT TO its extraction, so the reviewer judges the
     // extraction itself (doc + fields side by side), not just the record.
     const IMAGE_SUFFIXES = [".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"];
@@ -81,9 +98,7 @@
           <div class="side-by-side">
             <div class="doc-preview">${documentPreview(job.documents)}</div>
             <div class="doc-details">
-              ${Object.keys(job.record_fields).length ? "<table class='fields'>" +
-                Object.entries(job.record_fields).map(([name, value]) =>
-                  `<tr><td>${escapeHtml(name)}</td><td><b>${escapeHtml(value ?? "—")}</b></td></tr>`).join("") + "</table>" : ""}
+              ${fieldRows(job.record_fields)}
               <ul>${job.reasons.map(reason => `<li>${escapeHtml(reason)}</li>`).join("")}</ul>
               ${job.decision
                 ? `<p class="done">Décision enregistrée : ${job.decision} (clôture au prochain passage du watchdog)</p>`
@@ -121,9 +136,7 @@
             <div class="doc-details">
               <p><b>Document non validé car :</b></p>
               <ul>${job.reasons.map(reason => `<li>${escapeHtml(reason)}</li>`).join("")}</ul>
-              ${Object.keys(job.record_fields).length ? "<table class='fields'>" +
-                Object.entries(job.record_fields).map(([name, value]) =>
-                  `<tr><td>${escapeHtml(name)}</td><td><b>${escapeHtml(value ?? "—")}</b></td></tr>`).join("") + "</table>" : ""}
+              ${fieldRows(job.record_fields)}
               ${job.decision
                 ? `<p class="done">Clos (${job.decision}) — purge du document au prochain passage du watchdog</p>`
                 : `<input type="text" id="comment_${job.job_id}" placeholder="note pour compliance (optionnel)" />

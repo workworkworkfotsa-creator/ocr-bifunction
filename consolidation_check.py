@@ -49,6 +49,7 @@ from ocr_bifunction.review_repository import (
     SqliteReviewRepository,
 )
 from ocr_bifunction.router import route_document
+from ocr_bifunction.template import field_payload
 from ocr_bifunction.template_repository import SqliteTemplateRepository
 
 PROJECT_ROOT = Path(__file__).parent
@@ -86,7 +87,7 @@ def _job_from_record(record: DocumentRecord) -> Job:
         verdict=verdict,
         category=record.category,
         template_id=record.template_id,
-        record_fields=record.fields,
+        record_fields=field_payload(record.fields),
         reasons=record.reasons,
     )
 
@@ -217,7 +218,7 @@ def run(document_paths: list[Path], held_out: str, store_path: str) -> int:
             held_out_job_id,
             STATUS_DONE,
             verdict="auto",
-            record_fields=routed.fields,
+            record_fields=field_payload(routed.fields),
             reasons=[],
         )
 

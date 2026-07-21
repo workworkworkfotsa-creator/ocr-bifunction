@@ -26,7 +26,7 @@ from ocr_bifunction.drafting import (
 )
 from ocr_bifunction.field_naming import name_draft_fields
 from ocr_bifunction.reader import read_document
-from ocr_bifunction.template import extract_fields, match_template
+from ocr_bifunction.template import extract_fields, field_values, match_template
 
 _IDENTIFIER_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
 
@@ -101,7 +101,7 @@ def main() -> None:
         print("\n=== re-test on the whole cluster (renamed draft) ===")
         for document in attestation_cluster:
             matched = match_template(document.lines, [named.template]) is not None
-            extracted = extract_fields(document.lines, named.template)
+            extracted = field_values(extract_fields(document.lines, named.template))
             filled = sum(1 for value in extracted.values() if value)
             print(
                 f"  {document.source}: match={matched} fields_filled={filled}"
@@ -116,8 +116,8 @@ def main() -> None:
         # the values the deterministic draft extracted under the placeholders.
         print("\n=== value invariance (relabel changes names, not values) ===")
         for document in attestation_cluster:
-            before = extract_fields(document.lines, draft)
-            after = extract_fields(document.lines, named.template)
+            before = field_values(extract_fields(document.lines, draft))
+            after = field_values(extract_fields(document.lines, named.template))
             remapped_before = {
                 named.name_mapping[name]: value for name, value in before.items()
             }

@@ -26,6 +26,7 @@ from pathlib import Path
 from ocr_bifunction.reader import read_document
 from ocr_bifunction.template import (
     extract_fields,
+    field_values,
     load_templates,
     match_template,
     validate_fields,
@@ -51,7 +52,7 @@ def validate_facture(
             None,
             {},
         )
-    fields = extract_fields(result.lines, template)
+    fields = field_values(extract_fields(result.lines, template))
     reasons = validate_fields(fields, template.get("validation", {}))
     verdict = "review" if reasons else "auto"
     return verdict, reasons, template["template_id"], fields

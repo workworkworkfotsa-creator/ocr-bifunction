@@ -25,7 +25,14 @@ from ocr_bifunction.mrz import MrzFields, extract_mrz_lines, parse_mrz
 from ocr_bifunction.preprocess import EnhancePreprocessor
 from ocr_bifunction.reader import OcrEngine, read_document
 from ocr_bifunction.reconcile import KEY_MAP, reconcile
-from ocr_bifunction.template import extract_fields, load_templates, match_template
+from ocr_bifunction.template import (
+    ORIGIN_MRZ,
+    ExtractedField,
+    extract_fields,
+    field_values,
+    load_templates,
+    match_template,
+)
 from ocr_bifunction.verdict import Verdict
 
 
@@ -33,7 +40,9 @@ from ocr_bifunction.verdict import Verdict
 class CiRecord:
     """The data product (consolidated identity) plus its verdict envelope."""
 
-    fields: dict[str, str | None]  # merged recto + MRZ identity — the data product
+    # Merged recto + MRZ identity — the data product. Recto fields carry their provenance
+    # (page + bbox); MRZ-backfilled ones carry NONE, and say so via `origin` (see _consolidate).
+    fields: dict[str, ExtractedField]
     verdict: Verdict
     reasons: list[str] = field(default_factory=list)
     template_id: str | None = None
@@ -113,7 +122,7 @@ def read_recto_fields(
     engine: OcrEngine,
     templates_directory: Path,
     category: str | None = None,
-) -> tuple[str | None, dict[str, str | None] | None]:
+) -> tuple[str | None, dict[str, ExtractedField] | None]:
     """Read the recto, match a template and rebuild its fields. None if no template.
 
     `category` scopes template matching to one document type (e.g. "carte_identite"):
@@ -129,30 +138,48 @@ def read_recto_fields(
     return template["template_id"], extract_fields(result.lines, template)
 
 
+def _is_empty(merged: dict[str, ExtractedField], key: str) -> bool:
+    """True when `key` holds no usable value — the gap the MRZ is allowed to backfill.
+
+    Tested on `.value` EXPLICITLY: an `ExtractedField` is a dataclass, so it is always truthy
+    even when it wraps None. A plain `not merged.get(key)` would silently stop backfilling.
+    """
+    existing = merged.get(key)
+    return existing is None or not existing.value
+
+
 def _consolidate(
-    recto_fields: dict[str, str | None] | None, mrz: MrzFields | None
-) -> dict[str, str | None]:
-    """Merge recto fields with the MRZ: recto is the base, the MRZ backfills gaps + sex."""
-    merged: dict[str, str | None] = dict(recto_fields or {})
+    recto_fields: dict[str, ExtractedField] | None, mrz: MrzFields | None
+) -> dict[str, ExtractedField]:
+    """Merge recto fields with the MRZ: recto is the base, the MRZ backfills gaps + sex.
+
+    A backfilled value gets `origin=ORIGIN_MRZ` and NO spans: the MRZ is parsed from decoded
+    character rows, not located on the card, so there is no zone to show a reviewer. Absent
+    provenance is reported as absent rather than borrowed from the recto line next to it.
+    """
+    merged: dict[str, ExtractedField] = dict(recto_fields or {})
     if mrz is not None:
         for recto_key, mrz_attribute in KEY_MAP.items():
-            if not merged.get(recto_key):
+            if _is_empty(merged, recto_key):
                 mrz_value = getattr(mrz, mrz_attribute)
                 if mrz_value:
-                    merged[recto_key] = mrz_value
-        if mrz.sex and not merged.get("sexe"):
-            merged["sexe"] = mrz.sex
+                    merged[recto_key] = ExtractedField(
+                        value=mrz_value, origin=ORIGIN_MRZ
+                    )
+        if mrz.sex and _is_empty(merged, "sexe"):
+            merged["sexe"] = ExtractedField(value=mrz.sex, origin=ORIGIN_MRZ)
     return merged
 
 
 def _reconciled_record(
     template_id: str | None,
-    recto_fields: dict[str, str | None],
+    recto_fields: dict[str, ExtractedField],
     mrz: MrzFields,
     verso_read_path: str,
 ) -> CiRecord:
     """Both sides present -> consolidate + reconcile into one self-validating record."""
-    reconciliation = reconcile(recto_fields, mrz)
+    # Reconciliation compares recto VALUES against the MRZ's; geometry plays no part in it.
+    reconciliation = reconcile(field_values(recto_fields), mrz)
     return CiRecord(
         fields=_consolidate(recto_fields, mrz),
         verdict=reconciliation.verdict,
@@ -273,7 +300,7 @@ def process_ci_submission(
                 image_paths.append(image_path)
 
         template_id: str | None = None
-        recto_fields: dict[str, str | None] | None = None
+        recto_fields: dict[str, ExtractedField] | None = None
         recto_image: Path | None = None
         for image_path in image_paths:
             candidate_id, candidate_fields = read_recto_fields(

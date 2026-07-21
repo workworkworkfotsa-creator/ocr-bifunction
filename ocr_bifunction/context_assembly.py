@@ -22,7 +22,7 @@ the block simply contributes nothing — no code change per document type, ever.
 from __future__ import annotations
 
 from ocr_bifunction.repository import STATUS_DONE, Repository
-from ocr_bifunction.template import AttestationReference
+from ocr_bifunction.template import AttestationReference, payload_value
 
 ATTESTATION_REFERENCE_ROLES_KEY = "attestation_reference_roles"
 REFERENCE_ROLE_FIELD_KEYS = ("holder_field", "issue_date_field", "expiry_date_field")
@@ -54,9 +54,10 @@ def collect_validated_attestations(
         roles = roles_by_id.get(job.template_id or "")
         if roles is None:
             continue
-        holder_name = job.record_fields.get(roles["holder_field"])
-        issue_date = job.record_fields.get(roles["issue_date_field"])
-        expiry_date = job.record_fields.get(roles["expiry_date_field"])
+        # D1 stores value + provenance per field; corroboration compares VALUES only.
+        holder_name = payload_value(job.record_fields, roles["holder_field"])
+        issue_date = payload_value(job.record_fields, roles["issue_date_field"])
+        expiry_date = payload_value(job.record_fields, roles["expiry_date_field"])
         if holder_name and issue_date and expiry_date:
             references.append(
                 AttestationReference(

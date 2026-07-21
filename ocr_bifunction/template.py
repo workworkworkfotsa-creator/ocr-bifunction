@@ -19,9 +19,10 @@ from __future__ import annotations
 import difflib
 import json
 import re
+from dataclasses import dataclass, field
 from pathlib import Path
 
-from ocr_bifunction.reader import TextLine
+from ocr_bifunction.reader import ProvenanceSpan, TextLine
 
 # The verdict engine moved to `validation.py` at the extraction/verdict seam; its public names
 # are re-exported here (the historical home) so the existing importers are unchanged. `X as X` =
@@ -43,6 +44,70 @@ from ocr_bifunction.validation import (
 COLUMN_X_TOLERANCE = 60.0
 # Vertical tolerance (pixels) for "same row" (direction "right").
 ROW_Y_TOLERANCE = 25.0
+
+# How a field's value was obtained — the honest label on its provenance, not a quality score.
+ORIGIN_ANCHOR = "anchor"  # geometry path: the value is one read line, box known exactly
+ORIGIN_PATTERN = "pattern"  # regex path: spans are the line(s) the match overlapped
+ORIGIN_MRZ = "mrz"  # CI backfill from the parsed machine-readable zone — NO geometry
+
+
+@dataclass
+class ExtractedField:
+    """One extracted value AND where it came from in the source document.
+
+    The product requirement is "field -> page -> show me the zone": a reviewer can only
+    validate or correct a value if they can see the region it was read from. Geometry exists
+    at read time (`TextLine` carries page + bbox) and used to be destroyed here, at the last
+    point it was still available — so it is carried instead.
+
+    `spans` is EMPTY whenever provenance genuinely does not exist (an MRZ-backfilled CI field
+    has no box; a regex that matched nothing has no line). Absent provenance stays absent — it
+    is never fabricated, and an empty list is the signal a reviewer cannot be shown a zone.
+    """
+
+    value: str | None
+    spans: list[ProvenanceSpan] = field(default_factory=list)
+    origin: str | None = None  # ORIGIN_* — None when no value was found at all
+
+
+def field_values(extracted: dict[str, ExtractedField]) -> dict[str, str | None]:
+    """Project to the plain `name -> value` mapping — the VERDICT engine's input.
+
+    The validation checks reason about values, never about geometry: this is the seam that
+    keeps `validate_fields`/`evaluate_validation` (and the drafting/naming/suggestion gates)
+    unchanged while the extraction itself grew richer.
+    """
+    return {name: extracted_field.value for name, extracted_field in extracted.items()}
+
+
+def field_payload(extracted: dict[str, ExtractedField]) -> dict[str, dict]:
+    """Serialize to the JSON shape D1 stores in `ocr_jobs.record_fields`.
+
+    One shape for BOTH lanes (structured and CI) — a column that changed shape depending on
+    which lane wrote it would be unreadable for IT. `bbox` becomes a list because that is what
+    JSON round-trips to; nothing downstream indexes it as a tuple.
+    """
+    return {
+        name: {
+            "value": extracted_field.value,
+            "origin": extracted_field.origin,
+            "spans": [
+                {"page_index": span.page_index, "bbox": list(span.bbox)}
+                for span in extracted_field.spans
+            ],
+        }
+        for name, extracted_field in extracted.items()
+    }
+
+
+def payload_value(record_fields: dict[str, dict], name: str) -> str | None:
+    """Read one value back out of the D1 payload — the counterpart of `field_payload`.
+
+    Consumers that only need a value (corroboration, projections for the human) should not
+    have to know the payload's inner shape. An absent field reads as None, like an empty one.
+    """
+    entry = record_fields.get(name)
+    return entry.get("value") if entry else None
 
 
 def load_templates(directory: Path, category: str | None = None) -> list[dict]:
@@ -151,45 +216,96 @@ def _normalize_value(value: str, rule: str) -> str:
     return value
 
 
-def _extract_by_pattern(document_text: str, field: dict) -> str | None:
+def _line_character_ranges(lines: list[TextLine]) -> list[tuple[int, int]]:
+    """The `[start, end)` slice each line occupies in `"\\n".join(line.text for line in lines)`.
+
+    The pattern path matches over the JOINED text, where line identity is gone; this map is
+    the only way back to geometry. The `+ 1` is the newline the join inserts BETWEEN lines —
+    it belongs to no line, so a match landing on it alone yields no span.
+    """
+    ranges: list[tuple[int, int]] = []
+    cursor = 0
+    for line in lines:
+        ranges.append((cursor, cursor + len(line.text)))
+        cursor += len(line.text) + 1
+    return ranges
+
+
+def _spans_for_character_range(
+    lines: list[TextLine], start: int, end: int
+) -> list[ProvenanceSpan]:
+    """Provenance of every line the `[start, end)` slice of the joined text overlaps.
+
+    A LIST, not one box: a regex may match across the join, so a value can straddle several
+    lines — and therefore several pages. Same shape as a RAG chunk's spans, for the same
+    reason. An empty range (`start == end`) overlaps nothing and yields [].
+    """
+    return [
+        ProvenanceSpan.from_line(line)
+        for line, (line_start, line_end) in zip(lines, _line_character_ranges(lines))
+        if line_start < end and start < line_end
+    ]
+
+
+def _extract_by_pattern(
+    lines: list[TextLine], document_text: str, field_definition: dict
+) -> ExtractedField:
     """Extract a field by regex over the document text (group 1, else the whole match).
 
     Born-digital PDFs glue a label to its value inside one PyMuPDF block, so geometry
-    anchors do not apply — these fields name a regex instead.
+    anchors do not apply — these fields name a regex instead. Provenance is recovered from
+    the match's character range: the span is that of the VALUE group, not of the whole
+    match, because the zone shown to a reviewer must be the value, not its label.
     """
-    match = re.search(field["pattern"], document_text)
+    match = re.search(field_definition["pattern"], document_text)
     if match is None:
-        return None
-    value = match.group(1) if match.groups() else match.group(0)
-    return _normalize_value(value, field.get("normalize", "strip"))
+        return ExtractedField(value=None)
+    group_index = 1 if match.groups() else 0
+    return ExtractedField(
+        value=_normalize_value(
+            match.group(group_index), field_definition.get("normalize", "strip")
+        ),
+        spans=_spans_for_character_range(lines, *match.span(group_index)),
+        origin=ORIGIN_PATTERN,
+    )
 
 
-def extract_fields(lines: list[TextLine], template: dict) -> dict[str, str | None]:
-    """Rebuild the template's named fields, by geometry anchors OR by text patterns.
+def extract_fields(lines: list[TextLine], template: dict) -> dict[str, ExtractedField]:
+    """Rebuild the template's named fields WITH their provenance, by anchors OR by patterns.
 
     A field with a `pattern` key is extracted by regex over the document text (born-digital
     invoices, where PyMuPDF glues label+value in one block). A field with an `anchor` key
-    uses the geometry path (scanned cards). A template may mix both.
+    uses the geometry path (scanned cards). A template may mix both — and BOTH paths carry
+    page + bbox, so "show me the zone this value came from" works on either lane.
+
+    Callers that only need values project with `field_values` (the verdict engine's input).
     """
     document_text = "\n".join(line.text for line in lines)
-    extracted: dict[str, str | None] = {}
-    for field in template["fields"]:
-        if "pattern" in field:
-            extracted[field["name"]] = _extract_by_pattern(document_text, field)
+    extracted: dict[str, ExtractedField] = {}
+    for field_definition in template["fields"]:
+        name = field_definition["name"]
+        if "pattern" in field_definition:
+            extracted[name] = _extract_by_pattern(
+                lines, document_text, field_definition
+            )
             continue
-        anchor_line = _find_anchor_line(lines, field["anchor"])
+        anchor_line = _find_anchor_line(lines, field_definition["anchor"])
         if anchor_line is None:
-            extracted[field["name"]] = None
+            extracted[name] = ExtractedField(value=None)
             continue
-        direction = field.get("direction", "below")
+        direction = field_definition.get("direction", "below")
         if direction == "right":
             value_line = _value_right(lines, anchor_line)
         else:
             value_line = _value_below(lines, anchor_line)
         if value_line is None:
-            extracted[field["name"]] = None
+            extracted[name] = ExtractedField(value=None)
             continue
-        extracted[field["name"]] = _normalize_value(
-            value_line.text, field.get("normalize", "strip")
+        extracted[name] = ExtractedField(
+            value=_normalize_value(
+                value_line.text, field_definition.get("normalize", "strip")
+            ),
+            spans=[ProvenanceSpan.from_line(value_line)],
+            origin=ORIGIN_ANCHOR,
         )
     return extracted

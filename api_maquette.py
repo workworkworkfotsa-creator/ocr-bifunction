@@ -214,7 +214,7 @@ def _update_job(
     status: str,
     *,
     verdict: str | None = None,
-    record_fields: dict[str, str | None] | None = None,
+    record_fields: dict[str, dict] | None = None,
     reasons: list[str] | None = None,
 ) -> None:
     with _repository_lock:

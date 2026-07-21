@@ -68,7 +68,10 @@ class Job:
     )
     category: str | None = None
     template_id: str | None = None
-    record_fields: dict[str, str | None] = field(default_factory=dict)
+    # The SERIALIZED record: `name -> {"value", "origin", "spans": [{"page_index", "bbox"}]}`,
+    # as produced by `template.field_payload` and stored as JSON in `record_fields`. The row
+    # holds plain JSON-ready dicts, never `ExtractedField` objects — the boundary is here.
+    record_fields: dict[str, dict] = field(default_factory=dict)
     reasons: list[str] = field(default_factory=list)
     request_id: str | None = None  # idempotence key (API); None for batch
     document_ref: str | None = (
@@ -121,7 +124,7 @@ class Repository(ABC):
         status: str,
         *,
         verdict: str | None = None,
-        record_fields: dict[str, str | None] | None = None,
+        record_fields: dict[str, dict] | None = None,
         reasons: list[str] | None = None,
         category_lane: str | None = None,
         category: str | None = None,
@@ -324,7 +327,7 @@ class SqliteRepository(Repository):
         status: str,
         *,
         verdict: str | None = None,
-        record_fields: dict[str, str | None] | None = None,
+        record_fields: dict[str, dict] | None = None,
         reasons: list[str] | None = None,
         category_lane: str | None = None,
         category: str | None = None,

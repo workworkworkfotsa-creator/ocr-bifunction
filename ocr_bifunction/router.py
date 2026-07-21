@@ -39,9 +39,11 @@ from ocr_bifunction.reader import (
 from ocr_bifunction.suggestion import SuggestionOutcome
 from ocr_bifunction.text_integrity_guard import TextIntegrityAssessment
 from ocr_bifunction.template import (
+    ExtractedField,
     ValidationContext,
     evaluate_validation,
     extract_fields,
+    field_values,
     load_templates,
     match_template,
 )
@@ -64,7 +66,7 @@ class RoutedDocument:
     category: str | None = None
     verdict: Verdict | None = None  # structured only; None for the RAG lane
     reasons: list[str] = field(default_factory=list)
-    fields: dict[str, str | None] = field(default_factory=dict)
+    fields: dict[str, ExtractedField] = field(default_factory=dict)
     summary: Summary | None = None  # rag only
     chunk_count: int = 0  # rag only
     suggestion: SuggestionOutcome | None = None  # rag only, when a suggester hook fired
@@ -169,7 +171,11 @@ def _structured_result(
     fields = extract_fields(lines, template)
     validation = template.get("validation") or {}
     if validation.get("required"):
-        outcome = evaluate_validation(fields, validation, today=today, context=context)
+        # The verdict engine reasons about VALUES; the provenance rides on `fields` to the
+        # record (and D1), so a reviewer can be shown the zone each value was read from.
+        outcome = evaluate_validation(
+            field_values(fields), validation, today=today, context=context
+        )
         verdict = outcome.verdict
         reasons = outcome.reject_reasons + outcome.review_reasons
     else:

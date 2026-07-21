@@ -14,7 +14,12 @@ import sys
 from pathlib import Path
 
 from ocr_bifunction.reader import read_document
-from ocr_bifunction.template import extract_fields, load_templates, match_template
+from ocr_bifunction.template import (
+    extract_fields,
+    field_payload,
+    load_templates,
+    match_template,
+)
 
 PROJECT_ROOT = Path(__file__).parent
 TEMPLATES_DIRECTORY = PROJECT_ROOT / "templates"
@@ -36,8 +41,16 @@ def extract_document(document_path: Path) -> None:
     fields = extract_fields(result.lines, template)
     print(f"\ndocument : {document_path.name}")
     print(f"template : {template['template_id']}  (category: {template['category']})")
-    print(f"ocr confidence : {result.confidence:.2f}\n")
-    print(json.dumps(fields, ensure_ascii=False, indent=2))
+    # None on a native text-layer read (exact, no score to report) — not a missing value.
+    confidence = (
+        f"{result.confidence:.2f}"
+        if result.confidence is not None
+        else "n/a (text layer)"
+    )
+    print(f"ocr confidence : {confidence}\n")
+    # The diagnostic CLI shows the FULL shape (value + origin + page/bbox), which is exactly
+    # what D1 stores — this is where you eyeball whether a field's provenance landed.
+    print(json.dumps(field_payload(fields), ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":

@@ -29,7 +29,7 @@ from ocr_bifunction.rag import Summary
 from ocr_bifunction.reader import OcrEngine
 from ocr_bifunction.router import RoutedDocument, SuggesterHook, route_document
 from ocr_bifunction.suggestion import SuggestionOutcome
-from ocr_bifunction.template import ValidationContext
+from ocr_bifunction.template import ExtractedField, ValidationContext
 
 # The document type that means "this upload is a CI" — dispatches to the recto+verso
 # submission flow instead of single-document routing (mirrors the API's document_type key).
@@ -64,7 +64,9 @@ class DocumentRecord:
     detail: str | None = None
     category: str | None = None
     template_id: str | None = None
-    fields: dict[str, str | None] = field(default_factory=dict)
+    # Extracted values WITH their provenance (page + bbox), one shape for every lane — see
+    # `template.ExtractedField`. `field_payload` serializes it to what D1 stores.
+    fields: dict[str, ExtractedField] = field(default_factory=dict)
     reasons: list[str] = field(default_factory=list)
     summary: Summary | None = None  # rag lane only
     chunk_count: int = 0  # rag lane only

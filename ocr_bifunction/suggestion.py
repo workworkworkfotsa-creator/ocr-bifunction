@@ -26,6 +26,7 @@ from ocr_bifunction.llama_transport import post_json, resolve_base_url
 from ocr_bifunction.reader import TextLine
 from ocr_bifunction.template import (
     extract_fields,
+    field_values,
     load_templates,
     validate_fields,
 )
@@ -212,7 +213,7 @@ def suggest_template(
             ],
             tried=True,
         )
-    reasons = validate_fields(extract_fields(lines, template), validation)
+    reasons = validate_fields(field_values(extract_fields(lines, template)), validation)
     return SuggestionOutcome(
         suggested_template_id=proposed_id,
         proposed_anchors=proposed_anchors,

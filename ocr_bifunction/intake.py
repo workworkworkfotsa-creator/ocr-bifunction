@@ -46,7 +46,7 @@ from ocr_bifunction.reader import OcrEngine
 from ocr_bifunction.repository import Job
 from ocr_bifunction.router import route_document
 from ocr_bifunction.status import STATUS_NEEDS_REVIEW, STATUS_REJECTED
-from ocr_bifunction.template import ValidationContext
+from ocr_bifunction.template import ValidationContext, field_payload
 from ocr_bifunction.verdict import Verdict
 
 
@@ -242,7 +242,7 @@ def job_from_outcome(
         verdict=outcome.verdict,
         category=record.category,
         template_id=record.template_id,
-        record_fields=record.fields,
+        record_fields=field_payload(record.fields),
         reasons=outcome.reasons,
         request_id=request_id,
         document_ref=document_ref,

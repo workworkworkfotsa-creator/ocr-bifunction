@@ -44,7 +44,10 @@ def _seed_needs_review_jobs(store_path: str) -> None:
                 status=STATUS_NEEDS_REVIEW,
                 verdict="review",
                 category="facture",
-                record_fields={"total_ht": "100.00"},
+                # The D1 payload shape (template.field_payload): value + provenance.
+                record_fields={
+                    "total_ht": {"value": "100.00", "origin": "pattern", "spans": []}
+                },
                 reasons=["no template matched the signature"],
             )
         )

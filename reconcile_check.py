@@ -16,7 +16,12 @@ from ocr_bifunction.mrz import MrzFields, extract_mrz_lines, parse_mrz
 from ocr_bifunction.preprocess import EnhancePreprocessor
 from ocr_bifunction.reader import OcrEngine, read_document
 from ocr_bifunction.reconcile import reconcile
-from ocr_bifunction.template import extract_fields, load_templates, match_template
+from ocr_bifunction.template import (
+    extract_fields,
+    field_values,
+    load_templates,
+    match_template,
+)
 
 PROJECT_ROOT = Path(__file__).parent
 TEMPLATES_DIRECTORY = PROJECT_ROOT / "templates"
@@ -29,7 +34,7 @@ def _recto_fields(
     template = match_template(result.lines, load_templates(TEMPLATES_DIRECTORY))
     if template is None:
         return None, None
-    return template["template_id"], extract_fields(result.lines, template)
+    return template["template_id"], field_values(extract_fields(result.lines, template))
 
 
 def _verso_mrz(verso_path: Path, engine: OcrEngine) -> MrzFields | None:

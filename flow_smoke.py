@@ -41,6 +41,7 @@ from fastapi.testclient import TestClient  # noqa: E402  (env must precede the i
 import api_maquette  # noqa: E402
 from draft_smoke import _attestation_lines, _write_pdf  # noqa: E402  (PII-free corpus)
 from ocr_bifunction.repository import SqliteRepository  # noqa: E402
+from ocr_bifunction.template import payload_value  # noqa: E402
 
 # Codes are chosen so EVERY distinct token recurs in >=2 documents (the vocabulary
 # candidate's PII guard demands recurrence) while the VALUES stay variant (the draft
@@ -216,9 +217,14 @@ def run() -> int:
             "/v1/documents:validate", json=_payload_for(fourth_path)
         ).json()
         fourth_job = _get_job(fourth_upload["job_id"])
+        # D1 stores value + provenance per field (template.field_payload); the normalize
+        # check is about the VALUES, so read them through the payload accessor.
         iso_dates = [
             value
-            for value in (fourth_job.record_fields or {}).values()
+            for value in (
+                payload_value(fourth_job.record_fields or {}, name)
+                for name in fourth_job.record_fields or {}
+            )
             if isinstance(value, str)
             and len(value) == 10
             and value[4] == "-"

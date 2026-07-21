@@ -30,7 +30,12 @@ from ocr_bifunction.review_repository import (
     Suggestion,
     SqliteReviewRepository,
 )
-from ocr_bifunction.template import extract_fields, match_template, validate_fields
+from ocr_bifunction.template import (
+    extract_fields,
+    field_values,
+    match_template,
+    validate_fields,
+)
 from ocr_bifunction.template_repository import SqliteTemplateRepository
 
 PROJECT_ROOT = Path(__file__).parent
@@ -143,7 +148,8 @@ def run(document_path: Path, held_out: str, store_path: str) -> int:
             print("FAIL: expected a MATCH after promotion.")
             return 1
         reasons = validate_fields(
-            extract_fields(result.lines, after), after.get("validation", {})
+            field_values(extract_fields(result.lines, after)),
+            after.get("validation", {}),
         )
         verdict = "auto" if not reasons else "review"
         print(f"extract + validate -> {verdict}")

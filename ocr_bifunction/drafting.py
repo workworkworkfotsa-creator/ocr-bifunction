@@ -53,6 +53,7 @@ from ocr_bifunction.template import (
     _value_below,
     _value_right,
     extract_fields,
+    field_values,
     match_template,
     validate_fields,
 )
@@ -376,8 +377,11 @@ def draft_from_cluster(
         return DraftReport(template=None, anchors=match_anchors, reasons=reasons)
 
     # Gate step 2 — keep only fields that extract a VARYING value everywhere.
+    # Values only: this gate compares what a candidate field EXTRACTS across the cluster
+    # (present everywhere? varying?), which geometry says nothing about.
     extractions_by_source = {
-        document.source: extract_fields(document.lines, draft) for document in cluster
+        document.source: field_values(extract_fields(document.lines, draft))
+        for document in cluster
     }
     kept_fields: list[dict] = []
     dropped_fields: list[str] = []
