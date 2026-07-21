@@ -23,6 +23,16 @@ the date, and bump `version` in `pyproject.toml` to match the tag.
 ## [Unreleased]
 
 ### Fixed
+- **The geometry rules silently depended on the capture resolution.** "Same column" and "same row"
+  were absolute pixel constants tuned on ~1100 px card scans, so the same card scanned at 2200 px
+  doubled every offset while the tolerance stayed put: the rule tightened until it stopped matching,
+  and a BETTER scan extracted fewer fields. They are now expressed in LINE HEIGHTS — the document's
+  own text scale — because "same column" is a typographic property, not a property of the sensor.
+  The scale is the document's MEDIAN line height, not the anchor line's own: a born-digital "line"
+  is a PyMuPDF block that can hold a whole paragraph, and sizing a tolerance on one would blow it
+  up. Page fractions were tried first and rejected on measurement: across two real captures they
+  varied 9.8 % against 2.9 % for line heights, and would have changed born-digital behaviour.
+  Extraction on a real ID card is byte-identical (`ci_geometry_fingerprint.py`).
 - **Pages whose content is in their images were read blind.** A PDF page went to the text layer as
   soon as it held 10 native characters, so a full-page photo with a caption cleared the bar, its
   images were never read, and the read reported success — a real 24-page photo book came out as

@@ -19,10 +19,43 @@ Restent, **aucun n'est engagé** :
 1. **Le fichier d'un span n'est pas identifié** (limite nommée, pas un oubli) : un span dit la PAGE,
    pas QUEL fichier d'une soumission multi-fichiers. Le surlignage se pose sur le premier fichier
    et l'UI le dit. Ça ne mord que sur les paires CI.
-2. **Tolérances dépendantes de la résolution** (chantier séparé, ci-dessous) — oracle disponible :
-   `ci_geometry_fingerprint.py`.
-3. **Le chemin lourd et la provenance RAG ne sont pas câblés** — décision en attente d'un
+2. **Le chemin lourd et la provenance RAG ne sont pas câblés** — décision en attente d'un
    consommateur (`sop_contract`), pas un oubli.
+
+## État au 2026-07-21 (suite) — les tolérances géométriques cessent de dépendre de la RÉSOLUTION
+
+**Le chantier parké est fait, et son bloqueur a été levé par la mesure, pas par une supposition.**
+Il était : `ROW_Y_TOLERANCE = 25` px n'a aucune hauteur de référence documentée. Réponse mesurée
+sur les vraies images CI (1066×694 et 1170×762 px, cohérent avec les « ~1100 px » du commentaire).
+
+**Le bug** : `_value_below`/`_value_right` comparaient des coordonnées à des constantes en PIXELS
+ABSOLUS. 60 px = 5,6 % d'une carte à 1066 px et 2,7 % de la MÊME carte scannée à 2200 px → la règle
+se **resserre en silence** jusqu'à ne plus matcher : un meilleur scan extrayait moins de champs.
+Invisible pour les tests, le corpus n'ayant qu'une seule résolution.
+
+**⚠️ MA PREMIÈRE SOLUTION ÉTAIT FAUSSE, et c'est la mesure qui l'a dit.** Je partais sur des
+fractions de PAGE (cohérent avec `ProvenanceSpan`). Comparé sur les deux images CI :
+
+| | img0 (1066px) | img1 (1170px) | écart |
+|---|---|---|---|
+| en **hauteurs de ligne** | 1,76 | 1,71 | **2,9 %** |
+| en **% de largeur** | 5,6 % | 5,1 % | 9,8 % |
+
+Et surtout le born-digital : la fraction de page y aurait donné 5,45 % × 595 = **32 pt au lieu de
+60** — un changement de comportement. **Ces tolérances parlent de la taille du TEXTE, pas de la
+page** : « même colonne » et « même ligne » sont des propriétés typographiques.
+
+**Livré** : `_text_scale(lines)` = **hauteur de ligne médiane du document** — médiane et non hauteur
+de la ligne d'ancre, parce qu'un « bloc » born-digital peut faire un paragraphe entier (mesuré
+jusqu'à 30 % d'une page) et gonflerait la tolérance. Constantes
+`COLUMN_X_TOLERANCE_LINE_HEIGHTS = 1.75`, `ROW_Y_TOLERANCE_LINE_HEIGHTS = 0.72`,
+`ADJACENCY_NUDGE_LINE_HEIGHTS = 0.15` (le `5` magique). Repli sur les constantes historiques si
+aucune ligne n'a de hauteur exploitable — jamais une tolérance nulle.
+
+**Prouvé sur les deux plans** : `ci_geometry_fingerprint` **diff vide** (iso-sortie sur un vrai CI)
+ET `tolerance_scale_smoke` **6/6**, dont le check qui démontre que **le bug était réel** — au 2× la
+mesure passe à 80 px alors que l'ancienne constante restait à 60, donc le champ disparaissait. Ce
+check échouera si quelqu'un revient à une constante absolue. Régressions vertes.
 
 ## État au 2026-07-21 (suite) — le lecteur cessait de LIRE les pages à dominante image
 
