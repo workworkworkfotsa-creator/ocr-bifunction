@@ -22,6 +22,9 @@ Proves:
      the match's character range — the span is the VALUE group, not the whole match;
   3. a pattern match STRADDLING two lines yields BOTH spans (hence a list, not one box);
   4. multi-page: the span carries the page the value was actually read from;
+  4bis. per-word narrowing shrinks the span from the paragraph-sized block to the value's own
+     words, selected BY OFFSET — two values on the same line give two different boxes, which a
+     spelling lookup cannot do; a backend with no word grain falls back to the whole line;
   5. absent provenance stays absent and is NEVER fabricated — a missing anchor and a
      non-matching pattern both give value=None, spans=[], origin=None;
   6. NO page geometry (the VLM lane, whose boxes are synthetic reading-order scaffolding)
@@ -35,7 +38,7 @@ from __future__ import annotations
 
 import json
 
-from ocr_bifunction.reader import TextLine
+from ocr_bifunction.reader import TextLine, WordSpan
 from ocr_bifunction.template import (
     ExtractedField,
     extract_fields,
@@ -164,6 +167,54 @@ def run() -> int:
         "multi-page: the span carries the page the value was actually read from",
         by_pattern["numero_facture"].spans[0].page_index == 0
         and by_pattern["marche"].spans[0].page_index == 3,
+    )
+
+    # --- 4bis. Word-level narrowing: BY POSITION, never by spelling. -------------------
+    # One born-digital block holds a whole paragraph, so the block box says "somewhere in
+    # here". With per-word offsets the span shrinks to the words the value actually occupies.
+    # The decisive case: TWO values on the SAME line must give TWO different boxes — which a
+    # spelling lookup cannot do (measured on a real invoice, matching by text picked up the
+    # same words from the document title and made the box 3x BIGGER).
+    worded_line = TextLine(
+        "Facture N. F-2026-0042 du 03/07/2026",
+        (0.0, 0.0, 300.0, 12.0),
+        **PATTERN_PAGE,
+        word_spans=[
+            WordSpan(0, 7, (0.0, 0.0, 50.0, 12.0)),  # Facture
+            WordSpan(8, 10, (55.0, 0.0, 65.0, 12.0)),  # N.
+            WordSpan(11, 22, (70.0, 0.0, 140.0, 12.0)),  # F-2026-0042
+            WordSpan(23, 25, (145.0, 0.0, 160.0, 12.0)),  # du
+            WordSpan(26, 36, (165.0, 0.0, 230.0, 12.0)),  # 03/07/2026
+        ],
+    )
+    worded = extract_fields(
+        [worded_line],
+        {
+            "template_id": "smoke_words",
+            "fields": [
+                {"name": "numero", "pattern": r"Facture N\. (\S+)"},
+                {"name": "date", "pattern": r"du (\S+)"},
+            ],
+        },
+    )
+    _check(
+        "word grain narrows the span to the value's own words, not the whole block",
+        # word box (70, 0, 140, 12) over a 600x800 page — NOT the line's (0, 0, 300, 12)
+        _boxes_close(worded["numero"].spans, [(70 / 600, 0.0, 140 / 600, 12 / 800)]),
+    )
+    _check(
+        "two values on the SAME line give two DIFFERENT boxes (position, not spelling)",
+        _boxes_close(worded["date"].spans, [(165 / 600, 0.0, 230 / 600, 12 / 800)])
+        and worded["numero"].spans[0].bbox != worded["date"].spans[0].bbox,
+    )
+    _check(
+        "narrowed box is strictly inside the line's own box",
+        worded["numero"].spans[0].bbox[0] > 0.0
+        and worded["numero"].spans[0].bbox[2] < 300.0 / 600,
+    )
+    _check(
+        "no word grain (every OCR engine) -> the WHOLE line box, unchanged fallback",
+        _boxes_close(by_pattern["numero_facture"].spans, [(0.0, 0.0, 0.5, 0.015)]),
     )
 
     # --- 5. Absent provenance stays absent — never fabricated. -------------------------

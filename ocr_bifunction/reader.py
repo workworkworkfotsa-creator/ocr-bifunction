@@ -77,6 +77,10 @@ class TextLine:
     page_index: int = 0
     page_width: float = 0.0
     page_height: float = 0.0
+    # Per-word geometry INSIDE this line, when the backend can give it (the PDF text layer can;
+    # OCR engines already emit line-sized boxes and leave this empty). Lets a consumer narrow a
+    # box to the words a value actually occupies — see `WordSpan`.
+    word_spans: list[WordSpan] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if self.page_width < 0 or self.page_height < 0:
@@ -125,6 +129,26 @@ class TextLine:
 
 
 @dataclass
+class WordSpan:
+    """One word of a line: WHERE it sits in the line's text, and where it sits on the page.
+
+    `start`/`end` are character offsets into the owning `TextLine.text`; `bbox` is in that
+    line's native units. This exists so a value found at known CHARACTER positions can be
+    narrowed to the box of just those words — a born-digital block is paragraph-sized, so
+    highlighting the whole block tells a reviewer "somewhere in here" instead of "there".
+
+    Offsets, never spelling: the same word occurs many times on a page, so looking one up by
+    its text lands on an arbitrary occurrence. Measured 2026-07-21 on a real invoice — matching
+    by text made the box 3x LARGER than the block it was meant to shrink, because the words of
+    a date also appear in the document title.
+    """
+
+    start: int
+    end: int
+    bbox: tuple[float, float, float, float]
+
+
+@dataclass
 class ProvenanceSpan:
     """Where one piece of a downstream product came from in the SOURCE document: page + box.
 
@@ -148,8 +172,17 @@ class ProvenanceSpan:
     bbox: tuple[float, float, float, float]
 
     @classmethod
-    def from_line(cls, line: TextLine) -> ProvenanceSpan | None:
-        """The span of a whole read line, normalized — the only way provenance is created.
+    def from_line(
+        cls,
+        line: TextLine,
+        *,
+        bbox: tuple[float, float, float, float] | None = None,
+    ) -> ProvenanceSpan | None:
+        """The span of a read line, normalized — the only way provenance is created.
+
+        `bbox` narrows the span to a REGION of the line (the words a value occupies) while
+        reusing the line's page frame; None means the whole line, which is all a backend
+        without per-word geometry can offer.
 
         Returns None when the line carries no page dimensions. That is not an error to swallow
         but a REAL state: the VLM lane emits synthetic reading-order boxes that encode no
@@ -159,7 +192,7 @@ class ProvenanceSpan:
         """
         if line.page_width <= 0 or line.page_height <= 0:
             return None
-        x0, y0, x1, y1 = line.bbox
+        x0, y0, x1, y1 = bbox if bbox is not None else line.bbox
         return cls(
             line.page_index,
             (
@@ -320,6 +353,34 @@ def _mean_confidence(lines: list[TextLine]) -> float | None:
     return sum(scores) / len(scores) if scores else None
 
 
+def _word_spans_in_block(block_text: str, words: list[tuple]) -> list[WordSpan]:
+    """Locate each word INSIDE the block's text by walking a cursor forward.
+
+    Sequential on purpose, never `block_text.find(word)` from the start: the same word occurs
+    repeatedly on a page and inside a block, so a spelling lookup lands on whichever occurrence
+    comes first — which is usually not the one being located. Measured on a real invoice: text
+    matching produced a box 3x LARGER than the block it was supposed to shrink, because a
+    date's words also appeared in the document title. Advancing the cursor keeps every word at
+    its own place, since PyMuPDF yields words in reading order within a block.
+
+    A word the block text does not contain verbatim (ligature, hyphenation, an exotic space) is
+    SKIPPED rather than placed approximately: one missing word narrows the box slightly less,
+    while a mis-placed one would point somewhere wrong.
+    """
+    spans: list[WordSpan] = []
+    cursor = 0
+    for word in words:
+        x0, y0, x1, y1, text = word[0], word[1], word[2], word[3], word[4]
+        if not text:
+            continue
+        found = block_text.find(text, cursor)
+        if found < 0:
+            continue
+        spans.append(WordSpan(found, found + len(text), (x0, y0, x1, y1)))
+        cursor = found + len(text)
+    return spans
+
+
 def _read_pdf(document_path: Path, ocr_engine: OcrEngine | None) -> ReadResult:
     import pymupdf
 
@@ -337,7 +398,13 @@ def _read_pdf(document_path: Path, ocr_engine: OcrEngine | None) -> ReadResult:
             if len(native_text) >= TEXT_LAYER_MINIMUM_CHARACTERS:
                 has_text_layer = True
                 page_texts.append(native_text)
-                for x0, y0, x1, y1, block_text, _block_no, block_type in page.get_text(
+                # Same page, word grain: PyMuPDF numbers words by the block they belong to,
+                # so each block gets exactly its own words (word tuple = x0,y0,x1,y1,text,
+                # block_no,line_no,word_no).
+                words_by_block: dict[int, list[tuple]] = {}
+                for word in page.get_text("words"):
+                    words_by_block.setdefault(word[5], []).append(word)
+                for x0, y0, x1, y1, block_text, block_no, block_type in page.get_text(
                     "blocks"
                 ):
                     cleaned = block_text.strip()
@@ -351,6 +418,9 @@ def _read_pdf(document_path: Path, ocr_engine: OcrEngine | None) -> ReadResult:
                                 page_index,
                                 page_width=page.rect.width,
                                 page_height=page.rect.height,
+                                word_spans=_word_spans_in_block(
+                                    cleaned, words_by_block.get(block_no, [])
+                                ),
                             )
                         )
                 continue
