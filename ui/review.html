@@ -22,7 +22,11 @@
     /* The page is RENDERED server-side to PNG so a zone can be drawn over it — impossible on a
        browser's built-in PDF viewer. The frame is the positioning context; the zone is placed in
        PERCENT, which is exactly the form provenance spans already have (no unit, no dpi). */
-    .page-frame { position: relative; display: inline-block; max-width: 100%;
+    /* overflow: hidden clips a zone that falls outside the page instead of letting it spill.
+       Measured: PyMuPDF text blocks can bleed past the page edge (a block at y0 = -41 pt), so
+       a normalized span can legitimately go slightly negative or past 1. The DATA stays
+       truthful — clamping it would falsify the provenance — and only the DISPLAY is bounded. */
+    .page-frame { position: relative; display: inline-block; max-width: 100%; overflow: hidden;
                   border: 1px solid #ddd; border-radius: 4px; line-height: 0; }
     /* border-box, or the 2px outline would sit OUTSIDE the percentage box and the drawn zone
        would be 4px wider and taller than the span it represents (measured). */

@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
@@ -40,6 +40,19 @@ HeavyPageConverterFactory = Callable[[Path], PageRangeConverter]
 # A PDF page yielding fewer than this many characters of native text is treated as
 # image-only (scanned) and routed to the OCR engine instead of the text layer.
 TEXT_LAYER_MINIMUM_CHARACTERS = 10
+
+# Resolution the page is rasterized at before OCR. Provenance spans are normalized to the page,
+# so this value never reaches a consumer — changing it costs nothing downstream.
+OCR_RENDER_DPI = 200
+
+# A page that HAS a text layer but whose content is really in its images (a photo with a
+# caption): its images are OCR'd IN ADDITION to the native text. Both bars must be crossed —
+# calibrated on the whole corpus (235 pages) by `image_dominance_observer_run.py`, where
+# coverage alone flagged 32 pages and text density correctly excluded 7 of them (full-page
+# background image UNDER a real text layer). Separation was wide: excluded pages sat around
+# 930 characters, flagged ones at 583 or below.
+IMAGE_DOMINANT_COVERAGE_PERCENT = 80.0
+IMAGE_DOMINANT_MAXIMUM_CHARACTERS = 600
 
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"}
 
@@ -353,6 +366,55 @@ def _mean_confidence(lines: list[TextLine]) -> float | None:
     return sum(scores) / len(scores) if scores else None
 
 
+def _image_coverage_percent(page) -> float:
+    """Share of the page area covered by images, in percent — can exceed 100.
+
+    Images overlap and stack (a photo book layers them), and that IS the signal: a page whose
+    images cover it several times over is not a text page whatever its caption says.
+    """
+    page_area = page.rect.width * page.rect.height
+    if page_area <= 0:
+        return 0.0
+    covered = 0.0
+    for image in page.get_images(full=True):
+        for rectangle in page.get_image_rects(image[0]):
+            covered += abs(rectangle.width * rectangle.height)
+    return covered / page_area * 100.0
+
+
+def _is_image_dominant(page, character_count: int) -> bool:
+    """True when the page's CONTENT is in its images, not in its (present) text layer.
+
+    BOTH conditions, and the conjunction is what makes it precise. Measured over the whole
+    corpus (235 pages, `image_dominance_observer_run.py`): 32 pages exceed the coverage bar,
+    but 7 of them carry a full text layer under a full-page background image — their content
+    IS the text, and flagging them would be a false positive. Text density excludes all 7.
+    """
+    return (
+        character_count < IMAGE_DOMINANT_MAXIMUM_CHARACTERS
+        and _image_coverage_percent(page) > IMAGE_DOMINANT_COVERAGE_PERCENT
+    )
+
+
+def _rescaled_to_page_points(line: TextLine, page_index: int, page_rect) -> TextLine:
+    """An OCR line's geometry expressed in the PAGE's points instead of the render's pixels.
+
+    On an image-dominant page the OCR lines sit next to text-layer lines, and the template
+    geometry rules compare their boxes directly (`_value_below` and friends filter on the same
+    page, then compare coordinates). Mixing 0..1654 pixels with 0..595 points on ONE page would
+    make those comparisons meaningless, so the OCR side is converted here, at the seam, once.
+    """
+    scale = 72.0 / OCR_RENDER_DPI
+    x0, y0, x1, y1 = line.bbox
+    return replace(
+        line,
+        bbox=(x0 * scale, y0 * scale, x1 * scale, y1 * scale),
+        page_index=page_index,
+        page_width=page_rect.width,
+        page_height=page_rect.height,
+    )
+
+
 def _word_spans_in_block(block_text: str, words: list[tuple]) -> list[WordSpan]:
     """Locate each word INSIDE the block's text by walking a cursor forward.
 
@@ -423,13 +485,37 @@ def _read_pdf(document_path: Path, ocr_engine: OcrEngine | None) -> ReadResult:
                                 ),
                             )
                         )
+                # A page can hold a text layer AND carry its real content in images — a photo
+                # with a caption. The gate above only asks "is there ANY text?", so such a page
+                # went native and its images were never read, while the read reported success.
+                # Measured 2026-07-21: a 24-page photo book came out as 6 218 characters of
+                # captions, `needs_ocr` False, no error. So when the page is image-DOMINANT the
+                # images are OCR'd IN ADDITION: the exact native captions are kept and the
+                # image content is added, rather than trading one for the other.
+                if _is_image_dominant(page, len(native_text)):
+                    if ocr_engine is None:
+                        needs_ocr = True  # content we know we cannot read: say so
+                        continue
+                    pixmap = page.get_pixmap(dpi=OCR_RENDER_DPI)
+                    ocr_lines = ocr_engine.recognize(pixmap.tobytes("png"))
+                    lines.extend(
+                        _rescaled_to_page_points(line, page_index, page.rect)
+                        for line in ocr_lines
+                    )
+                    if ocr_lines:
+                        page_texts.append("\n".join(line.text for line in ocr_lines))
+                    ocr_page_count += 1
                 continue
             # Image-only page: render it and hand it to the OCR engine, if any.
             if ocr_engine is None:
                 needs_ocr = True
                 continue
-            pixmap = page.get_pixmap(dpi=200)
+            pixmap = page.get_pixmap(dpi=OCR_RENDER_DPI)
             page_lines = ocr_engine.recognize(pixmap.tobytes("png"))
+            # NOT rescaled to points, unlike the image-dominant case above: this page has no
+            # text-layer lines to be mixed with, and the template tolerances
+            # (COLUMN_X_TOLERANCE, ROW_Y_TOLERANCE) are calibrated in PIXELS. Converting here
+            # would silently divide every offset by ~2.8 and leave the tolerances untouched.
             for line in page_lines:
                 line.page_index = page_index
             lines.extend(page_lines)
