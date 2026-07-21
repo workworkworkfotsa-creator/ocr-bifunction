@@ -22,6 +22,11 @@ the date, and bump `version` in `pyproject.toml` to match the tag.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-21
+
+Provenance: an extracted value can be located in the source document, so a reviewer can be shown
+the region it was read from instead of being asked to trust it.
+
 ### Added
 - **Field provenance (page + bbox)** — `extract_fields` no longer destroys geometry at the last
   point it still exists. It returns `ExtractedField(value, spans, origin)` on BOTH extraction paths:
@@ -104,5 +109,6 @@ Initial baseline — the bi-mode document intake proven end-to-end on real docum
   multi-page conversion (split into page-range batches, retry dropped pages under a decreasing
   batch-size schedule, reconcile by absolute page number), proven on real Docling.
 
-[Unreleased]: https://github.com/workworkworkfotsa-creator/ocr-bifunction/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/workworkworkfotsa-creator/ocr-bifunction/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/workworkworkfotsa-creator/ocr-bifunction/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/workworkworkfotsa-creator/ocr-bifunction/releases/tag/v0.1.0
