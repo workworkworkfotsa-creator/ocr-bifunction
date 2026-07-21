@@ -19,6 +19,7 @@ from __future__ import annotations
 import difflib
 import json
 import re
+import statistics
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -39,11 +40,27 @@ from ocr_bifunction.validation import (
     validate_fields as validate_fields,
 )
 
-# Horizontal tolerance (pixels) for "same column": a value counts as below a label
-# when their left edges line up within this band. Tuned on ~1100px-wide CI scans.
-COLUMN_X_TOLERANCE = 60.0
-# Vertical tolerance (pixels) for "same row" (direction "right").
-ROW_Y_TOLERANCE = 25.0
+# "Same column" and "same row" are properties of the TEXT, not of the page or of the capture:
+# two lines share a column when their left edges differ by less than about two character heights,
+# whatever resolution the document was captured at. These tolerances used to be ABSOLUTE PIXELS
+# (60 and 25, "tuned on ~1100px-wide CI scans"), which made the rules silently resolution-
+# dependent: 60 px is 5.6 % of a 1066 px card and 2.7 % of the SAME card scanned at 2200 px, so a
+# better scan tightened the rule until it stopped matching. Expressed in LINE HEIGHTS they survive
+# a rescan at any size — and a change of unit, which now happens for real (a born-digital page is
+# in points, an OCR'd render in pixels).
+#
+# Values derived from the pixel constants at the resolution they were tuned on (measured: median
+# line height 34-35 px across the CI corpus, so 60 px = 1.76 and 1.71 line heights), then held to
+# BYTE-IDENTICAL extraction on a real ID card by ci_geometry_fingerprint.py.
+COLUMN_X_TOLERANCE_LINE_HEIGHTS = 1.75
+ROW_Y_TOLERANCE_LINE_HEIGHTS = 0.72
+# A value must sit strictly below / to the right of its label — a small nudge so the anchor line
+# cannot match itself. Was a bare `5` pixels at the same reference resolution.
+ADJACENCY_NUDGE_LINE_HEIGHTS = 0.15
+# Used only when the lines carry no usable height at all (a degenerate read): the historical pixel
+# values, so the rules keep working instead of collapsing to a zero tolerance.
+FALLBACK_COLUMN_X_TOLERANCE = 60.0
+FALLBACK_ROW_Y_TOLERANCE = 25.0
 
 # How a field's value was obtained — the honest label on its provenance, not a quality score.
 ORIGIN_ANCHOR = "anchor"  # geometry path: the value is one read line, box known exactly
@@ -175,7 +192,28 @@ def match_template(lines: list[TextLine], templates: list[dict]) -> dict | None:
     return None
 
 
+def _text_scale(lines: list[TextLine]) -> float:
+    """The document's text scale — the median line height — that sizes the geometry tolerances.
+
+    The DOCUMENT's median, deliberately, not the anchor line's own height: a born-digital "line"
+    is a PyMuPDF block, which can hold a whole paragraph (measured up to 30 % of a page), so
+    sizing a tolerance on one such block would blow it up. A median shrugs those outliers off.
+
+    Returns 0.0 when no line has a usable height; callers then fall back to the historical pixel
+    constants rather than collapse to a zero tolerance.
+    """
+    heights = [line.height for line in lines if line.height > 0]
+    return statistics.median(heights) if heights else 0.0
+
+
 def _value_below(lines: list[TextLine], anchor_line: TextLine) -> TextLine | None:
+    scale = _text_scale(lines)
+    tolerance = (
+        scale * COLUMN_X_TOLERANCE_LINE_HEIGHTS
+        if scale
+        else FALLBACK_COLUMN_X_TOLERANCE
+    )
+    nudge = scale * ADJACENCY_NUDGE_LINE_HEIGHTS if scale else 5.0
     # Same page only: bbox coordinates are per-page, so a cross-page comparison is
     # meaningless (seen on 2-page attestations: a p1 block "below" a p0 label).
     candidates = [
@@ -183,8 +221,8 @@ def _value_below(lines: list[TextLine], anchor_line: TextLine) -> TextLine | Non
         for line in lines
         if line is not anchor_line
         and line.page_index == anchor_line.page_index
-        and line.y0 > anchor_line.y0 + 5
-        and abs(line.x0 - anchor_line.x0) <= COLUMN_X_TOLERANCE
+        and line.y0 > anchor_line.y0 + nudge
+        and abs(line.x0 - anchor_line.x0) <= tolerance
     ]
     if not candidates:
         return None
@@ -192,13 +230,18 @@ def _value_below(lines: list[TextLine], anchor_line: TextLine) -> TextLine | Non
 
 
 def _value_right(lines: list[TextLine], anchor_line: TextLine) -> TextLine | None:
+    scale = _text_scale(lines)
+    tolerance = (
+        scale * ROW_Y_TOLERANCE_LINE_HEIGHTS if scale else FALLBACK_ROW_Y_TOLERANCE
+    )
+    nudge = scale * ADJACENCY_NUDGE_LINE_HEIGHTS if scale else 5.0
     candidates = [
         line
         for line in lines
         if line is not anchor_line
         and line.page_index == anchor_line.page_index
-        and line.x0 >= anchor_line.x1 - 5
-        and abs(line.y0 - anchor_line.y0) <= ROW_Y_TOLERANCE
+        and line.x0 >= anchor_line.x1 - nudge
+        and abs(line.y0 - anchor_line.y0) <= tolerance
     ]
     if not candidates:
         return None

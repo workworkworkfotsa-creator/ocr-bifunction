@@ -514,8 +514,8 @@ def _read_pdf(document_path: Path, ocr_engine: OcrEngine | None) -> ReadResult:
             page_lines = ocr_engine.recognize(pixmap.tobytes("png"))
             # NOT rescaled to points, unlike the image-dominant case above: this page has no
             # text-layer lines to be mixed with, and the template tolerances
-            # (COLUMN_X_TOLERANCE, ROW_Y_TOLERANCE) are calibrated in PIXELS. Converting here
-            # would silently divide every offset by ~2.8 and leave the tolerances untouched.
+            # are sized from the DOCUMENT's own line height, so they follow whatever unit the
+            # lines are in — but mixing two units on ONE page would still be meaningless.
             for line in page_lines:
                 line.page_index = page_index
             lines.extend(page_lines)

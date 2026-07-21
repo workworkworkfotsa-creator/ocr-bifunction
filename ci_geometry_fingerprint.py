@@ -5,21 +5,19 @@
 
 WHY THIS EXISTS. `ci_fr_electronique_2021_recto` is the ONLY committed template built on geometry
 anchors (7 anchor fields, 0 pattern) — every other template extracts by regex. So it is the only
-thing exercising `_value_below` / `_value_right` and their tolerances (`COLUMN_X_TOLERANCE`,
-`ROW_Y_TOLERANCE`). Any change to coordinates, units or those rules is a REFACTOR ISO-SORTIE: the
-extraction must come out IDENTICAL. Unit tests cannot prove that — only replaying a real document
-can. Capture before, capture after, `diff`.
+thing exercising `_value_below` / `_value_right` and their tolerances. Any change to coordinates,
+units or those rules is a REFACTOR ISO-SORTIE: the extraction must come out IDENTICAL. Unit tests
+cannot prove that — only replaying a real document can. Capture before, capture after, `diff`.
 
     uv run python ci_geometry_fingerprint.py > before.txt
     # ... change the geometry ...
     uv run python ci_geometry_fingerprint.py > after.txt
     diff before.txt after.txt        # empty = the change did not alter extraction
 
-Already used this way (2026-07-21) to prove that normalizing `ProvenanceSpan` to page fractions
-changed nothing, and kept for the PARKED chantier it will be needed for: expressing the tolerances
-as page fractions instead of pixels, which today makes the anchor rules resolution-dependent (a
-scan of the same card at 2200 px instead of ~1100 px would double every offset while the pixel
-tolerance stays put). Do not attempt that conversion without this oracle.
+Used this way twice on 2026-07-21: to prove that normalizing `ProvenanceSpan` to page fractions
+changed nothing, then that re-expressing the tolerances in LINE HEIGHTS (they were absolute pixels,
+so a card scanned at 2200 px instead of ~1100 px silently tightened the rules) left the extraction
+byte-identical. Keep using it for anything that touches the geometry.
 
 PII: the input is a REAL identity document. Values are NEVER printed — only a truncated SHA-256,
 which compares just as well and leaks nothing. Safe to run and to paste into a commit or an issue.
