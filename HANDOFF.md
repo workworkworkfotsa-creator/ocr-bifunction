@@ -13,11 +13,13 @@
 > coller de valeur réelle (nom, n°doc, adresse) dans le code, les docs ou un message de commit ; `0_Aller_retour_IT/`,
 > `inputs/`, `outputs/`, `models/`, `spool/` restent gitignorés (vérifié absent du tree poussé).
 
-## État au 2026-07-21 — markitdown évalué puis ÉCARTÉ (corroboration de structure) : la limite est le livrable
+## État au 2026-07-21 — markitdown RESSERRÉ AUX TABLES : un second avis étroit mais réel
 
 **Question posée** : markitdown peut-il servir de 2e lecteur pour la sous-arête STRUCTURE (l'autre
-moitié de l'arête sens, cf. section suivante) ? **Verdict utilisateur : NON, ROI nul.** Mesuré, puis
-arrêté net — ce qu'on garde, c'est la LIMITE, pas du code.
+moitié de l'arête sens, cf. section suivante) ? **Verdict utilisateur : oui, mais UNIQUEMENT pour les
+TABLES** — il est rapide et donne là un vrai second avis ; aller plus loin (hiérarchie, linéarisation)
+a un ROI nul. La valeur est donc étroite, assumée comme telle, et la LIMITE est documentée aussi
+soigneusement que la capacité.
 
 **Azure n'est PAS requis** (doute légitime levé à la source, markitdown 0.1.6) : les 18
 convertisseurs par défaut sont tous locaux ; `DocumentIntelligenceConverter` / `ContentUnderstanding`
@@ -40,20 +42,40 @@ pages d'un PDF synthétique 2 pages, mais sur le corpus réel un document sort e
 caractères**. On ne peut donc pas découper la sortie markitdown par page ; un alignement par page
 (pour le croiser avec `layout_score`) exigerait de lui donner **une page à la fois**.
 
-**L'indépendance aurait été RÉELLE** (pdfplumber géométrique vs TableFormer neural de Docling) —
-contrairement au cas CMap où les deux lecteurs partagent la même source de vérité et s'accordent donc
-sur le faux. Le potentiel existait, sur la zone à risque prouvée (tables larges garbled,
-`layout_score` 0.70). **L'utilisateur a tranché que le gain ne payait pas le coût.**
+**L'indépendance est RÉELLE sur les tables** (pdfplumber **géométrique** — lignes de cadre et
+positions de mots — vs TableFormer **neural** de Docling) : deux méthodes sans rien en commun, donc
+un accord est une vraie preuve et non deux copies de la même erreur. Contrairement au cas CMap, où
+les deux lecteurs partagent la même source de vérité et s'accordent donc sur le faux. Et ça tombe sur
+la zone à risque **prouvée** : la défaillance Docling mesurée était exactement des tables
+larges/denses garbled (`layout_score` 0.70).
 
-**Nettoyé en conséquence** (discipline anti-cimetière) : le brouillon
-`ocr_bifunction/reading_order_comparison.py` **supprimé** (jamais câblé = code mort) et la dép dev
-`markitdown` **retirée**. Rien de spéculatif ne reste en place.
+**LIVRÉ — `ocr_bifunction/table_corroboration.py`** (PUR, prend deux chaînes markdown ; ni lecteur ni
+modèle) : `extract_table_profiles` (chaque table réduite à sa FORME lignes×colonnes, ligne
+d'alignement exclue car c'est du markup) + `compare_table_profiles` / `corroborate_tables`.
+**Pourquoi la forme et pas le contenu** : une table garbled perd ou fusionne des frontières de
+cellules, donc sa forme change — comparer les formes attrape la panne sans se noyer dans le bruit
+d'espaces et de formatage. `has_tables` distingue un accord RÉEL d'un accord VIDE (deux lecteurs qui
+ne trouvent rien ne s'accordent sur rien). Granularité page **non supposée** (les séparateurs de page
+de markitdown sont non fiables) : le choix page/document appartient à l'appelant.
+Prouvé **`table_corroboration_smoke.py` 6/6** (tables identiques ; colonnes fusionnées → divergence
+nommée ; table ratée → divergence de compte ; accord vide ; ligne d'alignement non comptée ; deux
+tables séparées par de la prose). Dép runtime `markitdown[pdf]` ajoutée.
+
+**Écarté volontairement** (ROI nul, décision utilisateur) : la corroboration de **linéarisation** —
+le brouillon `reading_order_comparison.py` a été **supprimé** plutôt que laissé en code mort. Note
+pour plus tard : si on y revient, la métrique devra être **sensible à l'ordre** (un TF-IDF /
+sac-de-mots score ~1.0 par construction, les deux lecteurs tirant les mêmes mots de la même couche).
+
+**PAS branché** : `table_corroboration` n'est appelé par personne (il faudrait faire tourner Docling
+ET markitdown sur le même doc — le run Docling est lourd, GO utilisateur requis). Logique prouvée,
+câblage à décider.
 
 **⚠️ TROU ASSUMÉ, nommé plutôt que masqué** : la **hiérarchie / le découpage en sections** de Docling
-n'a **aucun second avis** et n'est couverte par aucun garde. Carte complète des arêtes aujourd'hui :
-complétude → `conversion_guard` ✅ · forme/page → `layout_score` ✅ · caractères →
-`text_integrity_guard` ✅ · **linéarisation + tables → non couvert (écarté ici)** · **hiérarchie →
-non couvert** ⚠️.
+n'a **aucun second avis possible** (markitdown ne produit aucun titre : 0 sur 24 PDF) et n'est
+couverte par aucun garde. Carte des arêtes aujourd'hui : complétude → `conversion_guard` ✅ ·
+forme/page → `layout_score` ✅ · caractères → `text_integrity_guard` ✅ (câblé) · **tables →
+`table_corroboration` ✅ (prouvé, pas câblé)** · linéarisation → non poursuivi ⚠️ · **hiérarchie →
+non couvert, sans recours** ⚠️.
 
 ## État au 2026-07-20 (suite) — arête SENS scindée : garde d'intégrité d'encodage (model-agnostic)
 
