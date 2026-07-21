@@ -13,21 +13,59 @@
 > coller de valeur réelle (nom, n°doc, adresse) dans le code, les docs ou un message de commit ; `0_Aller_retour_IT/`,
 > `inputs/`, `outputs/`, `models/`, `spool/` restent gitignorés (vérifié absent du tree poussé).
 
-## ▶ NEXT (posé 2026-07-21) — la boucle voir → juger → CORRIGER est fermée ; à toi de choisir
+## ▶ NEXT (posé 2026-07-21) — à toi de choisir
 
-Le reviewer voit la zone, corrige la valeur, et sa correction atteint le record. Restent, par ordre
-de valeur décroissante et **aucun n'est engagé** :
-1. **PDF scannés à trouver** (utilisateur, en cours) — ils valideraient la chaîne provenance → zone
-   sur la lane **OCR**, aujourd'hui prouvée seulement sur born-digital et photos CI. Attendu : pas
-   de grain mot (les boîtes OCR sont déjà au grain ligne, médiane 1,66 %), donc repli sur la ligne
-   entière — un surlignage un peu plus large, pas une panne.
-2. **Le fichier d'un span n'est pas identifié** (limite nommée, pas un oubli) : un span dit la PAGE,
+Restent, **aucun n'est engagé** :
+1. **Le fichier d'un span n'est pas identifié** (limite nommée, pas un oubli) : un span dit la PAGE,
    pas QUEL fichier d'une soumission multi-fichiers. Le surlignage se pose sur le premier fichier
    et l'UI le dit. Ça ne mord que sur les paires CI.
-3. **Tolérances dépendantes de la résolution** (chantier séparé, ci-dessous) — oracle disponible :
+2. **Tolérances dépendantes de la résolution** (chantier séparé, ci-dessous) — oracle disponible :
    `ci_geometry_fingerprint.py`.
-4. **Le chemin lourd et la provenance RAG ne sont pas câblés** — décision en attente d'un
+3. **Le chemin lourd et la provenance RAG ne sont pas câblés** — décision en attente d'un
    consommateur (`sop_contract`), pas un oubli.
+
+## État au 2026-07-21 (suite) — le lecteur cessait de LIRE les pages à dominante image
+
+**Trouvé en partant d'une fausse piste** : un document signalé comme « protégé » ne l'était pas du
+tout (`is_encrypted` False, aucun mot de passe, `permissions` = masque tout-autorisé). Le vrai
+problème était ailleurs et bien pire.
+
+**Le bug** : `read_document` envoyait une page à la couche texte dès `TEXT_LAYER_MINIMUM_CHARACTERS`
+(**10**) caractères natifs. Or ce seuil répond à « cette page a-t-elle DU texte ? » alors que la
+question est « le CONTENU de cette page est-il dans sa couche texte ? ». Une photo pleine page avec
+une légende répond oui à la première et non à la seconde. Mesuré : un book photo de 24 pages
+ressortait à **6 218 caractères de légendes**, `needs_ocr` False, **aucune erreur**. Même classe de
+panne que le drop Docling déjà au dossier — une lecture incomplète qui se présente comme entière.
+Et le garde de complétude ne pouvait rien voir : au grain de la page, tout était « produit ».
+
+**Calibré AVANT câblage** (`image_dominance_observer_run.py`, 25 PDF / 235 pages, sans rien
+changer) : 25 pages lues à l'aveugle (10,6 %) dans **2 documents**. Surtout, la mesure a validé la
+CONJONCTION : 32 pages dépassent 80 % de couverture image, mais **7 portent une vraie couche texte
+sous une image de fond pleine page** — leur contenu EST le texte. La densité de texte les écarte
+toutes les 7. La couverture seule se serait trompée 7 fois sur 32.
+
+**Livré** : `_image_coverage_percent` / `_is_image_dominant` + OCR **en plus** de la couche texte
+(seuils `IMAGE_DOMINANT_COVERAGE_PERCENT = 80`, `IMAGE_DOMINANT_MAXIMUM_CHARACTERS = 600`,
+décision utilisateur). Sans moteur OCR armé, la page pose `needs_ocr` — le trou est **déclaré**.
+
+**⚠️ PIÈGE ÉVITÉ, à ne pas réintroduire** : sur une page mixte, les lignes couche-texte sont en
+POINTS (0–595) et les lignes OCR en PIXELS d'un rendu 200 dpi (0–1654). Or `_value_below` compare
+les boîtes entre elles. `_rescaled_to_page_points` ramène le côté OCR dans le repère de la page,
+au seam, une fois. **La page image-seule n'est délibérément PAS rescalée** : elle n'a pas de lignes
+natives à mélanger, et `COLUMN_X_TOLERANCE` / `ROW_Y_TOLERANCE` sont calibrées en PIXELS — convertir
+diviserait chaque écart par ~2,8 en laissant les tolérances en place.
+
+**Prouvé sur le document réel** : `pymupdf+rapidocr`, **20 113 caractères contre 6 218** (×3,2),
+770 lignes contre 66, 159 s pour 24 pages, un seul repère de page (`page_width` unique = 720).
+Plus `image_dominance_smoke.py` **7/7** (dont le faux positif du corpus réel, et le repère unifié).
+Note : le smoke a d'abord attrapé une **fixture fausse** de ma part — `insert_text` écrit une seule
+ligne qui déborde, donc mon « texte long » n'atterrissait qu'à 132 caractères ; corrigé en
+`insert_textbox`. 14 suites de régression vertes.
+
+**Constat annexe, pré-existant** : 25 lignes sur 770 dépassent les bornes de page (bloc PyMuPDF à
+`y0 = -41 pt`) — **0 côté OCR**, donc sans rapport avec ce changement. Conséquence pour le
+rectangle : `.page-frame` reçoit `overflow: hidden`, ce qui borne l'AFFICHAGE sans toucher à la
+donnée (borner le span falsifierait la provenance).
 
 ## État au 2026-07-21 (suite) — EXTRACTION ÉDITABLE : D3 stocke, le watchdog applique
 

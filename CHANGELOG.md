@@ -22,6 +22,20 @@ the date, and bump `version` in `pyproject.toml` to match the tag.
 
 ## [Unreleased]
 
+### Fixed
+- **Pages whose content is in their images were read blind.** A PDF page went to the text layer as
+  soon as it held 10 native characters, so a full-page photo with a caption cleared the bar, its
+  images were never read, and the read reported success — a real 24-page photo book came out as
+  6 218 characters of captions with no error and `needs_ocr` False. Such a page is now OCR'd IN
+  ADDITION to its text layer: the exact captions are kept AND the image content is added. On that
+  document the read goes from 6 218 to 20 113 characters. The criterion (images covering > 80 % of
+  the page AND under 600 native characters) was calibrated on the whole corpus BEFORE being wired,
+  and the conjunction is what makes it precise: coverage alone flagged 32 pages, 7 of which carry a
+  real text layer under a full-page background image and must not be touched. With no OCR engine
+  wired, such a page sets `needs_ocr` — the gap is declared rather than dropped. OCR boxes are
+  rescaled into the page's points on those pages, so the template geometry rules never compare
+  render pixels against PDF points on one page.
+
 ### Added
 - **Editable extraction in review** — a reviewer can now correct an extracted value, not just judge
   it. The edit is staged in D3 as `{field: {"from": what the machine read, "to": what the human
