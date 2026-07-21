@@ -30,6 +30,9 @@ class RapidOcrEngine:
         result = self._engine(image_bgr)
         if result.txts is None:
             return []
+        # Boxes come back in PIXELS of this image, so the image IS the page frame of
+        # reference — carried on every line so provenance can be normalized downstream.
+        image_height, image_width = image_bgr.shape[:2]
         lines: list[TextLine] = []
         for text, quadrilateral, score in zip(result.txts, result.boxes, result.scores):
             xs = [float(point[0]) for point in quadrilateral]
@@ -39,6 +42,8 @@ class RapidOcrEngine:
                     text=text,
                     bbox=(min(xs), min(ys), max(xs), max(ys)),
                     confidence=float(score),
+                    page_width=float(image_width),
+                    page_height=float(image_height),
                 )
             )
         return lines

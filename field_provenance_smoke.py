@@ -10,17 +10,25 @@ The point being proved: `extract_fields` used to return `dict[str, str | None]` 
 `ExtractedField(value, spans, origin)`, so a reviewer can be shown the zone a value was read
 from — the "node -> page -> zone" product requirement.
 
+Spans are NORMALIZED to the page (fractions in [0, 1]): the reader's native units differ by
+backend — PDF points at 72 dpi for a text layer, pixels of a 200 dpi render for OCR — so a raw
+box is unplaceable without knowing which. Normalized, a consumer draws it with no unit, no dpi
+and no page size to carry. The lines below therefore declare page_width/page_height, and the
+expectations are fractions.
+
 Proves:
-  1. anchor path (direction below/right) carries the VALUE line's page + bbox, not the label's;
+  1. anchor path (direction below/right) carries the VALUE line's page + box, not the label's;
   2. pattern path (born-digital invoices, regex over the JOINED text) recovers geometry from
      the match's character range — the span is the VALUE group, not the whole match;
   3. a pattern match STRADDLING two lines yields BOTH spans (hence a list, not one box);
   4. multi-page: the span carries the page the value was actually read from;
   5. absent provenance stays absent and is NEVER fabricated — a missing anchor and a
      non-matching pattern both give value=None, spans=[], origin=None;
-  6. `field_values` projects back to the exact `name -> value` mapping the verdict engine
+  6. NO page geometry (the VLM lane, whose boxes are synthetic reading-order scaffolding)
+     yields a VALUE with NO span — never a location normalized against a guessed frame;
+  7. `field_values` projects back to the exact `name -> value` mapping the verdict engine
      consumes (the seam that leaves `validate_fields` untouched);
-  7. `field_payload` is JSON-round-trippable — D1 stores it in `ocr_jobs.record_fields`.
+  8. `field_payload` is JSON-round-trippable — D1 stores it in `ocr_jobs.record_fields`.
 """
 
 from __future__ import annotations
@@ -37,18 +45,40 @@ from ocr_bifunction.template import (
 
 CHECKS: list[tuple[str, bool]] = []
 
+# The two fabricated page frames the lines below are positioned in.
+ANCHOR_PAGE = {"page_width": 1000.0, "page_height": 500.0}
+PATTERN_PAGE = {"page_width": 600.0, "page_height": 800.0}
+
 
 def _check(label: str, condition: bool) -> None:
     CHECKS.append((label, condition))
     print(f"  {'PASS' if condition else 'FAIL'}  {label}")
 
 
+def _boxes_close(
+    spans: list, expected: list[tuple[float, float, float, float]]
+) -> bool:
+    """Compare normalized boxes with a float tolerance (they come out of a division)."""
+    if len(spans) != len(expected):
+        return False
+    return all(
+        all(abs(actual - wanted) < 1e-9 for actual, wanted in zip(span.bbox, box))
+        for span, box in zip(spans, expected)
+    )
+
+
 def run() -> int:
     # --- 1. Anchor path: the span is the VALUE's box, never the label's. ---------------
-    label_line = TextLine("Nom", (10.0, 10.0, 60.0, 25.0), page_index=0)
-    value_line = TextLine("DUPONT", (10.0, 30.0, 90.0, 45.0), page_index=0)
-    right_label = TextLine("Numero", (200.0, 10.0, 260.0, 25.0), page_index=0)
-    right_value = TextLine("X4T29", (270.0, 10.0, 330.0, 25.0), page_index=0)
+    label_line = TextLine("Nom", (10.0, 10.0, 60.0, 25.0), page_index=0, **ANCHOR_PAGE)
+    value_line = TextLine(
+        "DUPONT", (10.0, 30.0, 90.0, 45.0), page_index=0, **ANCHOR_PAGE
+    )
+    right_label = TextLine(
+        "Numero", (200.0, 10.0, 260.0, 25.0), page_index=0, **ANCHOR_PAGE
+    )
+    right_value = TextLine(
+        "X4T29", (270.0, 10.0, 330.0, 25.0), page_index=0, **ANCHOR_PAGE
+    )
     anchor_lines = [label_line, value_line, right_label, right_value]
     anchor_template = {
         "template_id": "smoke_anchor",
@@ -59,25 +89,39 @@ def run() -> int:
     }
     anchored = extract_fields(anchor_lines, anchor_template)
     _check(
-        "anchor/below carries the VALUE line's bbox (not the label's)",
+        "anchor/below carries the VALUE line's box, normalized (not the label's)",
         anchored["nom"].value == "DUPONT"
         and anchored["nom"].origin == "anchor"
-        and [(span.page_index, span.bbox) for span in anchored["nom"].spans]
-        == [(0, (10.0, 30.0, 90.0, 45.0))],
+        and [span.page_index for span in anchored["nom"].spans] == [0]
+        # (10, 30, 90, 45) over a 1000x500 page
+        and _boxes_close(anchored["nom"].spans, [(0.01, 0.06, 0.09, 0.09)]),
     )
     _check(
-        "anchor/right carries the value to the right, with its own box",
+        "anchor/right carries the value to the right, with its own normalized box",
         anchored["numero"].value == "X4T29"
-        and [(span.page_index, span.bbox) for span in anchored["numero"].spans]
-        == [(0, (270.0, 10.0, 330.0, 25.0))],
+        # (270, 10, 330, 25) over a 1000x500 page
+        and _boxes_close(anchored["numero"].spans, [(0.27, 0.02, 0.33, 0.05)]),
+    )
+    _check(
+        "every normalized coordinate lands inside [0, 1]",
+        all(
+            0.0 <= coordinate <= 1.0
+            for extracted in anchored.values()
+            for span in extracted.spans
+            for coordinate in span.bbox
+        ),
     )
 
     # --- 2+3+4. Pattern path: geometry recovered from the match's character range. -----
     pattern_lines = [
-        TextLine("Facture N. F-2026-0042", (0.0, 0.0, 300.0, 12.0), page_index=0),
-        TextLine("Total HT 1 250,00", (0.0, 20.0, 300.0, 32.0), page_index=0),
-        TextLine("Reference du marche", (0.0, 0.0, 300.0, 12.0), page_index=3),
-        TextLine("MARCHE-77 suite", (0.0, 20.0, 300.0, 32.0), page_index=3),
+        TextLine("Facture N. F-2026-0042", (0.0, 0.0, 300.0, 12.0), **PATTERN_PAGE),
+        TextLine("Total HT 1 250,00", (0.0, 20.0, 300.0, 32.0), **PATTERN_PAGE),
+        TextLine(
+            "Reference du marche", (0.0, 0.0, 300.0, 12.0), page_index=3, **PATTERN_PAGE
+        ),
+        TextLine(
+            "MARCHE-77 suite", (0.0, 20.0, 300.0, 32.0), page_index=3, **PATTERN_PAGE
+        ),
     ]
     pattern_template = {
         "template_id": "smoke_pattern",
@@ -98,23 +142,23 @@ def run() -> int:
         "pattern path recovers the span of the VALUE group (not the whole match)",
         by_pattern["numero_facture"].value == "F-2026-0042"
         and by_pattern["numero_facture"].origin == "pattern"
-        and [
-            (span.page_index, span.bbox) for span in by_pattern["numero_facture"].spans
-        ]
-        == [(0, (0.0, 0.0, 300.0, 12.0))],
+        and [span.page_index for span in by_pattern["numero_facture"].spans] == [0]
+        # (0, 0, 300, 12) over a 600x800 page
+        and _boxes_close(by_pattern["numero_facture"].spans, [(0.0, 0.0, 0.5, 0.015)]),
     )
     _check(
         "pattern span points at the line the value sits on, and normalization still applies",
         by_pattern["total_ht"].value == "1250,00"
-        and [span.bbox for span in by_pattern["total_ht"].spans]
-        == [(0.0, 20.0, 300.0, 32.0)],
+        and _boxes_close(by_pattern["total_ht"].spans, [(0.0, 0.025, 0.5, 0.04)]),
     )
     _check(
         "a match straddling the join yields BOTH lines' spans (a list, not one box)",
         len(by_pattern["marche"].spans) == 2
         and [span.page_index for span in by_pattern["marche"].spans] == [3, 3]
-        and [span.bbox for span in by_pattern["marche"].spans]
-        == [(0.0, 0.0, 300.0, 12.0), (0.0, 20.0, 300.0, 32.0)],
+        and _boxes_close(
+            by_pattern["marche"].spans,
+            [(0.0, 0.0, 0.5, 0.015), (0.0, 0.025, 0.5, 0.04)],
+        ),
     )
     _check(
         "multi-page: the span carries the page the value was actually read from",
@@ -144,14 +188,31 @@ def run() -> int:
         label_only["nom"].value is None and label_only["nom"].spans == [],
     )
 
-    # --- 6. The projection the verdict engine consumes is unchanged. ------------------
+    # --- 6. No page frame (the VLM lane) -> a value, but NO location. ------------------
+    # LightOnOCR emits synthetic top-to-bottom boxes that encode reading ORDER, not position,
+    # so it declares no page size. Normalizing against a guessed frame would fabricate a zone.
+    frameless_lines = [
+        TextLine("Nom", (0.0, 0.0, 1000.0, 10.0)),
+        TextLine("DUPONT", (0.0, 12.0, 1000.0, 22.0)),
+    ]
+    frameless = extract_fields(frameless_lines, anchor_template)
+    _check(
+        "no page geometry -> the VALUE is still extracted (the lane keeps working)",
+        frameless["nom"].value == "DUPONT" and frameless["nom"].origin == "anchor",
+    )
+    _check(
+        "no page geometry -> NO span, rather than one against a guessed frame",
+        frameless["nom"].spans == [],
+    )
+
+    # --- 7. The projection the verdict engine consumes is unchanged. ------------------
     _check(
         "field_values projects to the exact name -> value mapping (verdict engine seam)",
         field_values(anchored) == {"nom": "DUPONT", "numero": "X4T29"}
         and field_values(by_pattern)["absent"] is None,
     )
 
-    # --- 7. The D1 payload survives a JSON round-trip. --------------------------------
+    # --- 8. The D1 payload survives a JSON round-trip. --------------------------------
     payload = field_payload(anchored)
     round_tripped = json.loads(json.dumps(payload, ensure_ascii=False))
     _check(
@@ -160,13 +221,13 @@ def run() -> int:
         == {
             "value": "DUPONT",
             "origin": "anchor",
-            "spans": [{"page_index": 0, "bbox": [10.0, 30.0, 90.0, 45.0]}],
+            "spans": [{"page_index": 0, "bbox": [0.01, 0.06, 0.09, 0.09]}],
         },
     )
 
     passed = all(condition for _, condition in CHECKS)
     print(
-        f"\nEXPECT field provenance (page + bbox survive extraction): "
+        f"\nEXPECT field provenance (normalized page + box survive extraction): "
         f"{'PASS' if passed else 'FAIL'} "
         f"({sum(condition for _, condition in CHECKS)}/{len(CHECKS)})"
     )

@@ -13,7 +13,68 @@
 > coller de valeur réelle (nom, n°doc, adresse) dans le code, les docs ou un message de commit ; `0_Aller_retour_IT/`,
 > `inputs/`, `outputs/`, `models/`, `spool/` restent gitignorés (vérifié absent du tree poussé).
 
-## ▶ NEXT (posé 2026-07-21) — le RECTANGLE de surlignage, et le resserrement des spans AVEC lui
+## ▶ NEXT (posé 2026-07-21) — le RECTANGLE : il faut RENDRE la page côté serveur
+
+**Bloqueur identifié avant de coder** : l'aperçu PDF de la revue est un `<embed>`
+([review.html](ui/review.html)). **On ne superpose rien sur le viewer PDF natif** du navigateur —
+boîte noire, scroll/zoom inconnus, page affichée non pilotable. Or le PDF born-digital est
+précisément là où la provenance existe. Les images (`<img>`) sont superposables, pas les PDF.
+**Le geste** : un endpoint qui rend UNE page en PNG (PyMuPDF `get_pixmap`, déjà utilisé
+[reader.py:306](ocr_bifunction/reader.py:306)), p.ex. `/v1/jobs/{id}/page/{n}.png`. Tout devient
+alors un `<img>`, la superposition est uniforme, et ça débloque aussi « aller à la page 12 » —
+impossible en `<embed>`. Le rectangle se pose ensuite en pur CSS : les spans sont déjà en
+fractions, donc `left: x0*100%` etc., **aucune conversion, aucune dimension à transporter**.
+
+**Puis, dans le même geste** : resserrer le span au niveau du mot (`page.get_text("words")`,
+arité 8 vérifiée) — aujourd'hui la zone est le BLOC PyMuPDF (1,7 % à 6,8 % de la hauteur de page
+selon le champ, mesuré). **Ne PAS toucher à la granularité de `ReadResult.lines`** : les règles
+`_value_below`/`_value_right` et leurs tolérances sont calibrées sur des blocs (cf. le chantier
+séparé ci-dessous). Option écartée explicitement, ne pas la re-litiger sans A/B.
+
+**Chantier séparé, nommé pour ne pas se perdre — les tolérances dépendent de la RÉSOLUTION.**
+`COLUMN_X_TOLERANCE = 60.0` / `ROW_Y_TOLERANCE = 25.0` sont en **pixels**, « calibrées sur des
+scans CI ~1100 px de large ». Un scan de la même carte à 2200 px doublerait tous les écarts sans
+que la tolérance bouge → **les règles d'ancre casseraient**. Bug latent réel, non déclenché
+aujourd'hui (un seul régime de résolution en circulation). Le fix = exprimer les tolérances en
+fraction de page, comme les spans. **Bloqué sur un inconnu** : le commentaire ne documente aucune
+hauteur de référence, donc convertir `ROW_Y_TOLERANCE` demande de la deviner. Oracle disponible :
+le harnais d'empreintes CI décrit ci-dessous.
+
+## État au 2026-07-21 (suite) — les spans deviennent PLAÇABLES (normalisés 0..1)
+
+**Le constat qui a déclenché ça, en préparant le rectangle** : un `bbox` livré hier était en fait
+**impossible à placer**. Il existait dans DEUX systèmes d'unités selon le backend — points PDF à
+72 dpi pour la couche texte ([reader.py:293](ocr_bifunction/reader.py:293)), pixels d'un rendu
+**200 dpi** pour l'OCR ([reader.py:306](ocr_bifunction/reader.py:306)), soit ~2,78× d'écart — et
+le payload ne disait pas lequel, ni aucune dimension de page. Un consommateur ne pouvait donc ni
+interpréter les valeurs ni se rabattre sur un pourcentage.
+
+**Décision (utilisateur, après mesure du rayon d'impact) : normaliser au niveau du SPAN, pas de
+`TextLine`.** Le coût commun aux deux options était le même (`TextLine` doit porter la taille de
+page, alimentée par 5 producteurs) ; la seule différence était la conversion des tolérances — soit
+exactement la partie risquée, et séparable. Donc : `TextLine.bbox` reste en unités natives → **les
+règles géométriques sont inchangées par construction**, la lane CI ne peut pas régresser.
+
+**Livré :**
+- **`TextLine.page_width` / `page_height`** (même unité que `bbox`, `0` = INCONNU), alimentés par
+  les 4 producteurs qui ont une géométrie réelle : `rapidocr_engine` (dimensions de l'image
+  décodée), `docling_engine` (`page.size`), `reader` couche-texte (`page.rect`), chemin lourd
+  (`page_sizes` threadé à travers `resilient_conversion` + `docling_page_range_converter`).
+- **`ProvenanceSpan.bbox` normalisée en fractions `[0,1]`**, et `from_line -> ProvenanceSpan | None`.
+- **`lightonocr_engine` ne déclare RIEN, volontairement** (commenté sur place pour que ça ne passe
+  pas pour un oubli) : sa bbox est un **échafaudage d'ordre de lecture**, pas une position.
+  Normaliser contre un repère deviné aurait **fabriqué** une zone. Cette lane rend donc une VALEUR
+  sans span — et c'est la réponse honnête, pas une dégradation.
+
+**Oracle — c'est un refactor ISO-SORTIE, validé comme tel** (pas par des tests verts) : empreintes
+SHA-256 des champs extraits d'un **vrai CI** (`inputs/recto_verso.pdf`, le seul document exerçant
+le template à 7 ancres `ci_fr_electronique_2021_recto`), capturées AVANT le changement puis
+re-comparées : **`diff` vide — identique**. Même `status=complete`, `verdict=auto`, mêmes 3
+`key_matches`, mêmes 7 empreintes, mêmes comptes de spans. Le harnais vit dans le scratchpad
+(hors repo) et n'imprime **jamais** de valeur : c'est une pièce d'identité réelle.
+Plus `field_provenance_smoke` **14/14** (+3 : coordonnées dans [0,1], et les deux cas « pas de
+repère de page → la valeur passe, le span non ») et **22 suites de régression vertes**.
+Vérifié sur la facture réelle : spans en fractions, directement utilisables en CSS.
 
 **Décision utilisateur (2026-07-21) : acter la limite de précision mesurée ci-dessous, et ne
 resserrer les spans QUE le jour où le rectangle existe.** Raison : la PAGE est juste dans 100 % des

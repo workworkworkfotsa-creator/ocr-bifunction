@@ -83,6 +83,10 @@ class PageRangeConversionAttempt:
     # absolute page number -> the positioned text of that page. Empty when a converter exposes no
     # geometry (the contract stays satisfiable by a text-only converter, e.g. the smoke's fake one).
     page_text_spans: dict[int, list[TextSpan]] = field(default_factory=dict)
+    # absolute page number -> (width, height) IN THE SAME UNIT as the spans' bbox. Without it a
+    # span is unplaceable (see reader.ProvenanceSpan), so it travels WITH the geometry or not at
+    # all — a converter exposing spans but no sizes simply yields no provenance downstream.
+    page_sizes: dict[int, tuple[float, float]] = field(default_factory=dict)
 
 
 @runtime_checkable
@@ -115,6 +119,9 @@ class PageResult:
     # The page's positioned text, carried from the attempt that won this page. Empty when the
     # converter exposes no geometry — never silently fabricated.
     text_spans: list[TextSpan] = field(default_factory=list)
+    # The page's size in the spans' unit; 0 = the converter did not report it (-> no provenance).
+    page_width: float = 0.0
+    page_height: float = 0.0
 
 
 @dataclass
@@ -236,6 +243,8 @@ def reconcile_page_range_conversion(
                         produced_by_batch_size=chunk_width,
                         produced_in_round=round_index,
                         text_spans=attempt.page_text_spans.get(page_number, []),
+                        page_width=attempt.page_sizes.get(page_number, (0.0, 0.0))[0],
+                        page_height=attempt.page_sizes.get(page_number, (0.0, 0.0))[1],
                     )
                     existing = accumulated_page_results.get(page_number)
                     # By construction a retried run holds only previously-missing pages, so this is

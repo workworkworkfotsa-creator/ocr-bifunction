@@ -52,6 +52,10 @@ def _lines_from_text(transcription: str) -> list[TextLine]:
                 text=stripped,
                 bbox=(0.0, y_cursor, 1000.0, y_cursor + 10.0),
                 confidence=None,  # a VLM exposes no per-line OCR score
+                # page_width/page_height are left UNKNOWN (0) ON PURPOSE, not forgotten: the
+                # bbox above is synthetic reading-order scaffolding, not a position on the
+                # page. Declaring a frame of reference here would turn `ProvenanceSpan` into
+                # a fabricated location — so this lane yields NO provenance, honestly.
             )
         )
         y_cursor += 12.0

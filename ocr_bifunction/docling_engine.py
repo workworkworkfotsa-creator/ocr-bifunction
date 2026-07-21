@@ -45,8 +45,13 @@ class DoclingOcrEngine:
 
         # Page heights let us flip Docling's bottom-left bbox origin to our top-left one
         # — essential so the template "value below" geometry keeps the right orientation.
+        # Widths serve the other need: the frame of reference provenance normalizes against.
         page_heights = {
             page_no: getattr(getattr(page, "size", None), "height", None)
+            for page_no, page in document.pages.items()
+        }
+        page_widths = {
+            page_no: getattr(getattr(page, "size", None), "width", None)
             for page_no, page in document.pages.items()
         }
 
@@ -63,12 +68,17 @@ class DoclingOcrEngine:
                 bbox = bbox.to_top_left_origin(page_height=page_height)
             x0, x1 = min(bbox.l, bbox.r), max(bbox.l, bbox.r)
             y0, y1 = min(bbox.t, bbox.b), max(bbox.t, bbox.b)
+            page_width = page_widths.get(provenance.page_no)
             lines.append(
                 TextLine(
                     text=element.text,
                     bbox=(x0, y0, x1, y1),
                     confidence=None,  # Docling exposes no per-line OCR score here
                     page_index=provenance.page_no - 1,
+                    # A page whose size Docling did not report stays at 0 = unknown: no
+                    # provenance rather than one normalized against a guessed frame.
+                    page_width=float(page_width) if page_width else 0.0,
+                    page_height=float(page_height) if page_height else 0.0,
                 )
             )
         return lines

@@ -240,11 +240,13 @@ def _spans_for_character_range(
     lines — and therefore several pages. Same shape as a RAG chunk's spans, for the same
     reason. An empty range (`start == end`) overlaps nothing and yields [].
     """
-    return [
+    overlapped = (
         ProvenanceSpan.from_line(line)
         for line, (line_start, line_end) in zip(lines, _line_character_ranges(lines))
         if line_start < end and start < line_end
-    ]
+    )
+    # from_line returns None for a read with no page geometry: no provenance, not a fake one.
+    return [span for span in overlapped if span is not None]
 
 
 def _extract_by_pattern(
@@ -301,11 +303,13 @@ def extract_fields(lines: list[TextLine], template: dict) -> dict[str, Extracted
         if value_line is None:
             extracted[name] = ExtractedField(value=None)
             continue
+        value_span = ProvenanceSpan.from_line(value_line)
         extracted[name] = ExtractedField(
             value=_normalize_value(
                 value_line.text, field_definition.get("normalize", "strip")
             ),
-            spans=[ProvenanceSpan.from_line(value_line)],
+            # No page geometry (VLM lane) -> the value stands, its location does not exist.
+            spans=[value_span] if value_span is not None else [],
             origin=ORIGIN_ANCHOR,
         )
     return extracted

@@ -58,15 +58,25 @@ attente** (un worker les dépile ; mécanisme = adaptateur). Colonnes (esquisse)
   qui changerait de forme selon l'écrivain serait illisible pour l'IT) :
   `{"<nom_champ>": {"value": str|null, "origin": "anchor"|"pattern"|"mrz"|null,
   "spans": [{"page_index": int (0-based), "bbox": [x0,y0,x1,y1]}]}}`.
+  **`bbox` est NORMALISÉE : 4 fractions dans `[0,1]`** de la largeur / hauteur de page (origine
+  top-left). Volontairement PAS les unités natives du lecteur : elles diffèrent selon le backend
+  (points PDF à 72 dpi pour une couche texte, pixels d'un rendu 200 dpi pour l'OCR), donc un tuple
+  brut est **impossible à placer** sans savoir lequel. Normalisée, un consommateur dessine la zone
+  sans unité, sans dpi, sans dimensions à transporter (`left: x0*100%`), et la valeur survit à un
+  changement de résolution de rendu ou de moteur OCR.
   **`spans` porte la PROVENANCE** (décidé 2026-07-21) : exigence produit « nœud → page → on montre
   la zone » — un reviewer ne peut valider ou corriger une valeur que s'il voit la région d'où elle
   sort. C'est une **liste** (un regex peut matcher à cheval sur plusieurs lignes, donc plusieurs
   pages), et elle est **vide quand la provenance n'existe pas** (backfill MRZ : la zone lue est
   décodée, pas localisée sur la carte ; champ non trouvé). **La provenance absente reste absente,
-  jamais fabriquée.** **LIMITE DE PRÉCISION connue et assumée** (mesurée 2026-07-21 sur facture
-  réelle) : sur du born-digital la bbox est celle du **BLOC** PyMuPDF, pas du mot — bloc médian
-  27,5 pt (~2 lignes), pire cas mesuré 252 pt. La **page** est fiable ; la zone peut être trop
-  large pour surligner finement. Resserrement prévu quand un consommateur l'exigera (cf. HANDOFF). `origin` nomme le chemin d'obtention — ce n'est pas un score de qualité.
+  jamais fabriquée.** Deux causes d'absence, toutes deux réelles : un champ backfillé depuis la
+  MRZ (décodée, pas localisée) et une lecture **sans repère de page** — le lecteur VLM émet des
+  boîtes synthétiques qui encodent l'ORDRE de lecture, pas une position, donc il ne déclare aucune
+  dimension et aucun span n'en est frappé.
+  **LIMITE DE PRÉCISION connue et assumée** (mesurée 2026-07-21 sur facture réelle) : sur du
+  born-digital la bbox est celle du **BLOC** PyMuPDF, pas du mot — mesuré sur les champs extraits :
+  1,7 % de la hauteur de page (une ligne, exploitable) à **6,8 %** (~5 lignes, trop grossier pour
+  surligner). La **page** est fiable. Resserrement prévu avec le rectangle (cf. HANDOFF). `origin` nomme le chemin d'obtention — ce n'est pas un score de qualité.
   Producteur/lecteur = `template.field_payload` / `template.payload_value` (une seule
   connaissance de la forme). **Pas de `superseded_by` ici, contrairement à D8** : D1 porte
   l'extraction MACHINE ; la correction humaine appartient à D3 (qui référence le job sans

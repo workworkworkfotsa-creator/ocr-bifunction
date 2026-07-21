@@ -141,7 +141,11 @@ def chunk_textlines(
         if not text:
             continue
         current_parts.append(text)
-        current_spans.append(ProvenanceSpan.from_line(line))
+        # None when the read carried no page geometry (VLM lane) — the chunk keeps its text
+        # and simply has no span to show, rather than a fabricated one.
+        span = ProvenanceSpan.from_line(line)
+        if span is not None:
+            current_spans.append(span)
         current_token_count += len(tokenize(text))
         if current_token_count >= target_tokens:
             chunks.append(

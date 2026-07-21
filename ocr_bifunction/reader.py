@@ -61,14 +61,29 @@ class TextLine:
     is the hardening of the jettisonable-engine contract: the slot may be swapped, its OUTPUT
     shape may not drift. Read the geometry through the named accessors (`x0`/`y0`/`x1`/`y1`/
     `width`/`height`), not by indexing `bbox` — the box is the contract, the tuple is storage.
+
+    `page_width`/`page_height` are the size of the page this line was read from, IN THE SAME
+    UNIT as `bbox` — PDF points for a text-layer read, pixels for an OCR'd render. They exist
+    because a box alone is NOT placeable: the same tuple means different things at 72 dpi and
+    at 200 dpi, and a consumer wanting to draw the region has no way to tell. `0.0` means
+    UNKNOWN, and unknown is a real state (the VLM lane's boxes are synthetic reading-order
+    scaffolding, not positions) — see `ProvenanceSpan.from_line`, which refuses to mint
+    provenance without them rather than inventing a frame of reference.
     """
 
     text: str
     bbox: tuple[float, float, float, float]
     confidence: float | None = None
     page_index: int = 0
+    page_width: float = 0.0
+    page_height: float = 0.0
 
     def __post_init__(self) -> None:
+        if self.page_width < 0 or self.page_height < 0:
+            raise ValueError(
+                "TextLine page dimensions must be non-negative (0 = unknown), got "
+                f"{self.page_width!r} x {self.page_height!r}"
+            )
         if len(self.bbox) != 4:
             raise ValueError(
                 f"TextLine.bbox must be (x0, y0, x1, y1), got {self.bbox!r}"
@@ -114,8 +129,15 @@ class ProvenanceSpan:
     """Where one piece of a downstream product came from in the SOURCE document: page + box.
 
     This is the link from read text back to the original document — so a retrieved passage OR
-    an extracted field can be shown verbatim AND located (page, bounding box) for the human to
-    verify against the source. `bbox` is `(x0, y0, x1, y1)` in `TextLine`'s coordinate system.
+    an extracted field can be shown verbatim AND located for the human to verify against the
+    source.
+
+    `bbox` is `(x0, y0, x1, y1)` NORMALIZED to the page: each value is a FRACTION in `[0, 1]`
+    of the page's width or height. Deliberately not the reader's native units, because those
+    differ by backend — PDF points at 72 dpi for a text layer, pixels of a 200 dpi render for
+    OCR — and a raw tuple is therefore unplaceable without knowing which. Normalized, a
+    consumer draws the region with no unit, no dpi and no page size to carry, and the value
+    survives a change of render resolution or OCR engine.
 
     It lives HERE, next to `TextLine`, because it is a projection of one — not a RAG concept:
     the retrieval lane (`rag.Chunk.spans`) and the structured lane (`template.ExtractedField
@@ -126,9 +148,27 @@ class ProvenanceSpan:
     bbox: tuple[float, float, float, float]
 
     @classmethod
-    def from_line(cls, line: TextLine) -> ProvenanceSpan:
-        """The span of a whole read line — the only way provenance is ever created."""
-        return cls(line.page_index, line.bbox)
+    def from_line(cls, line: TextLine) -> ProvenanceSpan | None:
+        """The span of a whole read line, normalized — the only way provenance is created.
+
+        Returns None when the line carries no page dimensions. That is not an error to swallow
+        but a REAL state: the VLM lane emits synthetic reading-order boxes that encode no
+        position, so there is no frame of reference to normalize against. Minting a span from
+        one would fabricate a location — the thing this codebase refuses to do. Callers treat
+        None as "no provenance", which is exactly what it is.
+        """
+        if line.page_width <= 0 or line.page_height <= 0:
+            return None
+        x0, y0, x1, y1 = line.bbox
+        return cls(
+            line.page_index,
+            (
+                x0 / line.page_width,
+                y0 / line.page_height,
+                x1 / line.page_width,
+                y1 / line.page_height,
+            ),
+        )
 
 
 @dataclass
@@ -250,7 +290,14 @@ def _read_pdf_resilient(
     combined_text = "\n\n".join(page.markdown for page in conversion.page_results)
     # `page_number` is absolute 1-based; `TextLine.page_index` is 0-based (reader contract).
     lines = [
-        TextLine(span.text, span.bbox, None, page.page_number - 1)
+        TextLine(
+            span.text,
+            span.bbox,
+            None,
+            page.page_number - 1,
+            page_width=page.page_width,
+            page_height=page.page_height,
+        )
         for page in conversion.page_results
         for span in page.text_spans
     ]
@@ -295,8 +342,16 @@ def _read_pdf(document_path: Path, ocr_engine: OcrEngine | None) -> ReadResult:
                 ):
                     cleaned = block_text.strip()
                     if block_type == 0 and cleaned:
+                        # Block coordinates are PDF points; page.rect is the matching frame.
                         lines.append(
-                            TextLine(cleaned, (x0, y0, x1, y1), None, page_index)
+                            TextLine(
+                                cleaned,
+                                (x0, y0, x1, y1),
+                                None,
+                                page_index,
+                                page_width=page.rect.width,
+                                page_height=page.rect.height,
+                            )
                         )
                 continue
             # Image-only page: render it and hand it to the OCR engine, if any.

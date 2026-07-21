@@ -41,6 +41,27 @@ def _map_conversion_status(status_name: str) -> str:
     return CONVERSION_STATUS_FAILURE
 
 
+def _page_sizes(
+    document: object, produced_page_numbers: list[int]
+) -> dict[int, tuple[float, float]]:
+    """The (width, height) of each produced page, in the SAME unit as the harvested spans.
+
+    A bbox without its page frame is unplaceable (see `reader.ProvenanceSpan`), and this is the
+    only moment the frame is known. A page whose size Docling did not report is simply left out:
+    downstream that means no provenance for it, never one normalized against a guessed frame.
+    """
+    wanted = set(produced_page_numbers)
+    sizes: dict[int, tuple[float, float]] = {}
+    for page_number, page in document.pages.items():
+        if page_number not in wanted:
+            continue
+        size = getattr(page, "size", None)
+        width, height = getattr(size, "width", None), getattr(size, "height", None)
+        if width and height:
+            sizes[page_number] = (float(width), float(height))
+    return sizes
+
+
 def _page_text_spans(
     document: object, produced_page_numbers: list[int]
 ) -> dict[int, list[TextSpan]]:
@@ -125,6 +146,7 @@ def make_docling_page_range_converter(
             page_layout_scores=page_layout_scores,
             status=_map_conversion_status(result.status.name),
             page_text_spans=_page_text_spans(result.document, produced_page_numbers),
+            page_sizes=_page_sizes(result.document, produced_page_numbers),
         )
 
     return convert_page_range
