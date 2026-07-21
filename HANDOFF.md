@@ -13,14 +13,14 @@
 > coller de valeur réelle (nom, n°doc, adresse) dans le code, les docs ou un message de commit ; `0_Aller_retour_IT/`,
 > `inputs/`, `outputs/`, `models/`, `spool/` restent gitignorés (vérifié absent du tree poussé).
 
-## ▶ NEXT (posé 2026-07-21) — la chaîne « nœud → page → zone » est BOUCLÉE ; à toi de choisir la suite
+## ▶ NEXT (posé 2026-07-21) — la boucle voir → juger → CORRIGER est fermée ; à toi de choisir
 
-L'exigence produit qui a lancé ce chantier est **atteinte de bout en bout** : un reviewer clique un
-champ et voit la zone du document d'où sort la valeur. Restent, par ordre de valeur décroissante et
-**aucun n'est engagé** :
-1. **Extraction ÉDITABLE dans la revue** (parking utilisateur « bien plus tard ») — voir la zone
-   permet de juger ; corriger demande d'écrire, donc de trancher où atterrit une valeur corrigée
-   (D3, pas D1 — cf. contrat domaine 1).
+Le reviewer voit la zone, corrige la valeur, et sa correction atteint le record. Restent, par ordre
+de valeur décroissante et **aucun n'est engagé** :
+1. **PDF scannés à trouver** (utilisateur, en cours) — ils valideraient la chaîne provenance → zone
+   sur la lane **OCR**, aujourd'hui prouvée seulement sur born-digital et photos CI. Attendu : pas
+   de grain mot (les boîtes OCR sont déjà au grain ligne, médiane 1,66 %), donc repli sur la ligne
+   entière — un surlignage un peu plus large, pas une panne.
 2. **Le fichier d'un span n'est pas identifié** (limite nommée, pas un oubli) : un span dit la PAGE,
    pas QUEL fichier d'une soumission multi-fichiers. Le surlignage se pose sur le premier fichier
    et l'UI le dit. Ça ne mord que sur les paires CI.
@@ -28,6 +28,34 @@ champ et voit la zone du document d'où sort la valeur. Restent, par ordre de va
    `ci_geometry_fingerprint.py`.
 4. **Le chemin lourd et la provenance RAG ne sont pas câblés** — décision en attente d'un
    consommateur (`sop_contract`), pas un oubli.
+
+## État au 2026-07-21 (suite) — EXTRACTION ÉDITABLE : D3 stocke, le watchdog applique
+
+**La question n'était pas « comment éditer » mais « où atterrit une valeur corrigée ».** Deux règles
+existantes la tranchent sans arbitrage : l'UI écrit D3 et jamais D1 (un seul writer par colonne, le
+watchdog possède D1) ; et une correction qui resterait en D3 n'atteindrait jamais l'étage ④, qui lit
+D1 — la fonctionnalité serait décorative. D'où : **D3 stocke, le watchdog applique à l'acceptation.**
+
+**Livré :**
+- **D3 `field_corrections`** (colonne JSON, migration additive) : `{champ: {"from": valeur machine,
+  "to": valeur humaine}}`. **Garder les deux côtés** est ce qui rend la correction relisible, et ce
+  qui distinguera une faiblesse OCR récurrente d'un cas isolé.
+- **`POST /v1/reviews/{job_id}/fields`** : une valeur identique à celle de la machine n'est PAS une
+  correction (formulaire non touché → rien) ; un nom de champ absent du record → **422**, jamais
+  inventé ; ré-enregistrer remplace la carte, donc dé-éditer un champ retire sa correction.
+- **`worker_watchdog._apply_corrections`** : à l'acceptation, le champ devient
+  `{"value": humaine, "origin": "human", "spans": []}`. **Spans vidés délibérément** — une valeur
+  tapée ne se trouve nulle part sur la page, et montrer l'ancienne boîte de la machine pointerait
+  une zone qui ne contient plus ce que le champ dit. Retourne `None` quand il n'y a rien à
+  appliquer, donc une acceptation sans correction est **iso-comportement**.
+- **`ui/review.html`** : les valeurs sont des champs de saisie + « Enregistrer les corrections ».
+
+**Prouvé sur le vrai flux** (navigateur + processus watchdog réel, doc synthétique, zéro PII) :
+staging → D3 porte `{"from": "409.74", "to": "409.99"}` pendant que **D1 reste intact** en
+`needs_review` avec sa valeur machine et son span ; acceptation + balayage → D1 passe `done`,
+`total_ht` = `{value: "409.99", origin: "human", spans: []}`, `numero_facture` **inchangé avec son
+span**, et `reasons` porte « human corrected 'total_ht' ». Plus `field_correction_smoke.py`
+**11/11** (dont : rejet → n'applique rien ; 422 ; correction chirurgicale) et les régressions vertes.
 
 ## État au 2026-07-21 (suite) — le RECTANGLE : la zone s'affiche sur la page rendue
 

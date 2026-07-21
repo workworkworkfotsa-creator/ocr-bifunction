@@ -22,6 +22,17 @@ the date, and bump `version` in `pyproject.toml` to match the tag.
 
 ## [Unreleased]
 
+### Added
+- **Editable extraction in review** — a reviewer can now correct an extracted value, not just judge
+  it. The edit is staged in D3 as `{field: {"from": what the machine read, "to": what the human
+  put}}` and applied to the D1 record by the watchdog when the review is accepted: the UI writes D3,
+  the watchdog writes D1, one writer per column. Keeping both sides is what makes a correction
+  auditable later — and what will tell a recurring OCR weakness from a one-off. A corrected field
+  carries `origin: "human"` and NO span: a typed value sits nowhere on the page, and pointing at the
+  box the machine read would show a region that no longer holds what the field says. Corrections are
+  surgical (untouched fields keep value, origin and spans), a rejected review applies nothing, and
+  re-submitting the machine's own value is not a correction.
+
 ## [0.2.0] - 2026-07-21
 
 Provenance: an extracted value can be located in the source document, so a reviewer can be shown

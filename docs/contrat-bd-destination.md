@@ -109,6 +109,18 @@ La couche humaine + le **staging des suggestions**. **Référence le job (D1), n
 - `review_id` (PK), `job_id` (FK → D1)
 - `resume` / `analyse` = **projection** pour l'humain (vue, pas une 2e source de vérité)
 - `comment` (humain), `decision` : `accept` | `reject`
+- **`field_corrections`** (JSON) — l'ÉDITION humaine du record extrait :
+  `{"<champ>": {"from": <valeur machine>, "to": <valeur humaine>}}`. **Ici et pas en D1** pour
+  deux raisons : la règle d'écriture (l'UI écrit D3, le watchdog écrit D1) et l'**audit** — garder
+  ce que la machine a lu à côté de ce que l'humain a mis est ce qui rend une correction relisible
+  plus tard, et ce qui distingue une faiblesse OCR récurrente d'un cas isolé. Une valeur identique
+  à celle de la machine n'est PAS une correction (formulaire non touché = rien d'enregistré).
+  **Le watchdog l'APPLIQUE au record D1 à l'acceptation** : le champ devient
+  `{"value": <humaine>, "origin": "human", "spans": []}` — une valeur tapée ne se trouve **nulle
+  part** sur la page, et pointer l'ancienne boîte de la machine montrerait une zone qui ne contient
+  plus ce que le champ dit. Correction chirurgicale : les autres champs gardent valeur, origine et
+  provenance. Une revue **rejetée** n'applique rien. Trace sur la row : `reasons` gagne
+  « human corrected '<champ>' »
 - **suggestions** : template candidat + critères proposés (SLM), `status` : `pending` | `validated`
 - **promotion D3 → D2** : valider une suggestion **insère/active** le template en D2 (transaction)
 
