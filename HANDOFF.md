@@ -13,9 +13,55 @@
 > coller de valeur réelle (nom, n°doc, adresse) dans le code, les docs ou un message de commit ; `0_Aller_retour_IT/`,
 > `inputs/`, `outputs/`, `models/`, `spool/` restent gitignorés (vérifié absent du tree poussé).
 
-## ▶ NEXT (posé 2026-07-21) — à toi de choisir
+## ▶ NEXT (posé 2026-07-21) — **v0.3.0 publiée** ; question ouverte : le chemin LOURD
 
-Restent, **aucun n'est engagé** :
+**Release `v0.3.0` taggée et poussée** (thème : deux pannes de lecture silencieuses fermées + la
+correction humaine). `[Unreleased]` réamorcé vide. Page Release GitHub non créée (facultative, le
+tag suffit ; lien pré-rempli dans le CHANGELOG workflow).
+
+### La question posée : que faut-il pour un PDF scanné dont le texte est MAUVAIS ?
+
+**Réponse courte : le moteur lourd n'est pas le problème. Le déclencheur l'est.**
+
+**Ce qui existe déjà, mais enfermé dans la lane CI** (vérifié 2026-07-21) :
+- `EnhancePreprocessor` (flou + désaturation + filtre) — appelé UNIQUEMENT par
+  `pipeline.read_verso_mrz`, plus deux harnais. Aucun autre document n'y a accès.
+- `LightOnOcrEngine` (VLM) — construit comme `escalation_engine` et threadé jusqu'à
+  `process_ci_submission`, qui ne s'en sert que pour la MRZ du verso. Une facture scannée ne le
+  touche jamais.
+- La cascade **raw → enhance → escalade** est **codée en dur dans `read_verso_mrz`**, pour la MRZ.
+- Le chemin Docling résilient (`heavy_page_converter_factory`) : construit, **jamais câblé**.
+- La lane `escalation` en D1 + le worker qui la draine : **la plomberie asynchrone existe déjà.**
+
+**⚠️ LE TROU RÉEL, et il est en amont : `ReadResult.confidence` NE GATE RIEN.** Elle est calculée
+(moyenne des scores de ligne) et seulement AFFICHÉE par `extract.py`. Le signal « douteux → humain »
+que le docstring de `reader.py` annonce n'est branché sur aucun verdict, aucun routage, aucune
+escalade. À vérifier avant tout chantier lourd — c'est peut-être le premier geste, et il est petit.
+
+**Pourquoi la lane CI peut escalader et pas les autres** : la MRZ porte **4 checksums ICAO**, un
+oracle MÉCANIQUE qui dit « cette lecture est fausse » avec certitude. Une facture scannée n'a aucun
+checksum. C'est la même **arête « sens »** déjà documentée : rien ne dit qu'un texte extrait est
+juste. Le déclencheur doit donc venir d'ailleurs.
+
+**Candidats pour le déclencheur, avec leur faiblesse nommée :**
+| Signal | Ce qu'il vaut | Sa faiblesse |
+|---|---|---|
+| Confiance OCR moyenne | gratuit, déjà calculé | **auto-déclaré** — un moteur qui se trompe avec assurance est précisément le mode de panne |
+| **Échec de match de template** | fort : un doc qui DEVRAIT matcher et ne matche pas est souvent mal lu | ne distingue pas « mal lu » de « type inconnu » |
+| Densité de texte anormalement basse | mesurable, patron `image_dominance` | un document réellement pauvre en texte est un faux positif |
+| Échec de VALIDATION | tentant | **🚫 PIÈGE À NE PAS FAIRE** — voir ci-dessous |
+
+**🚫 Le piège à ne surtout pas construire** : déclencher une relecture sur un échec de VALIDATION
+relirait un document FRAUDULEUX jusqu'à ce qu'il passe — ça détruirait le verdict anti-fraude.
+Le déclencheur doit porter sur la **qualité de la LECTURE**, jamais sur le **contenu**. Nuance qui
+sauve la lane CI : le checksum MRZ valide la TRANSCRIPTION, pas la personne — c'est bien un oracle
+de lecture, d'où sa légitimité.
+
+**Ce qui manque matériellement** : un vrai scan de mauvaise qualité. Le corpus n'en contient aucun
+(5 pages seulement partent à l'OCR aujourd'hui, et elles passent). Sans cas réel, calibrer un seuil
+de confiance rejouerait l'erreur de la corroboration de tables. **Chercher le document d'abord.**
+
+### Restent par ailleurs, **aucun n'est engagé** :
 1. **Le fichier d'un span n'est pas identifié** (limite nommée, pas un oubli) : un span dit la PAGE,
    pas QUEL fichier d'une soumission multi-fichiers. Le surlignage se pose sur le premier fichier
    et l'UI le dit. Ça ne mord que sur les paires CI.
