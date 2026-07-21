@@ -53,7 +53,25 @@ attente** (un worker les dépile ; mécanisme = adaptateur). Colonnes (esquisse)
 - `verdict` : `auto` | `review` | `reject` | null (= `Verdict.value` ; l'ancien `human` retiré
   2026-07-12, vocabulaire unifié — **à re-signaler au gel IT**) ; `reasons` (texte/JSON)
 - `verso_read_path` : `raw` | `enhance` | `escalation` | `none`
-- **le RECORD extrait** (champs consolidés) = **ici, source de vérité unique**
+- **le RECORD extrait** (champs consolidés) = **ici, source de vérité unique**. Colonne
+  `record_fields`, JSON, **une seule forme pour TOUTES les lanes** (structurée et CI — une colonne
+  qui changerait de forme selon l'écrivain serait illisible pour l'IT) :
+  `{"<nom_champ>": {"value": str|null, "origin": "anchor"|"pattern"|"mrz"|null,
+  "spans": [{"page_index": int (0-based), "bbox": [x0,y0,x1,y1]}]}}`.
+  **`spans` porte la PROVENANCE** (décidé 2026-07-21) : exigence produit « nœud → page → on montre
+  la zone » — un reviewer ne peut valider ou corriger une valeur que s'il voit la région d'où elle
+  sort. C'est une **liste** (un regex peut matcher à cheval sur plusieurs lignes, donc plusieurs
+  pages), et elle est **vide quand la provenance n'existe pas** (backfill MRZ : la zone lue est
+  décodée, pas localisée sur la carte ; champ non trouvé). **La provenance absente reste absente,
+  jamais fabriquée.** **LIMITE DE PRÉCISION connue et assumée** (mesurée 2026-07-21 sur facture
+  réelle) : sur du born-digital la bbox est celle du **BLOC** PyMuPDF, pas du mot — bloc médian
+  27,5 pt (~2 lignes), pire cas mesuré 252 pt. La **page** est fiable ; la zone peut être trop
+  large pour surligner finement. Resserrement prévu quand un consommateur l'exigera (cf. HANDOFF). `origin` nomme le chemin d'obtention — ce n'est pas un score de qualité.
+  Producteur/lecteur = `template.field_payload` / `template.payload_value` (une seule
+  connaissance de la forme). **Pas de `superseded_by` ici, contrairement à D8** : D1 porte
+  l'extraction MACHINE ; la correction humaine appartient à D3 (qui référence le job sans
+  dupliquer le record). Un champ = un extracteur, donc rien à arbitrer — au contraire d'une
+  cellule de table, où deux extracteurs coexistent parce qu'aucun ne suffit.
 - `created_at`, `updated_at` (**timestamps écrits explicitement** — la BD cible peut ne pas avoir
   `DEFAULT CURRENT_TIMESTAMP` selon sa version ; le proxy les écrit déjà, donc portable)
 
@@ -201,10 +219,13 @@ suivant).
 a cessé d'être jetée en amont (2026-07-21). Le chemin de lecture lourd conserve désormais la
 géométrie (`TextSpan(text, bbox)` porté par la réconciliation → `TextLine` reconstruits →
 `ReadResult.lines`), donc « page + bbox » **existe au moment de l'extraction** au lieu d'être perdu.
-Restent NON faits : la provenance **par cellule de table** (pas de consommateur : ce serait du code
-inerte) et la lane structurée, où `extract_fields(lines, template) -> dict[str, str | None]`
-**détruit toujours** la géométrie — c'est le prochain point de rupture pour « nœud → page → zone »
-sur des champs extraits. Les deux extracteurs de tables sont mesurés (cf.
+La lane structurée a suivi le **2026-07-21** : `extract_fields` renvoie désormais
+`dict[str, ExtractedField]` (valeur + `spans` + `origin`) au lieu de `dict[str, str | None]`, sur
+**les deux chemins** (ancre géométrique ET regex — pour ce dernier, la géométrie est reconstruite
+via la plage de caractères du match sur le texte joint). Donc « page + bbox » ne meurt plus **ni à
+la lecture ni à l'extraction**, et D1 les stocke (cf. domaine 1). Reste NON fait : la provenance
+**par cellule de table**, faute de consommateur (ce serait du code inerte). Les deux extracteurs de
+tables sont mesurés (cf.
 [outils-evalues.md](outils-evalues.md)) et la fenêtre d'adjudication humaine existe
 (`table_adjudication_build.py` → HTML local **gitignoré**, contenu réel). Le schéma ci-dessus est un
 sketch, à co-geler avec l'IT comme les autres.

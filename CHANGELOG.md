@@ -16,6 +16,13 @@ match the tag.
 ## [Unreleased]
 
 ### Added
+- **Field provenance (page + bbox)** — `extract_fields` no longer destroys geometry at the last
+  point it still exists. It returns `ExtractedField(value, spans, origin)` on BOTH extraction paths:
+  the geometry-anchor path carries the value line's box, and the regex path (born-digital invoices)
+  recovers its span from the match's character range over the joined text. A value straddling lines,
+  or pages, yields several spans — hence a list. This is what lets a reviewer be shown the region a
+  value was read from, without which they can neither validate nor correct it. Provenance that does
+  not exist stays empty (MRZ-backfilled ID-card fields, nothing matched) and is never fabricated.
 - **Character-integrity guard** — an intrinsic, model-agnostic check on extracted text
   (`text_integrity_guard`), computed at a single seam in `read_document` so every backend (PDF text
   layer, OCR engine, `.docx`, resilient converter) is covered, and applied to both router lanes. It
@@ -26,6 +33,25 @@ match the tag.
   This closes the character side of the semantic edge — the side a second independent reader cannot
   corroborate, since every text-layer extractor trusts the same broken PDF `ToUnicode` CMap and so
   agrees on the same garbage.
+
+### Changed
+- **BREAKING (D1 payload)** — `ocr_jobs.record_fields` is now
+  `{name: {value, origin, spans: [{page_index, bbox}]}}` instead of `{name: value}`, one shape for
+  every lane. Read it through `template.payload_value`. The verdict engine is untouched: it consumes
+  the value-only projection (`field_values`). Known precision limit, measured on a real invoice: on
+  born-digital PDFs the box is the PyMuPDF *block*, not the word — median 27.5 pt, worst case 252 pt.
+  The page is reliable; the zone can be too coarse to highlight finely.
+
+### Removed
+- **Automatic table corroboration** — comparing two independent table reconstructions by SHAPE
+  (rows × columns) was implemented and proved 6/6 by its smoke, then invalidated by the first real
+  run: it diverged on 100 % of documents. The two readers do not disagree about quality, they apply
+  different *segmentation* conventions ("what counts as one table"), and a detector that always
+  fires detects nothing. Truth is not derivable from two extractors that contradict each other, so
+  the retained path is **human adjudication** (page image next to both reconstructions). The module,
+  its smoke and its run harness were deleted rather than kept as dead code that must not be wired.
+- **`markitdown` dependency** — added solely for the corroboration above; `pdfplumber`, which the
+  adjudication harness actually calls, is now an explicit dependency instead of a transitive one.
 
 ## [0.1.0] - 2026-07-20
 

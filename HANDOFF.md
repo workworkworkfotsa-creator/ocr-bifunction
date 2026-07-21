@@ -13,7 +13,102 @@
 > coller de valeur réelle (nom, n°doc, adresse) dans le code, les docs ou un message de commit ; `0_Aller_retour_IT/`,
 > `inputs/`, `outputs/`, `models/`, `spool/` restent gitignorés (vérifié absent du tree poussé).
 
-## ▶ NEXT (posé 2026-07-21) — `extract_fields` : la provenance meurt là
+## ▶ NEXT (posé 2026-07-21) — le RECTANGLE de surlignage, et le resserrement des spans AVEC lui
+
+**Décision utilisateur (2026-07-21) : acter la limite de précision mesurée ci-dessous, et ne
+resserrer les spans QUE le jour où le rectangle existe.** Raison : la PAGE est juste dans 100 % des
+cas mesurés, et « p. N » est tout ce que l'UI consomme aujourd'hui — resserrer maintenant serait du
+code sans consommateur (discipline anti-inerte du projet). Les deux gestes vont ensemble :
+1. `ui/review.html` : dessiner la zone sur l'aperçu du document (aujourd'hui : juste « p. N ») ;
+2. **en même temps**, resserrer le span au niveau du span SEUL — `page.get_text("words")` (vérifié
+   au runtime : arité 8, boîtes au mot) permet de réduire le span aux mots couvrant la valeur
+   matchée. **Ne PAS toucher à la granularité de `ReadResult.lines`** : `match_template`,
+   `_value_below`/`_value_right` et les tolérances calibrées (`COLUMN_X_TOLERANCE`…) sont réglées
+   sur des BLOCS ; les changer ferait régresser la lane CI déjà prouvée. Option écartée
+   explicitement, ne pas la re-litiger sans A/B sur le corpus complet.
+
+Ça rejoint le parking « UI de revue avec extraction ÉDITABLE » (demande utilisateur : « bien plus
+tard »).
+
+## Vérification sur doc réel (2026-07-21) — le mécanisme marche, la PRÉCISION est bornée
+
+**Fait, précisément parce que le smoke ne prouve pas une conception** (leçon `table_corroboration` :
+6/6 verts parce que le test figeait mon hypothèse, tuée par le 1er run réel). Run :
+`uv run python extract.py "<facture born-digital de inputs/>"` (lane **pattern**).
+
+**Ce qui est prouvé** : 3 champs sur 3 portent une provenance, `origin:"pattern"`, **page correcte**.
+La chaîne lecture → extraction → payload D1 tient sur un vrai document.
+
+**L'hypothèse que j'avais nommée est CONFIRMÉE — le span est le BLOC, pas la valeur.** Cause à la
+source : [reader.py:293](ocr_bifunction/reader.py:293) construit **un `TextLine` par BLOC** PyMuPDF
+(`get_text("blocks")`), pas par ligne. Le mapping plage-de-caractères → lignes est fidèle ; c'est la
+granularité de LECTURE qui borne tout. Mesuré sur la page 0 (PyMuPDF 1.27.2.3) :
+- **17 blocs pour 80 mots** ; hauteurs de blocs : min 13,4 pt · **médiane 27,5 pt** · **max 252,3 pt**
+  (~30 % de la hauteur d'une A4 dans un seul bloc) ; hauteur d'un mot : médiane 13,9 pt.
+- Par champ : `total_ht` → 14 pt (une ligne, **utilisable**) · `numero_facture` → 22 pt (~2 lignes) ·
+  `date_facture` → **57 pt** (~4-5 lignes, **trop grossier** pour pointer un reviewer).
+- **La lane ancre hérite de la même grossièreté** — c'est d'ailleurs *pourquoi* la lane pattern
+  existe (« PyMuPDF colle label+valeur dans un bloc »).
+
+**Corrigé au passage — bug PRÉEXISTANT dans `extract.py`** (sans rapport avec ce chantier, jamais
+déclenché parce que le harnais n'avait pas tourné sur du born-digital) : `f"{result.confidence:.2f}"`
+crashait en `TypeError` quand `confidence` est `None`, ce qui est le cas NORMAL d'une lecture
+couche-texte (exacte, aucun score à rapporter). Affiche désormais `n/a (text layer)`.
+
+---
+
+## État au 2026-07-21 (suite) — la provenance survit à l'extraction (les DEUX lanes)
+
+**Décision de contrat tranchée** (l'IT n'étant pas encore engagé, aucune forme n'était gelée →
+on a pu choisir la forme honnête plutôt que la rétro-compatible) : la provenance d'un champ vit
+**dans `record_fields` enrichi**, pas dans une table dédiée. Raison : D1 déclare « le record
+extrait = source de vérité unique » — une table de champs en créerait une seconde. D8 est
+différent : le record plat **ne peut pas** porter des cellules, donc il ne duplique rien. Détail
+de la forme gelée → [contrat-bd-destination.md](docs/contrat-bd-destination.md) (domaine 1).
+
+**Livré :**
+- **`reader.ProvenanceSpan`** (déplacé de `rag.py`, re-exporté `X as X`) : `page_index` + `bbox`
+  + `from_line`. C'est une projection de `TextLine`, pas un concept RAG — les deux lanes en ont
+  besoin et aucune ne doit importer l'autre.
+- **`template.ExtractedField(value, spans, origin)`** + `field_values` (projection valeur, ce qui
+  laisse `validate_fields`/`evaluate_validation` **inchangés** — le moteur de verdict raisonne sur
+  des valeurs, jamais sur de la géométrie) + `field_payload`/`payload_value` (la forme D1, connue
+  d'un seul module, dans les deux sens).
+- **Lane pattern couverte aussi** (choix assumé : livrer `spans:[]` sur les factures aurait rendu
+  « montrer la zone » inutilisable là où on en a le plus besoin) : `_line_character_ranges` mappe
+  la plage de caractères du match → les lignes chevauchées. Le span est celui du **groupe VALEUR**,
+  pas du match entier. Une valeur à cheval sur le `\n` du join rend **deux** spans — d'où une liste.
+- **Lane CI** : `_consolidate` produit du riche ; un backfill MRZ sort en `origin:"mrz"`, `spans:[]`.
+- **`ui/review.html`** : helper `fieldRows` (les 2 blocs dupliqués fusionnés), colonne « p. N »,
+  et **« — » quand il n'y a pas de span** — le reviewer sait quand il n'y a aucune zone à aller voir.
+
+**⚠️ PIÈGE ATTRAPÉ AU PASSAGE, à ne pas réintroduire** : `_consolidate` testait
+`if not merged.get(key)` pour décider du backfill MRZ. **Un dataclass est toujours truthy**, donc
+le test serait devenu faux en silence et le backfill MRZ se serait arrêté — sans lever la moindre
+erreur. Isolé dans `_is_empty`, qui teste `.value` explicitement.
+
+**Frontière posée** : `ExtractedField` = type en mémoire ; la row D1 (`Job.record_fields`) porte
+des dicts JSON-ready. La sérialisation se fait aux **deux seams d'adaptateur** (`intake
+.job_from_outcome`, `worker_watchdog`), jamais dans le cœur pur.
+
+**Prouvé** : `field_provenance_smoke.py` **11/11** (ancre below/right ; pattern = span du groupe
+valeur ; match à cheval → 2 spans ; multi-page ; 3 cas de provenance absente non fabriquée ;
+projection valeur ; round-trip JSON). Régressions **toutes vertes** : `flow` 14/14, `policy` 20/20,
+`conformity` 12/12, `corroboration` 7/7 (le consommateur du payload D1), `holder_reference` 5/5,
+`async_type_mismatch` 4/4, `text_integrity_wiring` 8/8, `escalation_reject` 6/6, `handler` 6/6,
+`store` 7/7, `verdict_flow` 7/7, `draft` 12/12, `use_case_key` 13/13, `severity` 8/8, `load` 10/10,
++ les smokes purs (`text_integrity_guard` 5/5, `conversion_guard` 6/6, `resilient_conversion` 12/12,
+`verdict` 11/11, `checks` 12/12, `context_checks` 14/14,
+`reconcile_verdict` 5/5). `ruff` propre. **Un seul rouge rencontré** : `flow_smoke` 13/14, une
+assertion qui lisait l'ANCIENNE forme (`record_fields.values()` sont des payloads, plus des
+chaînes) — ré-ancrée sur `payload_value`, pas un changement de comportement.
+
+**PAS fait, volontairement** : provenance par cellule de table (D8, toujours sans consommateur) ;
+le rectangle de surlignage dans l'UI (cf. NEXT).
+
+Commit non fait (l'utilisateur committera).
+
+## (résolu) NEXT posé plus tôt le 2026-07-21 — `extract_fields` : la provenance meurt là
 
 **Le point de rupture, précis** : `template.extract_fields(lines, template) -> dict[str, str | None]`
 reçoit des `TextLine` **qui portent leur `bbox` et leur `page_index`**… et renvoie **des chaînes**.
@@ -113,34 +208,34 @@ les deux lecteurs partagent la même source de vérité et s'accordent donc sur 
 la zone à risque **prouvée** : la défaillance Docling mesurée était exactement des tables
 larges/denses garbled (`layout_score` 0.70).
 
-**LIVRÉ — `ocr_bifunction/table_corroboration.py`** (PUR, prend deux chaînes markdown ; ni lecteur ni
-modèle) : `extract_table_profiles` (chaque table réduite à sa FORME lignes×colonnes, ligne
-d'alignement exclue car c'est du markup) + `compare_table_profiles` / `corroborate_tables`.
-**Pourquoi la forme et pas le contenu** : une table garbled perd ou fusionne des frontières de
-cellules, donc sa forme change — comparer les formes attrape la panne sans se noyer dans le bruit
-d'espaces et de formatage. `has_tables` distingue un accord RÉEL d'un accord VIDE (deux lecteurs qui
-ne trouvent rien ne s'accordent sur rien). Granularité page **non supposée** (les séparateurs de page
-de markitdown sont non fiables) : le choix page/document appartient à l'appelant.
-Prouvé **`table_corroboration_smoke.py` 6/6** (tables identiques ; colonnes fusionnées → divergence
-nommée ; table ratée → divergence de compte ; accord vide ; ligne d'alignement non comptée ; deux
-tables séparées par de la prose). Dép runtime `markitdown[pdf]` ajoutée.
+**🗑️ TENTÉ, INVALIDÉ, PUIS SUPPRIMÉ (2026-07-21, décision utilisateur).** Un module
+`ocr_bifunction/table_corroboration.py` avait été écrit : chaque table réduite à sa FORME
+lignes×colonnes, deux lectures comparées, divergence = signal de revue. Prouvé 6/6 par son smoke,
+**invalidé par le premier run réel** (détail ci-dessous), donc **jamais câblé**. Le code, son smoke
+et son harnais de run ont été **supprimés** plutôt que laissés en place : on a tranché autrement —
+**c'est l'humain qui arbitre** (`table_adjudication_build.py`), pas une métrique d'accord. Garder un
+module mort qu'il ne faut surtout pas câbler est un piège pour la prochaine session.
+**Ce qui reste de l'épisode est la LEÇON**, conservée ci-dessous ; c'est la seule chose qui avait
+de la valeur. Dép runtime `markitdown[pdf]` retirée du même coup (elle avait été ajoutée POUR ce
+module) et remplacée par **`pdfplumber`** en dépendance EXPLICITE : c'est ce que
+`table_adjudication_build.py` appelle réellement, il ne l'avait que transitivement.
 
 **Écarté volontairement** (ROI nul, décision utilisateur) : la corroboration de **linéarisation** —
 le brouillon `reading_order_comparison.py` a été **supprimé** plutôt que laissé en code mort. Note
 pour plus tard : si on y revient, la métrique devra être **sensible à l'ordre** (un TF-IDF /
 sac-de-mots score ~1.0 par construction, les deux lecteurs tirant les mêmes mots de la même couche).
 
-**⚠️ INVALIDÉ PAR LE RUN RÉEL (2026-07-21) — `table_corroboration_real_run.py --go --limit 4` :
+**⚠️ INVALIDÉ PAR LE RUN RÉEL (2026-07-21) — le harnais de run, `--go --limit 4` :
 0 corroboré / 4 divergents, 100 %.** Le motif est **systématique, pas documentaire** : Docling trouve
 **peu de grandes** tables (`1 × 11x7`, `2 × [2x2, 10x4]`), pdfplumber **beaucoup de petites** à
 nombre de colonnes stable (4–7 tables en `…x5`). Les deux ne divergent pas sur la QUALITÉ mais sur
 **ce qui constitue UNE table** — une convention de **segmentation**. Un détecteur qui se déclenche
 sur 100 % des cas ne détecte rien : **la comparaison de FORME n'est pas un signal exploitable.**
-- **Leçon (application directe du garde-fou du CLAUDE.md)** : `table_corroboration_smoke.py` était
-  vert 6/6 **parce qu'il figeait mon hypothèse de conception** (les deux côtés fabriqués avec la même
-  segmentation). Des tests verts ne valident pas une CONCEPTION ; seul le run réel le fait — et il
-  l'a tuée en 3 minutes. Le module et son smoke restent en place comme trace de la tentative, mais
-  **ne doivent pas être câblés en l'état**.
+- **Leçon (application directe du garde-fou du CLAUDE.md) — À GARDER, c'est le seul acquis** : le
+  smoke était vert 6/6 **parce qu'il figeait mon hypothèse de conception** (les deux côtés fabriqués
+  avec la même segmentation). Des tests verts ne valident pas une CONCEPTION ; seul le run réel le
+  fait — et il l'a tuée en 3 minutes. **Le code a été supprimé** (2026-07-21) : la voie retenue est
+  l'arbitrage humain, et un module mort « à ne surtout pas câbler » est un piège pour la suite.
 - **Coût mesuré** : Docling = 14–77 s pour un document d'**une page**. Lourd même sur du petit.
 
 **RECADRAGE UTILISATEUR (2026-07-21)** : la vraie question n'est pas « sont-ils d'accord » mais
@@ -161,8 +256,9 @@ pas dérivable de deux extracteurs qui se contredisent → il faut une référen
 n'a **aucun second avis possible** (markitdown ne produit aucun titre : 0 sur 24 PDF) et n'est
 couverte par aucun garde. Carte des arêtes aujourd'hui : complétude → `conversion_guard` ✅ ·
 forme/page → `layout_score` ✅ · caractères → `text_integrity_guard` ✅ (câblé) · **tables →
-`table_corroboration` ✅ (prouvé, pas câblé)** · linéarisation → non poursuivi ⚠️ · **hiérarchie →
-non couvert, sans recours** ⚠️.
+ARBITRAGE HUMAIN** (`table_adjudication_build.py` ; la corroboration automatique a été tentée,
+invalidée, supprimée) · linéarisation → non poursuivi ⚠️ · **hiérarchie → non couvert, sans
+recours** ⚠️.
 
 ## État au 2026-07-20 (suite) — arête SENS scindée : garde d'intégrité d'encodage (model-agnostic)
 
