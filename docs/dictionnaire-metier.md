@@ -290,8 +290,14 @@ sous-arêtes de nature différente** (confirmé utilisateur 2026-07-20) :
 
 - **structure / ordre de lecture** — titres, paragraphes, cellules de table, linéarisation. Un
   extracteur peut mal linéariser un multi-colonnes ou une table → tokens dans le mauvais ordre → sens
-  corrompu SANS qu'un caractère soit faux. **Corroborable** par un 2e lecteur indépendant (idée
-  markitdown : diff Docling↔markitdown ; divergence > seuil → humain).
+  corrompu SANS qu'un caractère soit faux. **Corroborable en principe** par un 2e lecteur indépendant.
+  **Piste markitdown évaluée puis ÉCARTÉE (verdict utilisateur 2026-07-21, ROI nul)** : sans cloud il
+  donne de vraies tables markdown (via `pdfplumber`, indépendance réelle vs le TableFormer neural de
+  Docling) et sa linéarisation, mais **zéro hiérarchie** (0 titre sur 24 PDF réels) et des frontières
+  de page **non fiables** (un doc rendu en 1 page pour ~100 k caractères). ⚠️ **Cette sous-arête reste
+  donc NON COUVERTE**, et la **hiérarchie n'a aucun second avis possible** — trou assumé, pas masqué.
+  Toute métrique de divergence devra être **sensible à l'ordre** : un TF-IDF / sac-de-mots score ~1.0
+  quoi qu'il arrive, puisque les deux lecteurs tirent les mêmes mots de la même couche texte.
 - **intégrité-caractères** — les caractères eux-mêmes sont-ils les bons ? En born-digital, le texte
   vient de la couche programmatique du PDF via sa table `ToUnicode` (CMap). **Table absente/cassée
   (police sous-ensemble) → mojibake** (`Ã©`, `â€™`…) alors que le doc est parfaitement natif. **NON

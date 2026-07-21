@@ -13,6 +13,48 @@
 > coller de valeur réelle (nom, n°doc, adresse) dans le code, les docs ou un message de commit ; `0_Aller_retour_IT/`,
 > `inputs/`, `outputs/`, `models/`, `spool/` restent gitignorés (vérifié absent du tree poussé).
 
+## État au 2026-07-21 — markitdown évalué puis ÉCARTÉ (corroboration de structure) : la limite est le livrable
+
+**Question posée** : markitdown peut-il servir de 2e lecteur pour la sous-arête STRUCTURE (l'autre
+moitié de l'arête sens, cf. section suivante) ? **Verdict utilisateur : NON, ROI nul.** Mesuré, puis
+arrêté net — ce qu'on garde, c'est la LIMITE, pas du code.
+
+**Azure n'est PAS requis** (doute légitime levé à la source, markitdown 0.1.6) : les 18
+convertisseurs par défaut sont tous locaux ; `DocumentIntelligenceConverter` / `ContentUnderstanding`
+ne sont enregistrés **que si l'appelant fournit un endpoint** (`_markitdown.py` : `docintel_endpoint`
+/ `cu_endpoint`, `if … is not None`), sinon jamais instanciés. Le chemin PDF = `pdfminer` +
+`pdfplumber`, purement local ; la dép `magika` est un **modèle ONNX embarqué** (hors-ligne). Nuance à
+connaître : le stack par défaut contient des convertisseurs orientés **URL** (Bing/YouTube/Wikipedia/
+RSS) qui ne se déclenchent que sur une URL en entrée — jamais sur un chemin de fichier local. Donc
+**RGPD-compatible pour des PDF locaux**, ce qui reste cohérent avec le finding du 2026-07-20 (« l'OCR
+de markitdown = cloud only, exclu ») : c'est le chemin OCR qui est cloud, et on ne l'utilisait pas.
+
+**Ce qu'il donne réellement, sans cloud** (mesuré sur 24 PDF réels du corpus) :
+- **titres / hiérarchie : 0** — aucune détection de structure hiérarchique ;
+- **gras / emphase : 0** ;
+- **tables : OUI, bien formées** — 277 blocs, 247 lignes de séparation d'alignement (via `pdfplumber`) ;
+- **ordre de lecture : oui, implicitement** (sa linéarisation = sa séquence de tokens).
+
+**Piège mesuré — les frontières de page ne sont PAS fiables** : le form-feed `\f` sépare bien les
+pages d'un PDF synthétique 2 pages, mais sur le corpus réel un document sort en **1 page pour 99 971
+caractères**. On ne peut donc pas découper la sortie markitdown par page ; un alignement par page
+(pour le croiser avec `layout_score`) exigerait de lui donner **une page à la fois**.
+
+**L'indépendance aurait été RÉELLE** (pdfplumber géométrique vs TableFormer neural de Docling) —
+contrairement au cas CMap où les deux lecteurs partagent la même source de vérité et s'accordent donc
+sur le faux. Le potentiel existait, sur la zone à risque prouvée (tables larges garbled,
+`layout_score` 0.70). **L'utilisateur a tranché que le gain ne payait pas le coût.**
+
+**Nettoyé en conséquence** (discipline anti-cimetière) : le brouillon
+`ocr_bifunction/reading_order_comparison.py` **supprimé** (jamais câblé = code mort) et la dép dev
+`markitdown` **retirée**. Rien de spéculatif ne reste en place.
+
+**⚠️ TROU ASSUMÉ, nommé plutôt que masqué** : la **hiérarchie / le découpage en sections** de Docling
+n'a **aucun second avis** et n'est couverte par aucun garde. Carte complète des arêtes aujourd'hui :
+complétude → `conversion_guard` ✅ · forme/page → `layout_score` ✅ · caractères →
+`text_integrity_guard` ✅ · **linéarisation + tables → non couvert (écarté ici)** · **hiérarchie →
+non couvert** ⚠️.
+
 ## État au 2026-07-20 (suite) — arête SENS scindée : garde d'intégrité d'encodage (model-agnostic)
 
 **Affinage de l'arête « sens » (confirmé utilisateur 2026-07-20)** — elle se scinde :
