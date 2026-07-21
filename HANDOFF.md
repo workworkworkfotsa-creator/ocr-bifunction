@@ -13,6 +13,33 @@
 > coller de valeur réelle (nom, n°doc, adresse) dans le code, les docs ou un message de commit ; `0_Aller_retour_IT/`,
 > `inputs/`, `outputs/`, `models/`, `spool/` restent gitignorés (vérifié absent du tree poussé).
 
+## ▶ NEXT (posé 2026-07-21) — `extract_fields` : la provenance meurt là
+
+**Le point de rupture, précis** : `template.extract_fields(lines, template) -> dict[str, str | None]`
+reçoit des `TextLine` **qui portent leur `bbox` et leur `page_index`**… et renvoie **des chaînes**.
+Tout ce qui suit (record, D1, revue) travaille sans coordonnées, et `ocr_jobs` n'a **aucune colonne
+géométrique**. C'est le dernier endroit où la géométrie est encore disponible et où on la jette.
+
+**Pourquoi ça compte** : l'exigence produit est « **nœud 14, page 12 → on montre la zone du document
+original** ». Aujourd'hui c'est possible sur les **chunks RAG** (`rag.py` garde `ProvenanceSpan`) et,
+depuis ce jour, sur le **chemin lourd** — mais **pas sur un champ extrait**. Or c'est justement sur un
+champ extrait qu'un reviewer doit pouvoir valider ou corriger.
+
+**Ce sur quoi s'appuyer (déjà en place, rien à inventer)** : `TextLine` porte `bbox` + `page_index`
+(invariants fail-loud) ; `rag.py` est le **précédent qui prouve le mécanisme** ; le chemin lourd
+produit désormais ses `TextLine`.
+
+**⚠️ À TRANCHER AVANT DE CODER — c'est une décision de CONTRAT, pas du code** : où atterrit la
+provenance d'un champ ? (a) `record_fields` enrichi (valeur + page + bbox par champ) — impact sur la
+forme D1 déjà proxifiée ; (b) une table dédiée façon D8. Le choix touche
+[contrat-bd-destination.md](docs/contrat-bd-destination.md) et donc le gel avec l'IT. **Ne pas coder
+avant d'avoir tranché** — sinon on refait une forme qu'il faudra renégocier.
+
+**Piège à ne pas rejouer** : ne PAS étendre la provenance aux cellules de table (D8) tant qu'aucun
+consommateur n'existe — ce serait du code inerte, la discipline du projet l'interdit.
+
+---
+
 ## État au 2026-07-21 — les adaptateurs ARRÊTENT de jeter la provenance (chemin lourd)
 
 **Constat qui a déclenché ça** : la géométrie existait partout SAUF là où elle sert. `TextLine` porte
