@@ -57,7 +57,22 @@ dérouler à chaque nouvelle étape). Concept → [[arête « sens »]] du dicti
 exposé = le nombre calibratable (patron `layout_score`). **Finding verrouillé : `is_bad` renvoie False
 sur `U+FFFD`** → le check U+FFFD n'est pas redondant. Dép runtime `ftfy>=6.3.1` ajoutée. Prouvé
 `text_integrity_guard_smoke.py` **5/5** ; `conversion_guard_smoke` 6/6 (régression) ; `ruff` propre.
-Calibration du seuil `badness` = passe observateur sur `inputs/cplx` (pas encore faite).
+**PASSE OBSERVATEUR FAITE (2026-07-21) — `text_integrity_observer_run.py`, lecture légère (PyMuPDF,
+zéro OCR, zéro Docling).** Sur **25 docs réels** de `inputs/` : **23 évalués, 0 flaggé**, et
+**`badness` = 0 partout** (min = médiane = max = 0) contre **4** sur le mojibake fabriqué.
+- **Réponse à la question du seuil : il n'en faut pas.** La séparation est binaire et large ; le
+  design sans seuil (booléens `U+FFFD` / `is_bad`) est validé empiriquement. `badness` reste exposé
+  en observabilité, il ne gate toujours rien.
+- **Audit de faux positifs : 0.** Le câblage n'ajoute **aucune charge de revue** sur ce corpus — le
+  vrai risque du wiring (escalader du bon doc en `review`) est mesuré nul.
+- **Limite honnête** : le corpus ne contient **aucun cas positif**, donc cette passe est un
+  *contrôle négatif*. Que le garde se déclenche sur une vraie corruption n'est prouvé que sur entrée
+  fabriquée + le PDF synthétique du wiring smoke.
+- **2 docs non évalués** (image-only, aucun moteur OCR armé) → l'intégrité-caractères n'est **pas
+  couverte pour la lane scannée** par cette passe ; là-bas le mode de défaillance est la
+  misrecognition OCR, pas le mojibake de CMap. À traiter séparément.
+- Le harness **anonymise les noms de fichiers par défaut** (`--names` en opt-in local) : il parcourt
+  tout `inputs/`, où un nom de scan porte parfois un nom de personne.
 
 **CÂBLÉ (2026-07-21) — le garde est ACTIF de la lecture au verdict.**
 - **`reader.py`** : `ReadResult.text_integrity: TextIntegrityAssessment | None = None` (champ optionnel,
