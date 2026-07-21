@@ -9,9 +9,16 @@ land in a MINOR bump; `1.0.0` will mark the contract co-frozen with the IT integ
 
 Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/):
 `fix:` → PATCH, `feat:` → MINOR, `feat!:` or a `BREAKING CHANGE:` footer → MAJOR. `docs:`, `chore:`,
-`refactor:`, `test:` do not trigger a release. Keep `[Unreleased]` up to date as changes land; at
-release time, rename it to the new version, add the date, and bump `version` in `pyproject.toml` to
-match the tag.
+`refactor:`, `test:` do not trigger a release.
+**While on `0.y.z`, that last mapping is SUSPENDED: `feat!:` / `BREAKING CHANGE:` bumps MINOR, not
+MAJOR** (SemVer §4 — anything may change at any time under `0.y.z`). Breaking the intake contract is
+expected while it is being designed, and must not force a premature `1.0.0`. **`1.0.0` is a
+DECISION, not a threshold**: it is cut the day the contract (tables + config surfaces) is co-frozen
+with the IT integration — never because breaking changes accumulated. Staying on small numbers is
+deliberate.
+
+Keep `[Unreleased]` up to date as changes land; at release time, rename it to the new version, add
+the date, and bump `version` in `pyproject.toml` to match the tag.
 
 ## [Unreleased]
 
