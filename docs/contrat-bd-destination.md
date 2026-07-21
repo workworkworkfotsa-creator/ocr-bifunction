@@ -32,6 +32,7 @@ fixés avec l'IT au gel du schéma.)
 | **5 — Registre des organismes** | `ocr_issuer_registry` | Dictionnaire métier (conformité) | **Expert métier / Backoffice** | référence curée, lent | `ocr_bifunction/issuer_registry.py` |
 | **6 — Politiques de non-conformité** | `ocr_conformity_policies` | Dictionnaire métier (réaction) | **Expert métier / Backoffice** | config vivante, très lent | `ocr_bifunction/conformity_policy.py` |
 | **7 — Clefs use_case (auth)** | `ocr_use_case_keys` | Infra / auth (premier auth de la maquette) | **Opérateur** | secrets, très lent | `ocr_bifunction/use_case_key.py` |
+| **8 — Tables extraites (cellules)** | `ocr_document_table_cells` | Dictionnaire métier (la STRUCTURE, dans D2) + opérationnel (les VALEURS) | **Expert métier** (structure, une fois par layout) / **worker** (valeurs, par document) | référence lente + opérationnel | **aucun — sketch, rien de construit** |
 
 ## Domaine 1 — Jobs + queue (worker Python écrit)
 
@@ -138,6 +139,69 @@ ne pas construire de code inerte en avance d'un lecteur qui n'existe pas).
   création → 422). Régressions vertes : `flow_smoke` 14/14, `policy_smoke` 20/20,
   `conformity_smoke` 12/12, `holder_reference_smoke` 5/5.
 
+## Domaine 8 — Tables extraites (cellules + provenance) — SKETCH, rien de construit
+
+**Pourquoi un domaine à part** : pour des centaines de types de fichiers, la **table est la principale
+source d'information** — pas le texte autour. Or l'information d'une table n'est pas ses mots, c'est
+**quel mot est en relation avec quel autre** (ligne ↔ colonne ↔ portée). L'aplatir en texte détruit
+exactement ce qui la rend interrogeable — c'est toute la raison d'avoir des **nœuds chaînés** plutôt
+que du RAG pur. Le record plat de D1 (`fields`) ne peut pas porter ça.
+
+**LE PIÈGE, mesuré sur un document réel (2026-07-21) — une portée n'est pas une ligne.** Sur un titre
+d'habilitation, le libellé `Exécutant` apparaît **deux fois** : sous la section *TRAVAUX D'ORDRE NON
+ÉLECTRIQUE* (valeur `B0/HOV`) et sous *TRAVAUX D'ORDRE ÉLECTRIQUE* (valeur `B1V`). Stocké à plat en
+`(ligne, colonne, valeur)`, ça produit **deux triplets contradictoires pour la même clé** → donnée
+fausse, et fausse **silencieusement**. Le libellé de section est une **PORTÉE**, pas une ligne de
+données. Aucun des deux extracteurs testés ne le représente comme tel (l'un le réplique dans chaque
+colonne, l'autre l'isole en cellule) → **c'est la curation humaine qui le déclare**. La colonne
+`section_path` existe uniquement pour ça et **n'est pas optionnelle**.
+
+**Deux couches, deux propriétaires, deux lifecycles :**
+
+1. **La STRUCTURE** — quelles colonnes, laquelle est la clé de ligne, quelles lignes sont des portées.
+   Curée **une fois par layout**, jamais par document → **appartient à D2** (bloc `table_schema` qui
+   voyage avec le template, même doctrine que `validation` et `reference_roles_json`). L'humain n'y
+   choisit pas un extracteur : il **déclare le sens**.
+2. **Les VALEURS** — par document, en forme **tidy/joignable** (une ligne = une cellule). C'est cette
+   forme qui rend les croisements possibles ; la grille n'est qu'un rendu.
+
+**Colonnes (esquisse) — `ocr_document_table_cells`** :
+- `cell_id` (PK), `job_id` (FK → D1), `table_id` (n° de table dans le document), `template_id`
+  (FK → D2, null si extraction non curée) ;
+- `section_path` — la **PORTÉE** (ex. `TRAVAUX D'ORDRE ELECTRIQUE`), null si la table n'en a pas.
+  **Sans elle la clé de ligne n'est pas unique** (cf. piège ci-dessus) ;
+- `row_key` (libellé de ligne), `column_header`, `value` ;
+- **PROVENANCE — obligatoire, pas un confort** : `page_number` + `bbox`. Exigence produit posée
+  2026-07-21 : « nœud 14, page 12 → on montre la section du document original ». Un humain doit
+  pouvoir **voir la zone** d'où sort une valeur, sinon il ne peut ni valider ni corriger. Cette
+  provenance est **impossible à reconstruire après coup** → elle est portée par la cellule dès
+  l'extraction ;
+- `extractor` (`neural` | `geometric` | `human`) + `superseded_by` (null = valeur retenue).
+
+**On RETIENT les deux extractions, on n'en CHOISIT pas une** (mesuré 2026-07-21) : un choix exclusif
+**perd de la donnée**. Sur le document témoin, le lecteur **neural** portait les bonnes relations
+ligne↔valeur mais avait **perdu deux dates** ; le lecteur **géométrique** avait ces dates mais avait
+**détruit** les relations (5 libellés fusionnés dans une seule cellule). Donc :
+- le **neural fournit le squelette** (les relations, ce que l'autre détruit) ;
+- le **géométrique est une source de valeurs** là où le premier a droppé ;
+- **l'humain arbitre**, et les deux extractions brutes restent **retenues comme preuve** (même
+  doctrine que la rétention du spool en D1).
+
+Un curateur qui cliquerait « prends A » en bloc perdrait deux dates en silence — d'où `extractor` +
+`superseded_by` plutôt qu'une valeur unique écrasée.
+
+**Le levier de gouvernance — « ai-je besoin de cette donnée croisable ? »** Produire la forme
+relationnelle **coûte une curation humaine** (déclarer la structure une fois par layout). Beaucoup de
+types de documents n'en ont pas besoin : le texte suffit (lane RAG). Le choix **par type de document**
+appartient donc à **l'entité compétente côté métier** — jamais un défaut de code, jamais une décision
+de l'algo. Config, pas constante : patron D4/D6 (défaut en code, override opéré, effet à l'upload
+suivant).
+
+**Statut : rien n'est construit.** Les deux extracteurs sont mesurés (cf.
+[outils-evalues.md](outils-evalues.md)) et la fenêtre d'adjudication humaine existe
+(`table_adjudication_build.py` → HTML local **gitignoré**, contenu réel). Le schéma ci-dessus est un
+sketch, à co-geler avec l'IT comme les autres.
+
 ## Leviers infra — `ocr_capacity_settings` (l'admission de la porte)
 
 Worst-case assumé (2026-07-12 : serveurs modestes, pas de rack GPU) : le sync est **plafonné** et
@@ -170,6 +234,8 @@ chaque requête — s'adapte au hardware du jour J sans redéploy). Table géné
 | **Porte API (Python)** | D1 (insertion des jobs) | D4 (résolution sync/async), D2, D5 (contexte de conformité), D6 (réaction), D7 (résolution use_case) |
 | **UI clefs use_case (opérateur, UI interne)** | D7 (`ocr_use_case_keys`) | — |
 | **Passe DRAFT nightly (Python)** | D3 (suggestions stagées) | D1 (`needs_review` + spool), D2 (ids libres) |
+| **Extraction de tables (Python)** *(D8, à construire)* | D8 (cellules des 2 extracteurs + provenance page/bbox) | D2 (`table_schema` du template) |
+| **UI d'adjudication de tables (humain, UI interne)** *(D8, à construire)* | D8 (valeur retenue via `superseded_by`, cellules `human`), D2 (`table_schema` curé) | D1 (job + spool pour afficher la zone d'origine), D8 (les 2 extractions) |
 
 L'UI **lit** le `status` D1, ne le réécrit jamais → pas de course Python↔UI interne sur la même ligne.
 
