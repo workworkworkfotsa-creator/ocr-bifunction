@@ -169,8 +169,8 @@ def run() -> int:
         attestation_paths.append(path)
     _stage_attestation_template(attestation_paths)
 
-    probe = _ConcurrencyProbe(api_maquette._handle_validated_document)
-    api_maquette._handle_validated_document = probe
+    probe = _ConcurrencyProbe(api_maquette.door._handle_validated_document)
+    api_maquette.door._handle_validated_document = probe
 
     with TestClient(api_maquette.app) as client:
         # 0. Levers live: set the cap + defer overflow.
@@ -267,8 +267,8 @@ def run() -> int:
         # 5. Idempotency cache stays bounded under a flood of distinct request_ids.
         # The slow probe is removed (we test the EVICTION mechanism, not throughput)
         # and the cap is patched small so the flood stays cheap.
-        api_maquette._handle_validated_document = probe._original
-        api_maquette._IDEMPOTENCY_CACHE_MAX_ENTRIES = 20
+        api_maquette.door._handle_validated_document = probe._original
+        api_maquette.door._IDEMPOTENCY_CACHE_MAX_ENTRIES = 20
         client.put(
             "/v1/capacity-settings",
             json={"sync_concurrency_limit": 8, "sync_overflow_action": "defer"},
@@ -280,8 +280,8 @@ def run() -> int:
             )
         _check(
             "idempotency cache bounded under request_id flood "
-            f"(size={len(api_maquette._idempotency_cache)}, cap=20)",
-            len(api_maquette._idempotency_cache) <= 20,
+            f"(size={len(api_maquette.door._idempotency_cache)}, cap=20)",
+            len(api_maquette.door._idempotency_cache) <= 20,
         )
 
     passed = all(condition for _, condition in CHECKS)

@@ -13,6 +13,70 @@
 > coller de valeur réelle (nom, n°doc, adresse) dans le code, les docs ou un message de commit ; `0_Aller_retour_IT/`,
 > `inputs/`, `outputs/`, `models/`, `spool/` restent gitignorés (vérifié absent du tree poussé).
 
+## État au 2026-07-23 (suite) — les deux réserves du découpage sont levées
+
+Les deux points laissés debout ci-dessous ont été traités. **Motif utilisateur : la structure
+compte pour le livrable IT** — c'est elle que l'équipe lit avant le code.
+
+### Le cycle de packages est fermé — `_normalize` n'appartenait à personne
+
+`extraction.template` → `validation.checks` → `extraction.reconcile` : l'arête remontante n'existait
+que pour **une fonction de chaîne**. Elle est sortie dans **[ocr_bifunction/identity_key.py](ocr_bifunction/identity_key.py)**
+(avec `_fold_accents`), corps **inchangé au caractère près**, sous son vrai nom :
+`strict_identity_key` — `checks.py` l'aliasait déjà en `_strict_identity_key`.
+
+**Pourquoi là et pas ailleurs** : `reconcile` compare un recto à sa MRZ, les checks comparent un nom
+à une référence ou à un registre — **les deux doivent employer la MÊME clé**, sinon les deux réponses
+ne s'accordent pas sur ce que « même personne » veut dire. Elle est donc transverse, à la racine du
+package comme `paths.py`. L'avertissement « STRICT par conception » (le frère Ahmed/Hamed : la
+tolérance est un arbitrage de sécurité, pas une commodité) vit maintenant **dans le module**, pas
+dans un commentaire d'import qu'on ne lit qu'en passant.
+
+`grep "from ocr_bifunction.extraction" ocr_bifunction/validation/` → **vide**.
+
+### `api_maquette.py` (1597 l.) devient un paquet, une surface par module
+
+**Ce que la mesure a changé** : le couplage des preuves était minuscule — 12 × `api_maquette.app`
+et **5 références seulement** à des internes. La scission était donc bien plus abordable que la
+taille du fichier ne le laissait croire. Le découpage suit **les bannières `# --- … ---` déjà
+écrites dans le fichier**, pas une taxonomie inventée :
+
+| Module | Lignes | Ce qu'il porte |
+|---|---|---|
+| `settings.py` | 28 | tous les chemins + les 2 knobs d'affichage — la 1re page qu'un intégrateur ouvre |
+| `contract.py` | 110 | les enveloppes requête/réponse, rien d'autre — **ce que l'IT réimplémente** |
+| `store_access.py` | 226 | un singleton par surface + le verrou + le compteur d'admission — **le seul module à réécrire pour MariaDB** |
+| `spool.py` | 55 | la salle d'attente (les octets sur disque) |
+| `door.py` | 561 | la lane sync complète : idempotence, admission, les 2 arêtes, le polling |
+| `pages.py` | 61 | les 5 pages HTML — zéro logique, donc jetables sans risque |
+| `review_routes.py` | 388 | la surface humaine (file, corrections, suggestions, non-conformités) |
+| `governance_routes.py` | 327 | les 5 surfaces de config, un bloc CRUD par levier |
+
+**Chaque corps est levé VERBATIM par plage de lignes** — la scission ne réécrit aucune logique. Les
+imports ne sont devinés nulle part : chaque module reçoit le bloc d'imports d'origine en entier et
+`ruff --fix` élague (**526 F401 supprimés, 0 restant, 0 F821**).
+
+**⚠️ LE PIÈGE, nommé avant de coder puis vérifié — et c'est le smoke qui le prouve, pas moi.**
+`load_smoke` fait `api_maquette._handle_validated_document = probe` : un **rebind de global** qui ne
+marche que si l'endpoint résout le nom dans **son propre module**. Déplacer l'endpoint sans repointer
+la sonde l'aurait rendue **muette sans rien casser** — la classe de panne silencieuse habituelle. Deux
+choses le tiennent : la sonde est repointée sur `api_maquette.door`, et l'assertion existante est
+`1 <= probe.peak <= SYNC_LIMIT` — **la borne basse échoue si la sonde n'est jamais appelée**. Un
+`__init__.py` qui ré-exporte aurait masqué le problème ; il n'exporte donc que `app`.
+
+**Oracle — ce n'est PAS un déplacement, donc pas d'iso-byte** :
+- **table des 35 routes, `diff` vide** (chemins + méthodes + noms), capturée avant scission ;
+- **47 harnais, `diff` vide** contre la baseline **pré-migration** — dont les 14 qui traversent la
+  porte de bout en bout via `TestClient` ;
+- empreinte CI `diff` vide ; `ruff check` + `format` verts.
+
+*Note de méthode : la 1re comparaison de routes a donné « 4 routes » — c'était mon extracteur, pas la
+scission : FastAPI enveloppe désormais un routeur inclus dans un `_IncludedRouter` (attribut
+`original_router`), invisible à un `route.path`. Vérifier l'instrument avant d'accuser le code.*
+
+**Dette pré-existante repérée au passage, NON supprimée** (règle du projet : signaler, pas nettoyer
+le code mort d'autrui) : `store_access._update_job` est **défini et jamais appelé**.
+
 ## État au 2026-07-23 — le plat devient une arborescence PAR CONCERN (déplacement pur)
 
 **Rien n'a changé de comportement** : c'est un refactor iso-sortie, validé comme tel. 38 modules

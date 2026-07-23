@@ -12,7 +12,7 @@ security trade-off, not folded in for free here.
 
 from __future__ import annotations
 
-from ocr_bifunction.extraction.reconcile import _normalize
+from ocr_bifunction.identity_key import strict_identity_key as _normalize
 
 # (recto_value, mrz_value, should_match, label)
 CASES: list[tuple[str, str, bool, str]] = [
