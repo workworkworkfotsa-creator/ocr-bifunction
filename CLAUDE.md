@@ -75,7 +75,7 @@ en anglais, communication en français. Le **code = vérité ultime** ; ce fichi
 
 ```bash
 uv sync                       # install/refresh env depuis pyproject + uv.lock
-uv run python main.py         # lance l'entry point
+uv run python -m ocr_bifunction.adapters.main         # lance l'entry point
 uv add <pkg>                  # dép runtime   | uv add --dev <pkg> pour le dev
 uv run ruff format .          # format
 uv run ruff check . --fix     # lint (+ autofix)

@@ -22,6 +22,30 @@ the date, and bump `version` in `pyproject.toml` to match the tag.
 
 ## [Unreleased]
 
+### Changed
+- **The flat layout becomes a tree by concern.** 38 modules in one folder and 60 scripts at the repo
+  root had stopped being navigable. `ocr_bifunction/` is now `reading/` (+ `engines/`),
+  `extraction/`, `validation/`, `flow/`, `knowledge/`, `storage/`, `governance/`, `adapters/`;
+  `llama_transport.py` and `paths.py` stay at the package root because they are cross-cutting — not
+  belonging to a concern folder is the statement. The 60 root scripts move to `proofs/`, kept in ONE
+  flat folder because 47 of them import each other. One rename: `validation.py` →
+  `validation/checks.py`, which is what it is. Behaviour is unchanged, and proven so: the whole
+  proof suite replays with identical exit codes, and `ci_geometry_fingerprint` diffs empty against a
+  worktree of the pre-move commit running the old code on the real CI.
+- **Entry points move to `ocr_bifunction/adapters/`** — disposable by doctrine, but importable.
+  `uv run uvicorn ocr_bifunction.adapters.api_maquette:app`,
+  `uv run python -m ocr_bifunction.adapters.worker_watchdog`. This is what lets the proofs import
+  the API without a single `sys.path` insert.
+
+### Added
+- **`ocr_bifunction/paths.py`** — the repo directories derived ONCE instead of in 28 files. Each of
+  those did `Path(__file__).parent`, correct only while every one of them sat at the repo root; a
+  missing `templates/` does not raise, it loads zero templates and extraction quietly returns
+  nothing. The module fails LOUD if its root holds no `pyproject.toml`, so that class of silent
+  failure cannot come back.
+- **The project is now installable (editable)** via a `hatchling` build backend, so
+  `import ocr_bifunction` resolves from any folder while the source stays in the repo.
+
 ## [0.3.0] - 2026-07-21
 
 Two SILENT reading failures closed — a read that dropped most of a document while reporting

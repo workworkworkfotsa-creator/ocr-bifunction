@@ -1319,7 +1319,7 @@ wheels = [
 [[package]]
 name = "ocr-bifunction"
 version = "0.3.0"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
     { name = "docling" },
     { name = "ftfy" },
