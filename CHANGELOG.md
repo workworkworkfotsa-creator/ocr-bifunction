@@ -22,6 +22,8 @@ the date, and bump `version` in `pyproject.toml` to match the tag.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-23
+
 ### Changed
 - **The HTTP door becomes a package, one module per surface.** `api_maquette.py` was 1597 lines
   holding the contract, the stores, the intake lane, the review surface, five config surfaces and
@@ -196,7 +198,8 @@ Initial baseline — the bi-mode document intake proven end-to-end on real docum
   multi-page conversion (split into page-range batches, retry dropped pages under a decreasing
   batch-size schedule, reconcile by absolute page number), proven on real Docling.
 
-[Unreleased]: https://github.com/workworkworkfotsa-creator/ocr-bifunction/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/workworkworkfotsa-creator/ocr-bifunction/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/workworkworkfotsa-creator/ocr-bifunction/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/workworkworkfotsa-creator/ocr-bifunction/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/workworkworkfotsa-creator/ocr-bifunction/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/workworkworkfotsa-creator/ocr-bifunction/releases/tag/v0.1.0

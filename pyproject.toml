@@ -1,6 +1,6 @@
 [project]
 name = "ocr-bifunction"
-version = "0.3.0"
+version = "0.4.0"
 description = "Bi-mode document intake — read, categorise, auto-validate the confident, escalate the doubtful"
 readme = "README.md"
 license = "MIT"
