@@ -37,7 +37,7 @@ adaptateur interchangeable).
 ```
 
 **Une seule couche de traitement, deux régimes.** La porte ET le watchdog font passer un document
-par la MÊME fonction pure `intake.handle_document` (`ocr_bifunction/intake.py`) : cœur de routing +
+par la MÊME fonction pure `intake.handle_document` (`ocr_bifunction/flow/intake.py`) : cœur de routing +
 extraction + verdict, check « type déclaré ≠ type reconnu », réaction de non-conformité, et l'unique
 mapping record→row. Elle ne persiste rien — chaque régime (porte / worker) est l'adaptateur qui écrit
 la row D1. Résultat : la logique métier n'existe qu'une fois, et se teste sur un store en mémoire.

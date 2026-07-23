@@ -15,7 +15,7 @@ interne, tables préfixées** (pas 3 bases). « 3 BD » = **3 domaines** = 3 lif
 fixés avec l'IT au gel du schéma.)
 
 > **Mécanisme de connexion (proxy)** : depuis 2026-07-13 la connexion + le schéma + la migration
-> du proxy SQLite vivent dans **UN** `ocr_bifunction/store.py` (`class Store`) ; les 7 repos le
+> du proxy SQLite vivent dans **UN** `ocr_bifunction/storage/store.py` (`class Store`) ; les 7 repos le
 > reçoivent (`Store | chemin`) au lieu d'ouvrir chacun leur connexion. C'est le **point de swap IT** :
 > un adaptateur pour la BD cible interne remplace `Store` derrière les 7 mêmes interfaces de repo. `Store(":memory:")`
 > = la même SQL en mémoire pour les tests (repos partageant une connexion). Chaque repo garde SON
@@ -25,13 +25,13 @@ fixés avec l'IT au gel du schéma.)
 
 | Domaine | Préfixe proposé | Surface (handoff-it) | Propriétaire | Lifecycle | Proxy actuel |
 |---|---|---|---|---|---|
-| **1 — Jobs + queue async** | `ocr_jobs_*` | Infra / exécution | **IT** | opérationnel / transient | **`ocr_bifunction/repository.py` (`SqliteRepository`, table `ocr_jobs`)** |
-| **2 — Templates (+ critères validés)** | `ocr_templates_*` | Dictionnaire métier | **Expert métier / Backoffice** (PAS IT, PAS algo) | référence, lent | `ocr_bifunction/template_repository.py` (seed = `templates/*.json`) |
-| **3 — Revue / curation** | `ocr_review_*` | Métier (revue) + staging | **User / reviewer** | curation, croissance organique | `ocr_bifunction/review_repository.py` |
-| **4 — Politiques d'exécution** | `ocr_execution_policies` | Infra / exécution (contenu opéré par le Backoffice) | **Backoffice / opérateur** (l'IT possède le store, pas le contenu) | config vivante, très lent | `ocr_bifunction/execution_policy.py` |
-| **5 — Registre des organismes** | `ocr_issuer_registry` | Dictionnaire métier (conformité) | **Expert métier / Backoffice** | référence curée, lent | `ocr_bifunction/issuer_registry.py` |
-| **6 — Politiques de non-conformité** | `ocr_conformity_policies` | Dictionnaire métier (réaction) | **Expert métier / Backoffice** | config vivante, très lent | `ocr_bifunction/conformity_policy.py` |
-| **7 — Clefs use_case (auth)** | `ocr_use_case_keys` | Infra / auth (premier auth de la maquette) | **Opérateur** | secrets, très lent | `ocr_bifunction/use_case_key.py` |
+| **1 — Jobs + queue async** | `ocr_jobs_*` | Infra / exécution | **IT** | opérationnel / transient | **`ocr_bifunction/storage/repository.py` (`SqliteRepository`, table `ocr_jobs`)** |
+| **2 — Templates (+ critères validés)** | `ocr_templates_*` | Dictionnaire métier | **Expert métier / Backoffice** (PAS IT, PAS algo) | référence, lent | `ocr_bifunction/storage/template_repository.py` (seed = `templates/*.json`) |
+| **3 — Revue / curation** | `ocr_review_*` | Métier (revue) + staging | **User / reviewer** | curation, croissance organique | `ocr_bifunction/storage/review_repository.py` |
+| **4 — Politiques d'exécution** | `ocr_execution_policies` | Infra / exécution (contenu opéré par le Backoffice) | **Backoffice / opérateur** (l'IT possède le store, pas le contenu) | config vivante, très lent | `ocr_bifunction/governance/execution_policy.py` |
+| **5 — Registre des organismes** | `ocr_issuer_registry` | Dictionnaire métier (conformité) | **Expert métier / Backoffice** | référence curée, lent | `ocr_bifunction/governance/issuer_registry.py` |
+| **6 — Politiques de non-conformité** | `ocr_conformity_policies` | Dictionnaire métier (réaction) | **Expert métier / Backoffice** | config vivante, très lent | `ocr_bifunction/governance/conformity_policy.py` |
+| **7 — Clefs use_case (auth)** | `ocr_use_case_keys` | Infra / auth (premier auth de la maquette) | **Opérateur** | secrets, très lent | `ocr_bifunction/governance/use_case_key.py` |
 | **8 — Tables extraites (cellules)** | `ocr_document_table_cells` | Dictionnaire métier (la STRUCTURE, dans D2) + opérationnel (les VALEURS) | **Expert métier** (structure, une fois par layout) / **worker** (valeurs, par document) | référence lente + opérationnel | **aucun — sketch, rien de construit** |
 
 ## Domaine 1 — Jobs + queue (worker Python écrit)

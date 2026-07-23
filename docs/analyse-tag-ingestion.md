@@ -29,10 +29,10 @@ lane, elles deviennent locales et sûres.
 | Confiance | score OCR ∈ [0,1] | idem | `None` (exact) |
 | Complétude multi-pages | sans objet (1 page) | `conversion_guard` | `conversion_guard` |
 
-Sources : [reader.py:239](../ocr_bifunction/reader.py:239) (routage par suffixe),
-[reader.py:306](../ocr_bifunction/reader.py:306) (rendu 200 dpi),
-[reader.py:293](../ocr_bifunction/reader.py:293) (blocs PyMuPDF),
-[pipeline.extract_card_images](../ocr_bifunction/pipeline.py) (images CI intégrées, résolution native).
+Sources : [reader.py:239](../ocr_bifunction/reading/reader.py:239) (routage par suffixe),
+[reader.py:306](../ocr_bifunction/reading/reader.py:306) (rendu 200 dpi),
+[reader.py:293](../ocr_bifunction/reading/reader.py:293) (blocs PyMuPDF),
+[pipeline.extract_card_images](../ocr_bifunction/flow/pipeline.py) (images CI intégrées, résolution native).
 
 ## Ce que chaque décision parkée devient, une fois scopée
 
@@ -50,7 +50,7 @@ chantiers risqués en chantiers locaux**. C'est son argument le plus fort.
 
 Un document peut être **mixte**, et le code le gère déjà : le lecteur produit un `backend_name`
 `pymupdf+<moteur>` quand un même PDF a **des pages à couche texte ET des pages image**
-([reader.py](../ocr_bifunction/reader.py), calcul de `backend_name`). Un tag au niveau du DOCUMENT
+([reader.py](../ocr_bifunction/reading/reader.py), calcul de `backend_name`). Un tag au niveau du DOCUMENT
 serait donc un **mensonge** pour ces fichiers-là — exactement le genre de donnée fausse-en-silence
 que le projet a déjà rencontré avec `document.pages` vs `confidence.pages`
 ([[docling-produced-signal-confidence-pages]]).
@@ -80,7 +80,7 @@ C'est exactement la doctrine `expected_holder_name` du projet.
 **Pour**
 - Rend locaux 3 chantiers aujourd'hui risqués ou bloqués (tableau ci-dessus).
 - Rend la question « quel oracle valide ce changement ? » répondable par lane.
-- Rend explicite un routage **déjà réel mais implicite** ([reader.py:239](../ocr_bifunction/reader.py:239)).
+- Rend explicite un routage **déjà réel mais implicite** ([reader.py:239](../ocr_bifunction/reading/reader.py:239)).
 - Surface de config naturelle pour le métier (patron D4/D6), cohérent avec la fabrique.
 
 **Contre**

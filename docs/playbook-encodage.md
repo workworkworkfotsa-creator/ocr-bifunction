@@ -2,7 +2,7 @@
 
 > Doc **transverse** (pas propre à ce projet) : s'applique à toute frontière où du texte entre,
 > transite ou sort — API, ingestion BD, lecture de documents, export. L'instance *dans ce repo* est
-> [`ocr_bifunction/text_integrity_guard.py`](../ocr_bifunction/text_integrity_guard.py) ; le concept
+> [`ocr_bifunction/reading/text_integrity_guard.py`](../ocr_bifunction/reading/text_integrity_guard.py) ; le concept
 > est dans [dictionnaire-metier.md](dictionnaire-metier.md) (« arête sens »).
 > Contenu générique volontairement : aucun détail de stack ou de volumétrie interne.
 
