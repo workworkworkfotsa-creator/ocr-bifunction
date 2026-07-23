@@ -118,6 +118,7 @@ Un dossier = un concern. Les dépendances descendent : `flow` → `extraction`/`
 ocr_bifunction/
   paths.py                # les chemins repo, dérivés UNE fois (fail-loud si le repo bouge)
   llama_transport.py      # transport llama-swap unique — transverse, hors concern
+  identity_key.py         # la clé d'identité STRICTE — reconcile et les checks doivent partager
   reading/                # stage ① LIRE : sortir le texte ET sa géométrie
     reader.py             #   contrat OcrEngine/TextLine, couche texte, seuils image
     preprocess.py, conversion_guard.py, text_integrity_guard.py
@@ -139,7 +140,14 @@ ocr_bifunction/
   storage/                # les tables : store.py + les repositories au-dessus
   governance/             # les surfaces de config qu'un humain possède (D2..D6 + leviers)
   adapters/               # les entrées, jetables par doctrine
-    api_maquette.py       #   la porte HTTP + endpoints des surfaces
+    api_maquette/         #   la porte HTTP, une surface par module :
+      settings.py         #     tous les chemins — la 1re page qu'un intégrateur ouvre
+      contract.py         #     les enveloppes requête/réponse — CE QUE L'IT RÉIMPLÉMENTE
+      store_access.py     #     un singleton par surface + le verrou — LE module à réécrire pour MariaDB
+      spool.py, door.py   #     la salle d'attente + la lane sync (idempotence, admission, arêtes)
+      pages.py            #     les 5 pages HTML — zéro logique, jetables sans risque
+      review_routes.py    #     la surface humaine (file, corrections, suggestions)
+      governance_routes.py#     les 5 surfaces de config, un bloc CRUD par levier
     worker_watchdog.py    #   le worker async (recover → drain → sweep → draft)
     extract.py, main.py   #   les CLI
 proofs/*.py               # les preuves (oracle = runs réels) + les harnais de mesure

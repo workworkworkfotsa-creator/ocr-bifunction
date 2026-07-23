@@ -102,7 +102,7 @@ def run() -> int:
     rendered = pymupdf.Pixmap(first.content)
     # A4 at 150 dpi ~ 1240x1754 px; assert the order of magnitude, not the exact pixel.
     _check(
-        f"rendered at the declared dpi ({api_maquette.PAGE_RENDER_DPI}): "
+        f"rendered at the declared dpi ({api_maquette.settings.PAGE_RENDER_DPI}): "
         f"{rendered.width}x{rendered.height} px",
         rendered.width > 800 and rendered.height > rendered.width,
     )

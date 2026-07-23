@@ -28,7 +28,7 @@ from datetime import date
 # on purpose so the anti-fraud name match stays IDENTICAL to the CI reconcile: strict, no
 # fuzzy tolerance — "Ahmed" and "Hamed" must not collide (the sibling-fraud core), accent
 # folding is the only allowance (cf. memory reconcile-name-match-strict).
-from ocr_bifunction.extraction.reconcile import _normalize as _strict_identity_key
+from ocr_bifunction.identity_key import strict_identity_key as _strict_identity_key
 from ocr_bifunction.validation.verdict import Verdict
 
 # A single validation failure, tagged by what it means for ROUTING. The kind depends on

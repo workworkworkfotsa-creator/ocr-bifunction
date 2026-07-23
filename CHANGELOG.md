@@ -23,6 +23,29 @@ the date, and bump `version` in `pyproject.toml` to match the tag.
 ## [Unreleased]
 
 ### Changed
+- **The HTTP door becomes a package, one module per surface.** `api_maquette.py` was 1597 lines
+  holding the contract, the stores, the intake lane, the review surface, five config surfaces and
+  the HTML pages. It is now `adapters/api_maquette/` split along the banners the file already
+  carried: `settings` (every path, first stop for an integrator), `contract` (the request/response
+  envelopes — what another stack reimplements), `store_access` (one singleton per surface behind one
+  lock — the only module a real database rewrites), `spool`, `door`, `pages`, `review_routes`,
+  `governance_routes`. Every body was lifted verbatim by line range and no import was written by
+  hand: each module got the original import block and the linter pruned it. Behaviour is unchanged
+  and proven so — the 35-route table diffs empty on paths, methods and names, and the whole proof
+  suite replays identically, including the fourteen harnesses that drive the door end to end.
+  The package exports only `app`; anything else a proof touches now names its real module, because
+  a re-export would have hidden the trap below.
+- **`load_smoke` patches `api_maquette.door._handle_validated_document`**, not the package. The probe
+  is installed by rebinding a module global, which only works when the endpoint resolves that name in
+  its own module — moving the endpoint without repointing the probe would have left it silently
+  uncalled. The existing `1 <= probe.peak` lower bound is what proves the patch is live.
+- **The identity key moves out of `reconcile` into `ocr_bifunction/identity_key.py`.** It was
+  imported by `validation/checks.py`, which put a package cycle between two concerns for one string
+  function. It belongs to neither: reconcile compares a recto against its MRZ, the checks compare a
+  name against a reference or a registry, and both need the SAME key or the two answers disagree on
+  what "same person" means. Body unchanged; it now carries its own warning that folding accents does
+  not loosen the match — real fraud is the close-name sibling, so tolerance there is a security
+  trade-off, never free.
 - **The flat layout becomes a tree by concern.** 38 modules in one folder and 60 scripts at the repo
   root had stopped being navigable. `ocr_bifunction/` is now `reading/` (+ `engines/`),
   `extraction/`, `validation/`, `flow/`, `knowledge/`, `storage/`, `governance/`, `adapters/`;
