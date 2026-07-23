@@ -13,6 +13,63 @@
 > coller de valeur réelle (nom, n°doc, adresse) dans le code, les docs ou un message de commit ; `0_Aller_retour_IT/`,
 > `inputs/`, `outputs/`, `models/`, `spool/` restent gitignorés (vérifié absent du tree poussé).
 
+## État au 2026-07-23 — le plat devient une arborescence PAR CONCERN (déplacement pur)
+
+**Rien n'a changé de comportement** : c'est un refactor iso-sortie, validé comme tel. 38 modules
+plats dans `ocr_bifunction/` + 60 scripts à la racine étaient devenus illisibles.
+
+**Ce qui tenait le plat en place, mesuré avant de bouger (les 3 contraintes qui ont dicté le
+découpage)** :
+1. **`ocr_bifunction` n'était PAS installé** (pas de `[build-system]`, uv en projet virtuel) —
+   `import ocr_bifunction` ne marchait que parce que `sys.path[0]` = racine du repo. Tout fichier
+   descendu d'un cran perdait l'import.
+2. **`PROJECT_ROOT = Path(__file__).parent` dans 28 fichiers** → `templates/`, `ui/`, `inputs/`, et
+   le lancement subprocess du worker. Un déplacement le cassait **en silence** : un dossier
+   `templates/` inexistant ne lève pas, il charge zéro template et l'extraction ne rend rien.
+3. **Les 47 harnais s'importent entre eux** (`draft_smoke` ← 11 fichiers ; `batch_check` ←
+   `verdict_flow_check`) → séparer `smokes/` et `checks/` aurait cassé ces imports. D'où **un seul
+   `proofs/` plat**, décision utilisateur.
+
+**Livré :**
+- **`ocr_bifunction/` par concern** : `reading/` (+ `reading/engines/` pour les 3 slots OCR) ·
+  `extraction/` · `validation/` · `flow/` · `knowledge/` · `storage/` · `governance/` ·
+  `adapters/`. `llama_transport.py` et `paths.py` restent à la racine du package — **transverses,
+  donc délibérément hors concern** (c'est le fait de n'être dans aucun dossier qui le dit).
+- **Un seul renommage** : `validation.py` → `validation/checks.py` (sinon
+  `ocr_bifunction.validation.validation`) — et c'est bien le registre de checks. Tout le reste
+  garde son nom, y compris `api_maquette.py` dont le « maquette » porte la doctrine proxy.
+- **Les 4 entry points passent en `adapters/`** (décision utilisateur) : c'est ce qui rend
+  `import api_maquette` résoluble depuis `proofs/` **sans un seul bricolage `sys.path`**.
+  Invocation : `uv run uvicorn ocr_bifunction.adapters.api_maquette:app`,
+  `uv run python -m ocr_bifunction.adapters.worker_watchdog`.
+- **`ocr_bifunction/paths.py`** : PROJECT_ROOT dérivé UNE fois, + `TEMPLATES_/UI_/INPUTS_/OUTPUTS_
+  DIRECTORY`, `ADAPTERS_/PROOFS_DIRECTORY`. **Fail-loud** : si `PROJECT_ROOT` ne contient pas de
+  `pyproject.toml`, il lève à l'import — mieux qu'un chemin plausible mais faux qui rend zéro
+  template sans erreur. C'est la classe de panne #2 supprimée, pas contournée.
+- **Projet installable en éditable** (`[build-system] = hatchling`) : le source reste dans le repo,
+  donc `paths.PROJECT_ROOT` continue de résoudre juste (vérifié : `_editable_impl_*.pth`).
+- **60 scripts racine → `proofs/`.** La racine ne contient plus **aucun `.py`**.
+
+**Oracle — c'est un refactor ISO-SORTIE, validé comme tel, pas par « les tests passent »** :
+- **47 harnais rejoués, `diff` VIDE** sur les codes de sortie et les lignes de résumé (baseline
+  capturée AVANT tout déplacement). Les 15 non-zéro sont des scripts qui réclament un argument ou
+  un llama-server — **identiques avant/après**, ce qui est le point.
+- **`ci_geometry_fingerprint` sur le vrai CI : `diff` VIDE.** Comparé contre un `git worktree` du
+  commit pré-migration (`a8a76ba`) synchronisé à part, pour que l'ancien code tourne vraiment —
+  mêmes 7 empreintes, même `verdict=auto`, mêmes `key_matches`, mêmes comptes de spans.
+- `ruff check` + `ruff format --check` verts (la porte du `pre-commit`).
+
+**⚠️ Ce que le découpage NE règle pas, nommé pour ne pas passer pour un oubli** : il reste **un
+cycle au niveau des packages** — `extraction.template` → `validation.checks` → `extraction.reconcile`
+(pour `_normalize`, la clé d'identité stricte). Aucun cycle d'import Python (aucun module ne se
+réimporte), donc rien ne casse ; mais la couche n'est pas pure. Le fix serait de sortir `_normalize`
+vers un module partagé — **une modification de code, pas un déplacement**, donc hors de ce passage.
+
+**Pas fait volontairement** : découper `api_maquette.py` (1597 l.). C'est une **scission**, pas un
+déplacement — autre classe de changement, autre oracle. Et la prose historique des `.md` n'a pas été
+réécrite : seuls les **liens** `](...)` et les **commandes** `uv run …` l'ont été (réécrire un
+journal de 1900 lignes serait du bruit, pas de la clarté).
+
 ## ▶ NEXT (posé 2026-07-21) — **v0.3.0 publiée** ; question ouverte : le chemin LOURD
 
 **Release `v0.3.0` taggée et poussée** (thème : deux pannes de lecture silencieuses fermées + la
@@ -181,7 +238,7 @@ span**, et `reasons` porte « human corrected 'total_ht' ». Plus `field_correct
 et dont la page affichée n'est pas pilotable. Or c'est exactement là que la provenance existe.
 
 **Livré :**
-- **`GET /v1/jobs/{id}/page?index=&page=`** ([api_maquette.py](api_maquette.py)) : rend UNE page en
+- **`GET /v1/jobs/{id}/page?index=&page=`** ([api_maquette.py](ocr_bifunction/adapters/api_maquette.py)) : rend UNE page en
   PNG (`get_pixmap`, `PAGE_RENDER_DPI = 150`). Une image est sa propre page et est servie telle
   quelle. Tout devient un `<img>` → superposition uniforme, et « aller à la page 12 » devient
   possible. Rendu à chaque requête : le cache est une décision d'intégration, pas de proxy.
@@ -252,8 +309,8 @@ intacte. 22 suites de régression vertes, `ruff` propre.
 
 **Le constat qui a déclenché ça, en préparant le rectangle** : un `bbox` livré hier était en fait
 **impossible à placer**. Il existait dans DEUX systèmes d'unités selon le backend — points PDF à
-72 dpi pour la couche texte ([reader.py:293](ocr_bifunction/reader.py:293)), pixels d'un rendu
-**200 dpi** pour l'OCR ([reader.py:306](ocr_bifunction/reader.py:306)), soit ~2,78× d'écart — et
+72 dpi pour la couche texte ([reader.py:293](ocr_bifunction/reading/reader.py:293)), pixels d'un rendu
+**200 dpi** pour l'OCR ([reader.py:306](ocr_bifunction/reading/reader.py:306)), soit ~2,78× d'écart — et
 le payload ne disait pas lequel, ni aucune dimension de page. Un consommateur ne pouvait donc ni
 interpréter les valeurs ni se rabattre sur un pourcentage.
 
@@ -303,13 +360,13 @@ tard »).
 
 **Fait, précisément parce que le smoke ne prouve pas une conception** (leçon `table_corroboration` :
 6/6 verts parce que le test figeait mon hypothèse, tuée par le 1er run réel). Run :
-`uv run python extract.py "<facture born-digital de inputs/>"` (lane **pattern**).
+`uv run python -m ocr_bifunction.adapters.extract "<facture born-digital de inputs/>"` (lane **pattern**).
 
 **Ce qui est prouvé** : 3 champs sur 3 portent une provenance, `origin:"pattern"`, **page correcte**.
 La chaîne lecture → extraction → payload D1 tient sur un vrai document.
 
 **L'hypothèse que j'avais nommée est CONFIRMÉE — le span est le BLOC, pas la valeur.** Cause à la
-source : [reader.py:293](ocr_bifunction/reader.py:293) construit **un `TextLine` par BLOC** PyMuPDF
+source : [reader.py:293](ocr_bifunction/reading/reader.py:293) construit **un `TextLine` par BLOC** PyMuPDF
 (`get_text("blocks")`), pas par ligne. Le mapping plage-de-caractères → lignes est fidèle ; c'est la
 granularité de LECTURE qui borne tout. Mesuré sur la page 0 (PyMuPDF 1.27.2.3) :
 - **17 blocs pour 80 mots** ; hauteurs de blocs : min 13,4 pt · **médiane 27,5 pt** · **max 252,3 pt**

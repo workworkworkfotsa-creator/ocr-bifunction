@@ -39,7 +39,7 @@ rien à changer pour elles côté serving.
    `llama-server` n'a PAS d'auth ; seule la porte applicative est exposée.
 5. **Env Python** : `LLAMA_SWAP_URL` (+ clés modèle si renommées dans le yaml).
 6. **Validation à froid AVANT de brancher le flux** (les 3 slots, ~10 min) :
-   - GBNF : `uv run python gbnf_diag.py` (le test « BANANE » — la grammaire contraint bien la sortie) ;
+   - GBNF : `uv run python proofs/gbnf_diag.py` (le test « BANANE » — la grammaire contraint bien la sortie) ;
    - un appel `/v1/embeddings` (dim 768 attendue) ;
    - un appel LightOnOCR sur une image de test (le multimodal répond, pas de texte-only silencieux).
 7. **Windows-only à NE PAS porter** : `HF_HUB_DISABLE_SYMLINKS=1`, contournements cmd.exe/PATH —
