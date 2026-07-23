@@ -13,6 +13,183 @@
 > coller de valeur réelle (nom, n°doc, adresse) dans le code, les docs ou un message de commit ; `0_Aller_retour_IT/`,
 > `inputs/`, `outputs/`, `models/`, `spool/` restent gitignorés (vérifié absent du tree poussé).
 
+## ▶ NEXT (posé 2026-07-23) — le routage d'escalade est ACTÉ, le déclencheur a DISPARU
+
+**Décision utilisateur du 2026-07-23.** La question « quel signal déclenche l'escalade » n'a pas été
+résolue : elle a été **dissoute**. Trois branches, toutes décidées mécaniquement, aucune n'estimant
+la qualité d'une lecture :
+
+| branche | traitement |
+|---|---|
+| **born-digital** | couche texte, exacte — rien à escalader. Le test existe déjà et il est gratuit. |
+| **scanné + document officiel** (CI, habilitation, passeport…) | la cascade CI actuelle, qui a son oracle mécanique (les 4 checksums MRZ) |
+| **scanné + tout le reste** (SOP, contrats, formulaires) | **les 2 moteurs d'office**, asynchrone, puis escalade humaine |
+
+**Ce qui a rendu ça possible** : le discriminant n'est PAS un signal de qualité, c'est
+`born-digital ?` — mécanique, exact, déjà implémenté. Et l'objection décisive de l'utilisateur a
+écarté l'option « exigence de capacité déclarée par le template » : **un SOP ou un contrat n'a pas
+de template**, donc rien à déclarer.
+
+**Mesuré sur le corpus dur réel** (`inputs/cplx/`, 7 documents, 165 pages) : **153 pages
+born-digital, 12 scannées**. Les SOP et contrats (Annexe FREE, Contrat FTTH, les deux STAS de 50 et
+55 pages) sont à 100 % couche texte — ils ne verront **jamais** le VLM. Coût de la règle sur ce
+corpus : **1,5 h de nuit** contre 2 min pour RapidOCR seul.
+
+**Les trois points tranchés en même temps :**
+1. **Le routage est PAR PAGE, pas par document** — acté. Le doc Axione est à 83 % born-digital :
+   2 pages scannées dans un PDF autrement natif. Router au document enverrait 12 pages au VLM pour
+   2. Le reader travaille déjà par page (`_is_image_dominant`), le routage doit suivre.
+2. **La politique est CONFIGURABLE via la table IT** — acté. Le ratio 153/12 mesuré ici n'est pas une
+   loi (un fonds d'archives scannées l'inverserait) : le mécanisme tient quel que soit le mix, le
+   COÛT non. Donc défaut en constante Python + override en table, lu au runtime — le patron des
+   surfaces existantes (`execution_policy`, `capacity_settings`). **La forme exacte de la surface
+   reste à définir.**
+3. **Ce que « les 2 » produisent comme record : CHANTIER SÉPARÉ** — acté. Direction donnée :
+   présenter **les 2 lectures + l'original** et **reconstruire** le résultat final. Ce n'est donc pas
+   « choisir laquelle gagne » : c'est une surface de réconciliation humaine à concevoir. À ne pas
+   improviser dans le chantier de routage.
+
+**⚠️ Le prix à ne pas oublier dans ce chantier** : la lane VLM rend une valeur **sans span et sans
+score**. Le reviewer qui hérite d'une page escaladée n'a **aucune zone à aller voir** — précisément
+sur les documents qui en ont le plus besoin. C'est ce qui rend le point 3 non trivial.
+
+## État au 2026-07-23 (suite) — LE DOCUMENT DUR EST ARRIVÉ, et il réfute trois candidats
+
+Le NEXT disait : « Ce qui manque matériellement : un vrai scan de mauvaise qualité. **Chercher le
+document d'abord.** » Il est là (utilisateur, `inputs/cplx/`, formulaire manuscrit scanné 10 pages,
+avec un filigrane « SAMPLE »). Tout ce qui suit est **mesuré sur lui**, jamais supposé.
+
+### `ReadResult.confidence` est MORTE comme déclencheur — trois réfutations indépendantes
+
+1. **Elle classe à l'envers.** Le scan dur sort à **0,9726** ; le vrai CI qui valide en `auto` sort à
+   **0,9580**. Un seuil escaladerait le bon document avant le mauvais.
+2. **Elle ne voit pas le contenu disparaître.** Une page qui perd **27 % de ses caractères** garde son
+   score (0,982 → 0,979).
+3. **Elle est haute sur du texte faux.** `No faruly delalls giver` (« No family details given »
+   entièrement raté) est noté **0,820** ; `Please consider if you need to contact the P lce` — de
+   l'IMPRIMÉ amputé — est noté **0,986**. Des lignes légitimes courtes (`r)`) tombent à 0,578.
+
+**Cause racine, et elle est définitive** : le score mesure la **netteté des glyphes**, pas la justesse
+du mot. Aucun seuil ne répare ça. Le candidat n°1 du tableau ci-dessous est clos.
+
+### La DENSITÉ de texte est morte aussi, pour une raison qui n'avait pas été anticipée
+
+Le HANDOFF lui prêtait la faiblesse « un document réellement pauvre en texte est un faux positif ».
+C'est vrai (page 9, ratio 9 contre 116–188 ailleurs : c'est le filigrane seul). Mais le vrai problème
+est ailleurs : **RapidOCR DÉTECTE le manuscrit**, il émet des lignes dessus — il le transcrit faux.
+Donc le ratio caractères/encre reste **stable de 116 à 188** sur les 9 pages écrites, et la page la
+plus manuscrite est **indiscernable** d'une page de notice imprimée.
+
+Corollaire : **tout signal fondé sur la DÉTECTION est aveugle par construction.** Mesuré et réfuté :
+« encre qu'aucune boîte ne couvre » (page manuscrite 20,8 % contre page imprimée 20,4 % — le signal
+mesure surtout les traits du formulaire) et « variance des hauteurs de boîte » (0,278 contre 0,251).
+Seule la **sortie texte** trahit le problème.
+
+### `PerspectiveRectifier` : construit, câblé nulle part, et NUISIBLE ici
+
+Il existe ([preprocess.py:114](ocr_bifunction/reading/preprocess.py:114)) — détection des 4 coins +
+redressement — et **3 occurrences en tout** dans le repo : sa définition et deux dans
+`proofs/preprocess_ab.py`. Aucun chemin de production ne l'atteint.
+
+Testé sur ce document : il se déclenche sur **3 pages / 10** et **dégrade les trois** —
+caractères 905→848, 1849→1694, **1538→1126 (−27 %)**. Page 7 il ne garde que **65 % de la hauteur** :
+le détecteur accroche un cadre INTERNE du formulaire, pas le bord de la feuille. Son docstring dit
+« un mauvais warp est pire que rien » ; il ne sait pas que le sien est mauvais. **Ne pas le câbler
+sans un oracle qui valide le warp.**
+
+### Le TROU DE CAPACITÉ — ce n'est pas un gradient de qualité
+
+Sur une question à cases, RapidOCR rend `Yes` puis `No`, **sans dire laquelle est cochée**.
+LightOnOCR rend `<td>Yes ☑</td><td>No ☐</td>`. Or **pour un formulaire, la réponse est entièrement
+dans la case** — pas dans le texte. RapidOCR ne lit donc pas les réponses, **quel que soit son score**.
+
+Ce n'est pas « escalader quand on doute » : le moteur bon marché **ne produit pas la donnée**. Le
+déclencheur n'est pas une mesure de qualité, c'est une **exigence de capacité du template**.
+
+### Verdict A/B utilisateur (2026-07-23) : LightOnOCR nettement meilleur sur le manuscrit
+
+Comparé page par page par l'utilisateur, qui a tranché. Page 3 (quasi tout manuscrite) :
+
+| RapidOCR | LightOnOCR |
+|---|---|
+| une phrase manuscrite rendue en 2 fragments, ~8 mots sur 10 déformés (`stater`, `akusive`, `uher`…) | **la même phrase, correcte et en un seul bloc** |
+| `srmrs` + `Are g og   n o g  ge` — **charabia intégral, contenu irrécupérable** | **la phrase manuscrite entière, lisible** (1 lettre manquante sur 1 mot) |
+| `Nae` | `None` |
+| `contact the P lce` | `contact the Police` |
+
+Il récupère le manuscrit ET répare l'imprimé amputé, plus la structure de table (HTML) et l'état des
+cases. Coût mesuré : **443 s/page à chaud, 644 s à froid**, contre 11 s pour RapidOCR (**38×**).
+
+**⚠️ Correction à la doc** : le docstring de `LightOnOcrEngine` annonce ~171 s/img. Mesuré **443 s**.
+Et son **timeout par défaut de 600 s** ([lightonocr_engine.py:75](ocr_bifunction/reading/engines/lightonocr_engine.py:75))
+**a été dépassé** sur la première requête — parce qu'elle paie le CHARGEMENT du modèle en plus de
+l'inférence. Le défaut frappe le démarrage à froid, pas les pages denses.
+
+**⚠️ Et LightOnOCR casse la redondance inter-champs comme oracle.** Le formulaire demande deux fois
+l'adresse (2 champs, même valeur). RapidOCR en rend **deux transcriptions DIVERGENTES** — chacune
+fautive à un endroit différent, donc le désaccord la dénonce. LightOnOCR rend **deux fois la même**,
+fautive d'un caractère : **stable et faux**. Idem sur le code postal (2 lectures fausses et
+différentes côté RapidOCR, 1 lecture fausse et constante côté VLM).
+Un modèle de langage produit du plausible et du constant ; c'est sa panne signature. Le désaccord
+inter-lectures dénonce le lecteur incohérent et est **aveugle au lecteur assuré** — même défaut
+structurel que `confidence`, un cran plus haut.
+
+### LE FILIGRANE — un calque rigide, donc soustractible sans rien deviner
+
+Trouvé parce que le VLM a rendu `Unknown ☑ Yes ☐ No ☑` : **deux cases cochées**. Vérifié à l'image par
+l'utilisateur : `No` est cochée, `Unknown` ne l'est pas — **le trait du « SAMPLE » traverse la case
+`Unknown`** et le VLM le lit comme une coche. Le même trait ampute une lettre d'un mot manuscrit
+qu'il traverse, sur la ligne du dessus.
+
+**Mode de panne le pire possible** : la sortie est du HTML bien formé, cohérent, plausible et faux ;
+le VLM n'émet **aucun score par ligne**, donc il n'y a rien à seuiller.
+
+Mesuré : le filigrane occupe **les mêmes pixels sur les 10 pages (99,0 à 99,6 % de recouvrement)**.
+Et il se retrouve **sans page blanche de référence** : l'intersection des masques gris (bande
+150–235, qui exclut le texte noir) des 9 autres pages le rend à **97 %, avec 0 % de bruit**.
+
+> **Méthode** : un motif GRIS, aux MÊMES pixels, sur TOUTES les pages = un calque. L'intersection des
+> masques gris le donne exactement. Aucun modèle, aucun seuil sur le contenu.
+
+**Ce que ça ne fait PAS** : là où le filigrane croise de l'encre réelle, l'effacer laisse un trou —
+ça supprime les marques FANTÔMES, ça ne répare pas les vraies. La fausse coche `Unknown` est sur fond
+blanc, donc elle, elle disparaît.
+
+### Le parallèle CI, vérifié à la source — même classe de problème
+
+`read_verso_mrz` ([pipeline.py:90](ocr_bifunction/flow/pipeline.py:90)) : **guilloché imprimé
+par-dessus la MRZ** → lecture corrompue → `EnhancePreprocessor` (désaturation + flou médian + seuil
+adaptatif). C'est la MÊME classe que le filigrane sur le formulaire : un calque qui corrompt la
+lecture. Correctifs différents (filtre statistique vs intersection inter-pages), problème identique.
+
+**Et sa cascade est le patron à réutiliser** : `raw -> enhance -> escalation`, « chaque étage garde la
+lecture qui passe LE PLUS de check digits, égalité = on reste sur l'étage le moins cher ». Ce n'est
+pas une porte binaire sur un seuil : c'est **un oracle mécanique appliqué à chaque étage**, le moins
+cher gagnant les égalités.
+
+### Candidats de déclencheur — état après cette journée
+
+| Signal | État |
+|---|---|
+| Confiance OCR moyenne | **RÉFUTÉ** — 3 fois, mesuré |
+| Densité de texte | **RÉFUTÉ** — le manuscrit est détecté, donc la densité est normale |
+| Encre orpheline / géométrie des boîtes | **RÉFUTÉ** — mesuré, ne sépare pas |
+| Redondance inter-champs (2 lectures d'une même valeur) | **PARTIEL** — dénonce RapidOCR, aveugle au VLM |
+| Suites de ≥3 espaces dans une ligne | **4/539 lignes, 0 faux positif** — mais ne voit que le charabia dispersé (piste mise de côté par l'utilisateur) |
+| Non-mots (correcteur orthographique) | **NON TESTÉ** — aucune lib installée, dépendance à décider |
+| Groupe de cases mutuellement exclusives ≠ 1 coche | **NOUVEAU, en forme de checksum** — prouve que la TRANSCRIPTION est fausse, jamais que la personne l'est |
+| Échec de match de template | **toujours debout**, non testé |
+| Exigence de capacité déclarée par le template | **NOUVEAU** — pas un signal de qualité : le moteur bon marché ne produit pas la donnée |
+
+**Recadrage utilisateur (2026-07-23)** : l'escalade est **asynchrone**, donc la latence est gratuite.
+La porte ne protège plus la justesse, seulement le **CPU** (443 s contre 11 s). Le déclencheur devient
+un arbitrage **économique** : un faux négatif coûte du temps machine, pas une erreur métier. Ce qui
+rend recevable l'option « VLM sur tout, en batch de nuit ».
+
+**Artefacts** (gitignorés, PII/contenu réel) : `outputs/Handwritten-….ocr.txt` (539 lignes + score),
+`outputs/rectifier_ab.txt`, `outputs/lightonocr_ab.txt` (page 7), `outputs/lightonocr_page4.txt`,
+`outputs/lightonocr_page3.txt`.
+
 ## État au 2026-07-23 (suite) — les deux réserves du découpage sont levées
 
 Les deux points laissés debout ci-dessous ont été traités. **Motif utilisateur : la structure
@@ -134,7 +311,12 @@ déplacement — autre classe de changement, autre oracle. Et la prose historiqu
 réécrite : seuls les **liens** `](...)` et les **commandes** `uv run …` l'ont été (réécrire un
 journal de 1900 lignes serait du bruit, pas de la clarté).
 
-## ▶ NEXT (posé 2026-07-21) — **v0.3.0 publiée** ; question ouverte : le chemin LOURD
+## (résolu 2026-07-23) NEXT posé le 2026-07-21 — **v0.3.0 publiée** ; le chemin LOURD
+
+> ⚠️ **La question ouverte de cette section est CLOSE** — voir le NEXT du 2026-07-23 en tête de
+> fichier. Le tableau de candidats ci-dessous est conservé pour sa valeur d'archive : trois de ses
+> lignes ont été réfutées par la mesure le 2026-07-23, et le déclencheur qu'il cherchait s'est
+> révélé inutile une fois le routage posé sur `born-digital ?`. Ne pas repartir de ce tableau.
 
 **Release `v0.3.0` taggée et poussée** (thème : deux pannes de lecture silencieuses fermées + la
 correction humaine). `[Unreleased]` réamorcé vide. Page Release GitHub non créée (facultative, le
@@ -302,7 +484,7 @@ span**, et `reasons` porte « human corrected 'total_ht' ». Plus `field_correct
 et dont la page affichée n'est pas pilotable. Or c'est exactement là que la provenance existe.
 
 **Livré :**
-- **`GET /v1/jobs/{id}/page?index=&page=`** ([api_maquette.py](ocr_bifunction/adapters/api_maquette.py)) : rend UNE page en
+- **`GET /v1/jobs/{id}/page?index=&page=`** ([api_maquette.py](ocr_bifunction/adapters/api_maquette/__init__.py)) : rend UNE page en
   PNG (`get_pixmap`, `PAGE_RENDER_DPI = 150`). Une image est sa propre page et est servie telle
   quelle. Tout devient un `<img>` → superposition uniforme, et « aller à la page 12 » devient
   possible. Rendu à chaque requête : le cache est une décision d'intégration, pas de proxy.
@@ -686,7 +868,7 @@ en 5 points, signaux de détection, politique de réparation, diagnostic BD en 3
 dérouler à chaque nouvelle étape). Concept → [[arête « sens »]] du dictionnaire.
 
 **LIVRÉ (2026-07-20) — la LOGIQUE du garde, prouvée sur chaînes fabriquées (pas de PDF requis).**
-`ocr_bifunction/text_integrity_guard.py` : `assess_text_integrity(text) -> TextIntegrityAssessment`
+`ocr_bifunction/reading/text_integrity_guard.py` : `assess_text_integrity(text) -> TextIntegrityAssessment`
 (PUR, model-agnostic). Dispositions `clean` / `repairable_mojibake` / `irreversible_loss` /
 `suspect_encoding`, précédence irréversible > réparable > suspect > clean. Deux signaux vérifiés sur
 `ftfy` 6.3.1 : `U+FFFD` (perte, flag dur, aucun repair) et `ftfy.badness.is_bad` (mojibake) +
@@ -782,7 +964,7 @@ L'ACTION** : convertir en lots, rejouer toute page droppée sous une **schedule 
 disait DIFFÉRÉ est fait, et **prouvé bout-en-bout sur Docling réel**.
 
 **Livré :**
-- **`ocr_bifunction/resilient_conversion.py`** (PUR, converter-agnostique comme `conversion_guard`) :
+- **`ocr_bifunction/reading/resilient_conversion.py`** (PUR, converter-agnostique comme `conversion_guard`) :
   Protocol `PageRangeConverter`, `reconcile_page_range_conversion(expected_page_count, converter, *,
   batch_size_schedule=DEFAULT_BATCH_SIZE_SCHEDULE)`. **Rounds décroissants** : round 0 = tout le doc
   en lots de `schedule[0]` ; round k = re-chunk des pages ENCORE manquantes à `schedule[k]` (plafond).
@@ -791,7 +973,7 @@ disait DIFFÉRÉ est fait, et **prouvé bout-en-bout sur Docling réel**.
   (non vide, strictement décroissant, finit par 1). Réutilise `conversion_guard.assess_page_coverage`
   (porte de complétude) + `low_layout_pages` (forme, JAMAIS rejouée). `DEFAULT_BATCH_SIZE_SCHEDULE =
   [16, 8, 4, 2, 1]` (à CALIBRER).
-- **`ocr_bifunction/docling_page_range_converter.py`** (seule pièce impure) : adaptateur Docling
+- **`ocr_bifunction/reading/docling_page_range_converter.py`** (seule pièce impure) : adaptateur Docling
   (`convert(path, page_range=…)` → surface produced/status/layout/markdown). Vérifié Docling 2.107.0.
 - **Câblage opt-in** `reader.py` + `router.py` : `read_document(..., heavy_page_converter_factory=…)`
   → `_read_pdf_resilient` (markdown page-ordonné en `.text`, `missing_pages`/`low_form_pages` sur
@@ -853,7 +1035,7 @@ en lot frais → le contenu n'est pas en cause, c'est l'accumulation dans une co
 Implication : cible prod dédiée 8 Go a de la marge ; le fix lourd (batching `page_range`)
 est DIFFÉRÉ — on détecte et on route vers l'humain plutôt que sur-ingénierer.
 
-**Livré — `ocr_bifunction/conversion_guard.py`** (léger, pré-vérif + détection, PAS de
+**Livré — `ocr_bifunction/reading/conversion_guard.py`** (léger, pré-vérif + détection, PAS de
 batching) : `page_count` (le dénominateur), `assess_page_coverage` (pur, agnostique au
 type ET au converter — attrape erreur+incomplet en un check), `low_layout_pages` (signal
 forme séparé). **UNIVERSEL, pas SOP-spécifique** (demande utilisateur) : toute lecture
@@ -879,7 +1061,7 @@ remplissage + le moteur/rétention — jamais la forme.
 lui-même — hiérarchie, renvois — n'existe pas encore ; construire une logique de
 profondeur sans lecteur pour la consommer serait du code inerte, contraire à la
 discipline fail-loud du projet) :
-- **`ocr_bifunction/use_case_key.py`** (neuf, D7) : `UseCaseKeyRepository` (patron
+- **`ocr_bifunction/governance/use_case_key.py`** (neuf, D7) : `UseCaseKeyRepository` (patron
   leviers), clef hashée SHA-256 (secret brut jamais stocké, affiché une seule fois à la
   création), `resolve_use_case` pur. **Défaut silencieux** : requête sans clef →
   `use_case="ci_pii"`, comportement inchangé pour tout appelant antérieur (zéro
@@ -918,7 +1100,7 @@ discipline fail-loud du projet) :
 >   **non-conforme** (avant : RAG/needs_review) — décision B-4, couvert par `async_type_mismatch_smoke`.
 > - CI escalation reject obéit maintenant à la politique de conformité (iso avec le block par défaut).
 >
-> **Nouveaux fichiers** : `ocr_bifunction/llama_transport.py` (C), `ocr_bifunction/validation.py` (E),
+> **Nouveaux fichiers** : `ocr_bifunction/llama_transport.py` (C), `ocr_bifunction/validation/checks.py` (E),
 > `async_type_mismatch_smoke.py` (B-3). `escalation_reject_smoke.py` ré-ancré sur le nouveau seam.
 >
 > **Self-healing review de `HEAD~9..HEAD` passée (2026-07-13, commit `931c4cd`).** 5 agents (sécu /
@@ -940,16 +1122,16 @@ discipline fail-loud du projet) :
 - **F — durcir le contrat `OcrEngine`/`TextLine`** — FAIT (`65eb695`) : `TextLine.__post_init__` fail-loud (bbox len-4 + ordonné, confidence∈[0,1]) + accesseurs `x0/y0/x1/y1/width/height` (fin de l'accès `bbox[0..3]`).
 
 ### A — Verdict value object (FAIT)
-- **`ocr_bifunction/verdict.py`** : `Verdict(AUTO/REVIEW/REJECT)`, `from_reasons(reject, review)` =
+- **`ocr_bifunction/validation/verdict.py`** : `Verdict(AUTO/REVIEW/REJECT)`, `from_reasons(reject, review)` =
   l'UNIQUE précédence `reject>review>auto`, `.d1_status`/`.wire_status` = les seules sérialisations.
-- **`ocr_bifunction/status.py`** : leaf des `STATUS_*` (`repository.py` les ré-exporte via `X as X`).
+- **`ocr_bifunction/validation/status.py`** : leaf des `STATUS_*` (`repository.py` les ré-exporte via `X as X`).
 - Vocabulaire canonique **auto/review/reject** (`human` retiré partout, colonne D1 + wire compris).
 - **Bug fermé** : `worker_watchdog._terminal_from_record` ne collapse plus `reject`→needs_review.
 - Oracle vert : `verdict_check` 11/11, `reconcile_verdict_check` 5/5, `verdict_flow_check` 7/7,
   `escalation_reject_smoke` 5/5, `context_checks_check` 14/14, `checks_check` 12/12 + smokes FastAPI.
 
 ### D — Store + adaptateur in-memory (FAIT)
-- **`ocr_bifunction/store.py`** : `Store(database=":memory:"|chemin, *, clock, check_same_thread)` =
+- **`ocr_bifunction/storage/store.py`** : `Store(database=":memory:"|chemin, *, clock, check_same_thread)` =
   une connexion + `clock()` + `ensure_schema(ddl, *, table, migrations)` (le connect/executescript/
   PRAGMA-migrate/commit, une seule fois). `Store(":memory:")` = la même SQL en mémoire (repos
   partageant UNE connexion — des `:memory:` séparés = bases vides distinctes).
@@ -967,7 +1149,7 @@ discipline fail-loud du projet) :
 > type-déclaré, et champs ci-native `missing` / `verso_read_path` sur `DocumentRecord`). Gardés comme
 > archive du raisonnement, ne pas ré-exécuter.
 
-**Step 1 FAIT** : **`ocr_bifunction/intake.py`** — `handle_document(item, templates_directory, engine, *,
+**Step 1 FAIT** : **`ocr_bifunction/flow/intake.py`** — `handle_document(item, templates_directory, engine, *,
 escalation_engine=None, templates=None, context=None, today=None, conformity_policies=None) ->
 DocumentOutcome` (PUR, ne touche AUCUN store) : compose `orchestrator.process_document` (pur, inchangé)
 + type-mismatch + réaction non-conformité. Plus `job_from_outcome(outcome, *, source, request_id,
@@ -1289,7 +1471,7 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   `template_repository.py` — piège attrapé : l'upsert D2 aurait silencieusement PERDU le bloc) ;
   **assignation par le reviewer à la promotion** (3 selects « titulaire / délivrance / expiration »
   sur la carte draft de `review.html`, parmi les champs du draft — les 3 ou aucun ; gardes 400 :
-  mapping incomplet, champ inexistant) ; `ocr_bifunction/context_assembly.py` =
+  mapping incomplet, champ inexistant) ; `ocr_bifunction/knowledge/context_assembly.py` =
   `collect_validated_attestations` (jobs D1 `done` des templates à rôles → `AttestationReference`,
   projection mécanique, zéro code par type de doc). Contexte branché porte (par requête) + watchdog
   (par passe — une attestation fraîchement close corrobore dès la passe suivante). **Prouvé** :
@@ -1316,7 +1498,7 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   y compris la lane sync (`_spool_files`) ; le watchdog ne purge PLUS sur needs_review, le **sweep
   purge à la clôture** ; endpoint `GET /v1/jobs/{id}/document` (+`?index=`) ; la file de revue expose
   `documents[]` et `review.html` rend le doc (img/embed PDF) à côté des champs/raisons (prouvé
-  Playwright, screenshot envoyé). **(B) passe DRAFT dans le flux** — `ocr_bifunction/drafting_flow.py`
+  Playwright, screenshot envoyé). **(B) passe DRAFT dans le flux** — `ocr_bifunction/knowledge/drafting_flow.py`
   (`run_draft_pass`) branchée sur `--nightly` : unknowns needs_review avec bytes → cluster D-a →
   draft D-b → **D-c partie 2 déterministe** (`drafting.seed_candidate_checks` : champs 100 % dates →
   `normalize date_ddmmyyyy` + candidats `date_order`/`date_span` à écart d'années constant ;
@@ -1327,7 +1509,7 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   du cluster. **Idempotent** (suggestion déjà stagée → skip) ; images sans OCR → skip sauf
   `--draft-ocr` (frein machine partagée) ; catégorie = le type déclaré par l'appelant (fix : la lane
   rag persiste maintenant `document_type` au lieu de None). **(C) plomberie D-e** —
-  `ocr_bifunction/issuer_registry.py` (table `ocr_issuer_registry`, curation métier) + endpoints
+  `ocr_bifunction/governance/issuer_registry.py` (table `ocr_issuer_registry`, curation métier) + endpoints
   GET/PUT/DELETE `/v1/issuer-registry` + page `/registry` ; **contexte câblé** : porte API et
   watchdog passent `ValidationContext(issuer_registry=…)` + `today` à `route_document` (registre
   vide → None → review fail-loud). `reconcile_ci`/`corroborated_by` restent fail-loud → **questions
@@ -1341,7 +1523,7 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
 - **Politiques d'exécution — la surface de config « QUAND traiter » livrée + prouvée (demande
   utilisateur : le mapping catégorie→régime doit être une config opérée, les infra/besoins changent ;
   cohabitation avec la variable optionnelle de l'API).** Nouveau domaine **D4** `ocr_execution_policies`
-  (`ocr_bifunction/execution_policy.py` : `ExecutionPolicyRepository` ABC + proxy SQLite, patron
+  (`ocr_bifunction/governance/execution_policy.py` : `ExecutionPolicyRepository` ABC + proxy SQLite, patron
   « leviers » handoff-it — défauts DANS le code `DEFAULT_EXECUTION_POLICIES`, seed idempotent qui
   n'écrase JAMAIS une édition opérateur). 3 modes : `sync` (dans la requête) / `async_immediate`
   (lane D1 `deferred`, watchdog continu) / `async_nightly` (lane `nightly`, drainée SEULEMENT par
@@ -1440,7 +1622,7 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   régimes d'émetteur + l'oracle D-e. Oracle = run réel, pas de pytest.
 - **D-c PARTIE 1 — le SLM contraint NOMME les champs placeholder du draft ; PROUVÉ LIVE (granite via
   llama-swap, corpus synthétique PII-free, zéro OCR). `f578445`.** Suite déterministe de D-b : le draft
-  sort avec des noms placeholder (slugs de label) ; `ocr_bifunction/field_naming.py` réveille granite
+  sort avec des noms placeholder (slugs de label) ; `ocr_bifunction/knowledge/field_naming.py` réveille granite
   (`/completion` + `json_schema` : `placeholder` = enum des champs DU draft → impossible de nommer un champ
   inexistant ; `name` = string libre) pour proposer un nom sémantique par champ. **Le SLM propose, le
   déterministe dispose** : `_sanitize_name` (ASCII-fold + slug → identifiant sûr), unicité garantie,
@@ -1504,7 +1686,7 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   ou acceptation humaine — le re-match ferme les SUIVANTS, pas rétroactivement les membres du cluster).
   `.gitignore` : + `.playwright-mcp/` (artefacts navigateur).
 - **Lane DRAFTING, moitié déterministe (D-a + D-b) LIVRÉE + prouvée (synthétique born-digital, zéro OCR,
-  zéro SLM — contrainte VRP respectée).** `ocr_bifunction/drafting.py` : **D-a `cluster_unknown_documents`**
+  zéro SLM — contrainte VRP respectée).** `ocr_bifunction/knowledge/drafting.py` : **D-a `cluster_unknown_documents`**
   (cosine TF-IDF plein-doc — RÉUTILISE `TfidfRetriever` tel quel, 1 doc = 1 chunk ; single-link glouton
   déterministe, seuil défaut 0.5) + **D-b `draft_from_cluster`** = invariance cross-docs (lignes du 1er doc
   retrouvées dans TOUS les autres via le MÊME prédicat fuzzy que le match — imports assumés des privates de
@@ -1599,14 +1781,14 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   l'intake, candidat PLUS TARD) → **`stage_suggestion(review_id, suggestion)`** ajouté au contrat
   `ReviewRepository`. Régressions : `review_check` + `promotion_check` re-passés VERTS. Oracle = runs réels.
 - **Étape 3 — D2 ÉMERGE (`ocr_templates`) + seam de promotion D3→D2 ; boucle de croissance organique prouvée.**
-  Dernier des 3 domaines : **D2 rendu store** (`ocr_bifunction/template_repository.py` : `TemplateRepository`
+  Dernier des 3 domaines : **D2 rendu store** (`ocr_bifunction/storage/template_repository.py` : `TemplateRepository`
   ABC + `SqliteTemplateRepository`, table `ocr_templates` — `template_id` PK, `category`, match/fields/validation
   en **colonnes JSON**, `active`, `version`, timestamps). Les critères **voyagent avec** le template (bloc
   `validation`, pas de table séparée). `seed_from_directory` importe les `templates/*.json` **anonymisés** (le
   SEED) ; `active_templates(category)` rend des dicts **shape identique aux JSON** → `match_template`/
   `extract_fields` (`template.py`) le consomment **INCHANGÉS** (on back le read path, on ne le touche pas). D2
   émerge MAINTENANT car la promotion en a besoin d'écrire (avant : fichiers OK en lecture, YAGNI). **Seam de
-  promotion** (`ocr_bifunction/promotion.py`, l'écrivain « Promotion » du contrat) : `promote_suggestion` upsert
+  promotion** (`ocr_bifunction/knowledge/promotion.py`, l'écrivain « Promotion » du contrat) : `promote_suggestion` upsert
   un template **actif** en D2 + flip `suggestion_status`→`validated` (transaction unique côté BD cible interne ; en proxy,
   2 stores séparés en séquence) ; `grow_template_from_base` (pur) mint une variante réutilisant fields/validation
   d'une base quand le SLM pointe un id connu mais que `match_template` a raté le layout. **Prouvé déterministe
@@ -1620,7 +1802,7 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   GBNF** (`gbnf_diag.py`, brief délivrable 1) : test « banane » (grammaire `root ::= "BANANE"` + prompt qui
   réclame du code) → **GBNF ACTIVE sur chat ET /completion** (contrôle sans grammaire = granite écrit du
   FastAPI ; avec = `BANANE`). Le filet mécanique tient ; la docilité ne joue plus que sur le *fond*. **Puis la
-  lane** (`ocr_bifunction/suggestion.py` + runner `suggestion_check.py`, brief délivrable 2), **deterministic-
+  lane** (`ocr_bifunction/extraction/suggestion.py` + runner `suggestion_check.py`, brief délivrable 2), **deterministic-
   first** : `match_template` gratuit d'abord (majorité → SLM PAS réveillé) ; sur un miss → SLM propose un
   `template_id` de la **liste fermée dérivée des `templates/*.json`** (enum via `json_schema`→GBNF, `/completion`
   granite) + les anchors vus → **2 gates déterministes** : (1) anti-hallucination = les anchors proposés sont
@@ -1638,7 +1820,7 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
 - **Étape 2 (D3) — store `ocr_reviews` bâti + boucle de croissance organique prouvée (stub, sans SLM).**
   Domaine 3 (revue/curation) rendu réel, **séparé de D1** (autre propriétaire : l'UI de revue écrit D3, le
   worker écrit D1 ; D3 **référence** le job par `job_id`, **ne duplique pas** le record — source unique en D1).
-  `ocr_bifunction/review_repository.py` : **`ReviewRepository` ABC** (seam DI → l'IT swappe un
+  `ocr_bifunction/storage/review_repository.py` : **`ReviewRepository` ABC** (seam DI → l'IT swappe un
   adaptateur BD interne) + **`SqliteReviewRepository`**, table **`ocr_reviews`** (review_id PK, job_id FK,
   `projection` = **vue** pour l'humain PAS 2e vérité, `comment`/`decision` accept|reject, suggestion =
   `suggested_template_id`/`category`/`anchors`/`suggestion_status`). **La comm = la colonne `suggestion_status`**
@@ -1739,10 +1921,10 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   → jeté (pas pertinent dans ce cadre ; bouton de réglage si besoin). Runner rapporte gardé/jeté + échantillon.
   **GBNF** reste l'escalade si le filtre structurel ne suffit plus un jour. Oracle = run réel, pas de pytest.
 - **RAG contrat — Étape 2 (graphe de références) LIVRÉE + PROUVÉE (run réel vert, 3 contrats).** Build 1→2→3
-  du brief : slot `Generator` jetable `ocr_bifunction/generation.py` (`LlamaCppGenerator`, **patron
+  du brief : slot `Generator` jetable `ocr_bifunction/knowledge/generation.py` (`LlamaCppGenerator`, **patron
   `GgufEmbeddingRetriever` = llama-server DIRECT**, pas llama-swap → `close()` fiable sans orphelin ; prompt
   validé copié verbatim + `parse_references` **tolérant** : salvage d'un array tronqué, garde-fou longueur,
-  fail-loud si aucun array) ; `ocr_bifunction/reference_graph.py` (`build_reference_graph` = 1 appel LLM /
+  fail-loud si aucun array) ; `ocr_bifunction/knowledge/reference_graph.py` (`build_reference_graph` = 1 appel LLM /
   article → arêtes résolues vers nœuds OU **pendantes** = signal de complétude ; `outgoing` = traversée
   1-hop) ; runner `contrat_graph_check.py` (read→segment→graphe→retrieve tfidf→traversée). **Prouvé** (oracle
   « que modifie l'avenant 7 », 47 articles, **305 arêtes**) : top-1 = `Avenant Article 2` → 2 `REMPLACE`
@@ -1862,7 +2044,7 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   **AUTO**. Adaptateur jetable (runner ; à promouvoir dans `pipeline` si l'usage se confirme). **Dette (b)
   tolérance floue nom = décision sécurité, EN ATTENTE de l'utilisateur** (cf. Suivis ouverts).
 - **Routeur 2-lanes câblé — un seul point d'entrée structuré-vs-RAG, prouvé sur mix réel.**
-  `ocr_bifunction/router.py` : `route_document(path, templates_dir, engine)` → `RoutedDocument`. UNE
+  `ocr_bifunction/flow/router.py` : `route_document(path, templates_dir, engine)` → `RoutedDocument`. UNE
   question — le doc matche-t-il **un** template structuré (toutes catégories) ? → STRUCTURÉ (extract +
   `validate_fields` → auto/human) ; sinon → RAG (résumé extractif + nb de chunks indexables). Unifie ce que
   `hp_check`/`facture_check`/`rag_check` faisaient séparément. **2 garde-fous d'honnêteté** : (1) un template
@@ -1890,7 +2072,7 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
 - **Lane RAG — baseline lexicale prouvée sur les 3 vrais non-structurés.** L'autre branche du routing
   2-lanes : un doc qui matche **aucun template structuré** → pas d'extraction, mais on donne à l'humain une
   prise → **résumé de contenu** (extractif : mots-clés + phrases saillantes) **+ index interrogeable**
-  (cosine top-k). `ocr_bifunction/rag.py` : slot **`Retriever` jetable** (patron `OcrEngine`) ; 1re impl
+  (cosine top-k). `ocr_bifunction/knowledge/rag.py` : slot **`Retriever` jetable** (patron `OcrEngine`) ; 1re impl
   `TfidfRetriever` **maison, zéro download/dép lourde** (TF-IDF lissé + cosine, vecteurs L2). Le **même cœur
   TF-IDF** sert le résumé (`summarize_extractive`) ET le retrieval. `chunk_document` (paragraphes packés
   ~120 tokens). Runner `rag_check.py <doc> [--query --top-k]` via `read_document` (docx natif / PDF text
@@ -1952,7 +2134,7 @@ Démo réelle : paire concordante → **AUTO** (5/5 clefs, 3/3 checksums) ; rect
   même (présence ≠ valeur). Décision actée : **HP = RapidOCR suffit, PAS d'escalade VLM** → libère le budget SLM
   pour les value-checks durs (versos CI). Mémoire `template-validation-architecture-direction` étendue (présence-vs-valeur).
 - **Moteur d'escalade LightOnOCR-2 livré + escalade PROUVÉE.** `LightOnOcrEngine` (slot `OcrEngine`,
-  `ocr_bifunction/lightonocr_engine.py`) : shell vers `llama-mtmd-cli` (build b9542) + GGUF + mmproj, chemins
+  `ocr_bifunction/reading/engines/lightonocr_engine.py`) : shell vers `llama-mtmd-cli` (build b9542) + GGUF + mmproj, chemins
   configurables (arg > env `LIGHTONOCR_BINARY|MODEL|MMPROJ` > défaut). GGUF principal copié dans `models/`
   (gitignoré). **Valeur prouvée sur le cas le plus dur** : un verso CI dont RapidOCR ne parsait PAS la MRZ
   (`read_path=none`) → le VLM récupère la TD1 → **4/4 checksums ICAO**, clés concordantes avec le recto (le

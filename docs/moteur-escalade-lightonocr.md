@@ -1,7 +1,7 @@
 # Moteur d'escalade — LightOnOCR-2 (note IT)
 
 > Livrable IT. Décrit le moteur OCR d'**escalade** (cas durs) : ce qu'il fait, ce dont il a
-> besoin, comment l'IT le branche / le remplace. Le code = `ocr_bifunction/lightonocr_engine.py`.
+> besoin, comment l'IT le branche / le remplace. Le code = `ocr_bifunction/reading/engines/lightonocr_engine.py`.
 > Cadrage moteurs → [lecture-moteurs-paysage.md](lecture-moteurs-paysage.md).
 
 ## Rôle
